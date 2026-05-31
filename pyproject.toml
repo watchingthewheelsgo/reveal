@@ -1,0 +1,42 @@
+[project]
+name = "reveal"
+version = "0.1.0"
+description = "美股交易助手 — Telegram/飞书双通道交互的选股推荐、社交监控、交易日记后台工具"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "apscheduler>=3.10.4",
+    "fastapi>=0.122.0",
+    "httpx>=0.28.1",
+    "lark-oapi>=1.5.3",
+    "loguru>=0.7.3",
+    "openai>=2.8.1",
+    "pydantic>=2.12.4",
+    "pydantic-settings>=2.13.0",
+    "python-dateutil>=2.9.0",
+    "python-telegram-bot>=22.5",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "aiosqlite>=0.20.0",
+    "uvicorn>=0.34.0",
+    "yfinance>=0.2.54",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.6.0",
+    "pyright>=1.1.409",
+    "ruff>=0.15.15",
+]

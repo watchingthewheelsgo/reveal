@@ -1,0 +1,173 @@
+"""
+Reveal — 美股交易助手主入口
+Telegram + 飞书双通道，集选股推荐、Twitter 监控、交易日记于一体。
+"""
+
+import asyncio
+import sys
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from loguru import logger
+
+from config.settings import global_settings
+
+
+def configure_logging() -> None:
+    logger.remove()
+    logger.add(sys.stderr, level=global_settings.log_level.upper())
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifecycle: init → run → shutdown."""
+    settings = global_settings
+    configure_logging()
+    logger.info("Starting Reveal...")
+
+    # Init database
+    from server.db.engine import init_db
+
+    await init_db()
+    logger.info("Database initialized")
+
+    # Init bots
+    telegram_bot = None
+    feishu_bot = None
+
+    if settings.telegram_bot_token:
+        from server.bot.base import CommandRouter
+        from server.bot.telegram import TelegramBot
+        from server.commands import register_all_commands
+
+        if not settings.get_telegram_admin_chat_ids():
+            logger.warning("Telegram bot is configured without TELEGRAM_ADMIN_CHAT_ID")
+
+        for attempt in range(3):
+            candidate = TelegramBot()
+            try:
+                await candidate.initialize()
+                router = CommandRouter(candidate)
+                candidate.set_router(router)
+                register_all_commands(router, candidate)
+                await candidate.start_polling()
+                telegram_bot = candidate
+                logger.info("Telegram bot polling started")
+                break
+            except Exception as e:
+                logger.warning(f"Telegram init attempt {attempt + 1}/3 failed: {e}")
+                await candidate.stop()
+                if attempt < 2:
+                    await asyncio.sleep(5)
+        if telegram_bot is None:
+            logger.error("Telegram bot disabled after repeated startup failures")
+
+    if settings.is_feishu_configured():
+        from server.bot.base import CommandRouter
+        from server.bot.feishu import FeishuBot
+        from server.commands import register_all_commands
+
+        feishu_bot = FeishuBot()
+        if not settings.get_feishu_admin_chat_ids():
+            logger.warning("Feishu bot is configured without FEISHU_ADMIN_CHAT_ID")
+        feishu_router = CommandRouter(feishu_bot)
+        feishu_bot.set_router(feishu_router)
+        register_all_commands(feishu_router, feishu_bot)
+        feishu_bot.set_event_loop(asyncio.get_event_loop())
+        feishu_bot.start_in_thread()
+        logger.info("Feishu bot WebSocket started")
+
+    # Init scheduler with real jobs
+    from server.scheduler import Scheduler
+
+    scheduler = Scheduler()
+
+    # Daily stock pick
+    async def daily_pick_job():
+        from server.stock.scanner import format_pick_message, run_daily_pick
+
+        logger.info("Running daily pick job...")
+        pick = await run_daily_pick()
+        if pick is None:
+            logger.warning("Daily pick returned no results")
+            return
+        text = format_pick_message(pick)
+        if telegram_bot:
+            await telegram_bot.push_to_admin(text)
+        if feishu_bot:
+            await feishu_bot.push_to_admin(text)
+
+    pick_hour, pick_minute = map(int, settings.daily_pick_time.split(":"))
+    scheduler.register_cron("daily_pick", daily_pick_job, pick_hour, pick_minute)
+
+    # Daily tracking update (after market close ~4:30 PM ET)
+    async def tracking_update_job():
+        from server.stock.tracker import apply_feedback, update_tracking
+
+        await update_tracking()
+        await apply_feedback()
+
+    scheduler.register_cron("tracking_update", tracking_update_job, 16, 30)
+
+    # Daily briefing (before market open ~8:30 AM ET)
+    async def daily_briefing_job():
+        logger.info("Running daily briefing...")
+        from server.stock.tracker import get_tracking_report
+
+        report = await get_tracking_report()
+        text = f"*📋 盘前简报*\n\n{report}"
+        if telegram_bot:
+            await telegram_bot.push_to_admin(text)
+        if feishu_bot:
+            await feishu_bot.push_to_admin(text)
+
+    brief_hour, brief_minute = map(int, settings.daily_briefing_time.split(":"))
+    scheduler.register_cron("daily_briefing", daily_briefing_job, brief_hour, brief_minute)
+
+    # Twitter monitor
+    async def twitter_monitor_job():
+        from config.settings import get_settings
+        from server.social.monitor import list_active_twitter_accounts, run_twitter_monitor
+        from server.social.processor import TweetProcessor
+
+        accounts = await list_active_twitter_accounts(get_settings().twitter_accounts)
+        if not accounts:
+            return
+        processor = TweetProcessor()
+        tg = telegram_bot if telegram_bot else feishu_bot
+        await run_twitter_monitor(accounts, tg, processor)
+
+    scheduler.register_interval(
+        "twitter_monitor", twitter_monitor_job, settings.twitter_monitor_interval
+    )
+
+    scheduler.start()
+    logger.info("Scheduler started")
+
+    # Store references
+    app.state.telegram_bot = telegram_bot
+    app.state.feishu_bot = feishu_bot
+    app.state.scheduler = scheduler
+
+    logger.info("Reveal is running.")
+    yield
+
+    # Shutdown
+    logger.info("Shutting down Reveal...")
+    scheduler.stop()
+    if feishu_bot:
+        feishu_bot.stop()
+    if telegram_bot:
+        await telegram_bot.stop()
+    from server.db.engine import close_db
+
+    await close_db()
+    logger.info("Reveal stopped.")
+
+
+app = FastAPI(title="Reveal", version="0.1.0", lifespan=lifespan)
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
