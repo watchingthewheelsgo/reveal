@@ -1,13 +1,20 @@
-# pyright: reportAttributeAccessIssue=false, reportMissingImports=false, reportOptionalMemberAccess=false
-"""Feishu Bot implementation using lark-oapi WebSocket."""
+# pyright: reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportUnknownMemberType=false
+"""Feishu Bot implementation using lark-oapi WebSocket and HTTP callbacks."""
 
 import asyncio
+import hashlib
+import hmac
 import json
 import threading
+from typing import Any
 
 import lark_oapi as lark
-from lark_oapi.adapter.ws import WSClient
-from lark_oapi.ws import MessageReceive
+from lark_oapi.api.im.v1 import (
+    CreateMessageRequest,
+    CreateMessageRequestBody,
+    P2ImMessageReceiveV1,
+)
+from loguru import logger
 
 from config.settings import get_settings
 from server.bot.base import (
@@ -25,11 +32,16 @@ class FeishuBot(BotAdapter):
         settings = get_settings()
         self.app_id = settings.feishu_app_id
         self.app_secret = settings.feishu_app_secret
+        self.verification_token = settings.feishu_verification_token
+        self.encrypt_key = settings.feishu_encrypt_key
         self.admin_chat_ids = settings.get_feishu_admin_chat_ids()
-        self._client: WSClient | None = None
         self._router: CommandRouter | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
+        self._ws_client: Any | None = None
+        self._ws_loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
+        self._processed_message_ids: set[str] = set()
+        self.client = lark.Client.builder().app_id(self.app_id).app_secret(self.app_secret).build()
 
     def set_router(self, router: CommandRouter):
         self._router = router
@@ -38,97 +50,91 @@ class FeishuBot(BotAdapter):
         self._event_loop = loop
 
     def start_in_thread(self):
-        def _run():
-            asyncio.run(self._start_ws())
+        event_handler = (
+            lark.EventDispatcherHandler.builder("", "")
+            .register_p2_im_message_receive_v1(self._handle_ws_message)
+            .build()
+        )
+        self._ws_client = lark.ws.Client(
+            app_id=self.app_id,
+            app_secret=self.app_secret,
+            event_handler=event_handler,
+            log_level=lark.LogLevel.INFO,
+        )
 
-        self._thread = threading.Thread(target=_run, daemon=True)
+        def _run():
+            import lark_oapi.ws.client as ws_mod
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            ws_mod.loop = loop
+            self._ws_loop = loop
+            if self._ws_client:
+                self._ws_client.start()
+
+        self._thread = threading.Thread(target=_run, name="feishu-ws", daemon=True)
         self._thread.start()
 
     def stop(self):
-        if self._client:
-            self._client.stop()
+        if self._ws_loop and self._ws_loop.is_running():
+            self._ws_loop.call_soon_threadsafe(self._ws_loop.stop)
 
-    async def _start_ws(self):
-        builder = (
-            lark.ws.Client.Builder()
-            .app_id(self.app_id)
-            .app_secret(self.app_secret)
-            .event_handler(lark.im.v1.P2ImMessageReceiveV1, self._on_message)
-            .event_handler(
-                lark.im.v1.P2ImMessageReceiveV1Data,
-                self._on_message,
-            )
-        )
-        self._client = builder.build()
-        self._client.start()
+    def verify_signature(
+        self,
+        timestamp: str,
+        nonce: str,
+        encrypt: str,
+        signature: str,
+    ) -> bool:
+        if not self.verification_token:
+            return True
+        content = f"{timestamp}{nonce}{encrypt}{self.verification_token}"
+        computed = hashlib.sha256(content.encode()).hexdigest()
+        return hmac.compare_digest(computed, signature)
 
-    async def _on_message(self, event: MessageReceive):
-        msg = event.event.message
-        if msg is None:
-            return
-        chat_id = msg.chat_id
-        content_str = msg.content
-        if not content_str or not chat_id:
-            return
+    async def handle_event(self, body: dict) -> dict:
+        if body.get("type") == "url_verification":
+            return {"challenge": body.get("challenge", "")}
 
-        try:
-            content = json.loads(content_str)
-            text = content.get("text", "")
-        except json.JSONDecodeError:
-            text = content_str
+        if body.get("encrypt"):
+            return {"error": "Encrypted Feishu callbacks are not supported yet."}
 
-        if not text:
-            return
+        if body.get("header", {}).get("event_type") != "im.message.receive_v1":
+            return {"status": "ignored"}
 
-        parts = text.strip().split()
-        command = ""
-        args: list[str] = []
-        if parts[0].startswith("/"):
-            command = parts[0][1:]
-            args = parts[1:]
+        event_data = body.get("event", {})
+        message = event_data.get("message", {})
+        sender = event_data.get("sender", {})
+        chat_id = message.get("chat_id")
+        content_str = message.get("content")
+        if not chat_id or not content_str:
+            return {"status": "ignored"}
 
-        ctx = BotContext(
+        text = self._extract_text(content_str)
+        if not text.startswith("/"):
+            return {"status": "ignored"}
+
+        sender_id = sender.get("sender_id", {})
+        ctx = self._make_context(
             chat_id=chat_id,
-            user_id=event.event.sender.sender_id.open_id or "",
+            user_id=sender_id.get("open_id", ""),
             text=text,
-            command=command,
-            args=args,
-            raw_data={"event": event},
+            raw_data={"event": event_data, "body": body},
         )
-
-        if self._router and command:
+        if self._router:
             await self._router.handle(ctx)
+        return {"status": "ok"}
 
     async def send_message(self, chat_id: str, text: str, **kwargs) -> None:
-        client = lark.Client.builder().app_id(self.app_id).app_secret(self.app_secret).build()
+        loop = asyncio.get_running_loop()
         max_len = 4000
         for i in range(0, len(text), max_len):
             chunk = text[i : i + max_len]
-            await lark.im.v1.message.create_async(
-                client,
-                lark.im.v1.CreateMessageReq(
-                    receive_id_type="chat_id",
-                    body=lark.im.v1.CreateMessageReqBody(
-                        receive_id=chat_id,
-                        msg_type=lark.im.v1.MsgType.text,
-                        content=json.dumps({"text": chunk}),
-                    ),
-                ),
-            )
+            await loop.run_in_executor(None, self._send_text_sync, chat_id, chunk)
 
     async def send_card(self, chat_id: str, card: dict) -> None:
-        client = lark.Client.builder().app_id(self.app_id).app_secret(self.app_secret).build()
-        await lark.im.v1.message.create_async(
-            client,
-            lark.im.v1.CreateMessageReq(
-                receive_id_type="chat_id",
-                body=lark.im.v1.CreateMessageReqBody(
-                    receive_id=chat_id,
-                    msg_type=lark.im.v1.MsgType.interactive,
-                    content=json.dumps(card),
-                ),
-            ),
-        )
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._send_card_sync, chat_id, card)
 
     async def push_to_admin(self, text: str) -> None:
         for chat_id in self.admin_chat_ids:
@@ -138,5 +144,94 @@ class FeishuBot(BotAdapter):
         return bool(self.admin_chat_ids and ctx.chat_id in set(self.admin_chat_ids))
 
     def register_command(self, command: str, handler: BotCommandHandler) -> None:
-        # Feishu commands are dispatched via _on_message -> router.handle
-        pass
+        # Feishu commands are dispatched via _handle_ws_message/handle_event -> router.handle.
+        return None
+
+    def _handle_ws_message(self, data: P2ImMessageReceiveV1) -> None:
+        if not data.event or not data.event.message:
+            return
+        message = data.event.message
+        msg_id = message.message_id
+        if msg_id and msg_id in self._processed_message_ids:
+            return
+        if msg_id:
+            self._processed_message_ids.add(msg_id)
+            if len(self._processed_message_ids) > 5000:
+                self._processed_message_ids = set(list(self._processed_message_ids)[-2500:])
+
+        if message.message_type != "text":
+            return
+
+        chat_id = message.chat_id or ""
+        text = self._extract_text(message.content or "{}")
+        if text.startswith("@"):
+            parts = text.split(maxsplit=1)
+            text = parts[1] if len(parts) > 1 else ""
+        if not text.startswith("/"):
+            return
+
+        sender_id = data.event.sender.sender_id.open_id if data.event.sender else ""
+        ctx = self._make_context(
+            chat_id=chat_id,
+            user_id=sender_id or "",
+            text=text,
+            raw_data={"event": data},
+        )
+        if self._router and self._event_loop and not self._event_loop.is_closed():
+            future = asyncio.run_coroutine_threadsafe(self._router.handle(ctx), self._event_loop)
+            try:
+                future.result(timeout=120)
+            except Exception as e:
+                logger.error(f"Feishu command handling failed: {e}")
+
+    def _make_context(self, chat_id: str, user_id: str, text: str, raw_data: dict) -> BotContext:
+        parts = text.strip().split()
+        return BotContext(
+            chat_id=chat_id,
+            user_id=user_id,
+            text=text,
+            command=parts[0][1:] if parts and parts[0].startswith("/") else "",
+            args=parts[1:] if len(parts) > 1 else [],
+            raw_data=raw_data,
+        )
+
+    def _extract_text(self, content_str: str) -> str:
+        try:
+            content = json.loads(content_str)
+            return content.get("text", "").strip()
+        except json.JSONDecodeError:
+            return content_str.strip()
+
+    def _send_text_sync(self, chat_id: str, text: str) -> None:
+        request = (
+            CreateMessageRequest.builder()
+            .receive_id_type("chat_id")
+            .request_body(
+                CreateMessageRequestBody.builder()
+                .receive_id(chat_id)
+                .msg_type("text")
+                .content(json.dumps({"text": text}))
+                .build()
+            )
+            .build()
+        )
+        response = self.client.im.v1.message.create(request)
+        if not response.success():
+            raise RuntimeError(f"Feishu send failed: {response.code} - {response.msg}")
+
+    def _send_card_sync(self, chat_id: str, card: dict) -> None:
+        request = (
+            CreateMessageRequest.builder()
+            .receive_id_type("chat_id")
+            .request_body(
+                CreateMessageRequestBody.builder()
+                .receive_id(chat_id)
+                .msg_type("interactive")
+                .content(json.dumps(card))
+                .build()
+            )
+            .build()
+        )
+        response = self.client.im.v1.message.create(request)
+        if not response.success():
+            raise RuntimeError(f"Feishu card send failed: {response.code} - {response.msg}")

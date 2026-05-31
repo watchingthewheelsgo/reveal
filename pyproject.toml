@@ -23,6 +23,20 @@ dependencies = [
     "python-dotenv>=1.0.0",
 ]
 
+[project.scripts]
+start = "server.main:start"
+
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["config*", "server*"]
+exclude = ["data*", "tests*"]
+
+[tool.uv]
+package = true
+
 [tool.ruff]
 line-length = 100
 target-version = "py313"

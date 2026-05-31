@@ -270,7 +270,10 @@ async def cmd_twatch(ctx: BotContext, adapter):
         from server.social.monitor import set_twitter_account_active
 
         await set_twitter_account_active(username, True)
-        await adapter.send_message(ctx.chat_id, f"✅ 已添加 @{username}")
+        await adapter.send_message(
+            ctx.chat_id,
+            f"✅ 已添加 @{username}\n首次检查只会建立当前最新推文基线，不会回推历史推文。",
+        )
 
     elif sub == "del" and len(ctx.args) > 1:
         username = ctx.args[1].lstrip("@")

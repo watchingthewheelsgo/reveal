@@ -30,7 +30,10 @@ class Settings(BaseSettings):
     # Feishu
     feishu_app_id: str = Field(default="", alias="FEISHU_APP_ID")
     feishu_app_secret: str = Field(default="", alias="FEISHU_APP_SECRET")
+    feishu_verification_token: str = Field(default="", alias="FEISHU_VERIFICATION_TOKEN")
+    feishu_encrypt_key: str = Field(default="", alias="FEISHU_ENCRYPT_KEY")
     feishu_admin_chat_id: str = Field(default="", alias="FEISHU_ADMIN_CHAT_ID")
+    feishu_enable_ws: bool = Field(default=True, alias="FEISHU_ENABLE_WS")
 
     def is_feishu_configured(self) -> bool:
         return bool(self.feishu_app_id and self.feishu_app_secret)

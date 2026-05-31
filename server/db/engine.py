@@ -3,6 +3,7 @@
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
+from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -31,6 +32,8 @@ async def init_db() -> None:
     AsyncSessionLocal = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        if db_url.startswith("sqlite"):
+            await _migrate_sqlite_social_posts(conn)
 
 
 async def get_db_session() -> AsyncGenerator[AsyncSession]:
@@ -48,12 +51,33 @@ async def get_db_session() -> AsyncGenerator[AsyncSession]:
 
 
 async def close_db() -> None:
-    global engine
+    global AsyncSessionLocal, engine
     if engine:
         await engine.dispose()
+    engine = None
+    AsyncSessionLocal = None
 
 
 def get_session_factory():
     if AsyncSessionLocal is None:
         raise RuntimeError("Database not initialized.")
     return AsyncSessionLocal
+
+
+async def _migrate_sqlite_social_posts(conn) -> None:
+    """Add columns for old SQLite databases created before migrations existed."""
+    result = await conn.execute(text("PRAGMA table_info(social_posts)"))
+    existing_columns = {row[1] for row in result.fetchall()}
+    columns = {
+        "tweet_url": "VARCHAR(500)",
+        "media": "JSON",
+        "links": "JSON",
+        "referenced_tweets": "JSON",
+        "raw_json": "JSON",
+        "is_reply": "BOOLEAN NOT NULL DEFAULT 0",
+        "is_repost": "BOOLEAN NOT NULL DEFAULT 0",
+        "is_quote": "BOOLEAN NOT NULL DEFAULT 0",
+    }
+    for column, column_type in columns.items():
+        if column not in existing_columns:
+            await conn.execute(text(f"ALTER TABLE social_posts ADD COLUMN {column} {column_type}"))
