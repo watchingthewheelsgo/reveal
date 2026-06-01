@@ -18,9 +18,19 @@ class ClaudeSdkRuntimeTest(unittest.IsolatedAsyncioTestCase):
             settings_module.global_settings.claude_agent_auth_token
         )
         self.original_claude_agent_effort = settings_module.global_settings.claude_agent_effort
+        self.original_anthropic_base_url = settings_module.global_settings.anthropic_base_url
+        self.original_anthropic_auth_token = settings_module.global_settings.anthropic_auth_token
+        self.original_anthropic_model = settings_module.global_settings.anthropic_model
+        self.original_anthropic_default_haiku_model = (
+            settings_module.global_settings.anthropic_default_haiku_model
+        )
         settings_module.global_settings.openai_api_key = "deepseek-key"
         settings_module.global_settings.claude_agent_auth_token = ""
         settings_module.global_settings.claude_agent_effort = "max"
+        settings_module.global_settings.anthropic_base_url = ""
+        settings_module.global_settings.anthropic_auth_token = ""
+        settings_module.global_settings.anthropic_model = ""
+        settings_module.global_settings.anthropic_default_haiku_model = ""
 
     async def asyncTearDown(self):
         settings_module.global_settings.openai_api_key = self.original_openai_api_key
@@ -28,6 +38,12 @@ class ClaudeSdkRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.original_claude_agent_auth_token
         )
         settings_module.global_settings.claude_agent_effort = self.original_claude_agent_effort
+        settings_module.global_settings.anthropic_base_url = self.original_anthropic_base_url
+        settings_module.global_settings.anthropic_auth_token = self.original_anthropic_auth_token
+        settings_module.global_settings.anthropic_model = self.original_anthropic_model
+        settings_module.global_settings.anthropic_default_haiku_model = (
+            self.original_anthropic_default_haiku_model
+        )
 
     async def test_run_agent_configures_claude_code_for_web_only_research(self):
         captured = {}
@@ -67,9 +83,41 @@ class ClaudeSdkRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(options.env["ANTHROPIC_BASE_URL"], "https://api.deepseek.com/anthropic")
         self.assertEqual(options.env["ANTHROPIC_AUTH_TOKEN"], "deepseek-key")
 
+    async def test_run_agent_prefers_native_anthropic_environment_names(self):
+        settings_module.global_settings.openai_api_key = "openai-key"
+        settings_module.global_settings.claude_agent_auth_token = "legacy-token"
+        settings_module.global_settings.anthropic_base_url = "https://example.com/anthropic"
+        settings_module.global_settings.anthropic_auth_token = "native-token"
+        settings_module.global_settings.anthropic_model = "native-model"
+        settings_module.global_settings.anthropic_default_haiku_model = "native-haiku"
+        captured = {}
+
+        async def fake_query(prompt, options):
+            captured["options"] = options
+            yield ResultMessage(
+                subtype="success",
+                duration_ms=1,
+                duration_api_ms=1,
+                is_error=False,
+                num_turns=1,
+                session_id="result-session",
+                result="agent answer",
+            )
+
+        with patch("server.research.claude_sdk_runtime.query", new=fake_query):
+            await run_agent("research this")
+
+        options = captured["options"]
+        self.assertEqual(options.model, "native-model")
+        self.assertEqual(options.env["ANTHROPIC_BASE_URL"], "https://example.com/anthropic")
+        self.assertEqual(options.env["ANTHROPIC_AUTH_TOKEN"], "native-token")
+        self.assertEqual(options.env["ANTHROPIC_MODEL"], "native-model")
+        self.assertEqual(options.env["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "native-haiku")
+
     async def test_run_agent_requires_token(self):
         settings_module.global_settings.openai_api_key = ""
         settings_module.global_settings.claude_agent_auth_token = ""
+        settings_module.global_settings.anthropic_auth_token = ""
 
         with self.assertRaises(AgentConfigurationError) as ctx:
             await run_agent("research this")

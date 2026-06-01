@@ -42,6 +42,34 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(settings.agent_runtime, "claude_sdk")
         self.assertEqual(settings.claude_agent_base_url, "https://api.deepseek.com/anthropic")
         self.assertEqual(settings.claude_agent_model, "deepseek-v4-pro[1m]")
+        self.assertEqual(settings.get_agent_base_url(), "https://api.deepseek.com/anthropic")
+        self.assertEqual(settings.get_agent_model(), "deepseek-v4-pro[1m]")
+
+    def test_anthropic_agent_env_overrides_legacy_settings(self):
+        with patch.dict(
+            os.environ,
+            {
+                "ANTHROPIC_BASE_URL": "https://example.com/anthropic",
+                "ANTHROPIC_AUTH_TOKEN": "native-token",
+                "ANTHROPIC_MODEL": "native-model",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": "native-opus",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": "native-sonnet",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": "native-haiku",
+                "CLAUDE_AGENT_BASE_URL": "https://legacy.example.com",
+                "CLAUDE_AGENT_AUTH_TOKEN": "legacy-token",
+                "CLAUDE_AGENT_MODEL": "legacy-model",
+                "CLAUDE_AGENT_SMALL_MODEL": "legacy-small",
+            },
+            clear=False,
+        ):
+            settings = self.build_settings()
+
+        self.assertEqual(settings.get_agent_base_url(), "https://example.com/anthropic")
+        self.assertEqual(settings.get_agent_auth_token(), "native-token")
+        self.assertEqual(settings.get_agent_model(), "native-model")
+        self.assertEqual(settings.get_agent_opus_model(), "native-opus")
+        self.assertEqual(settings.get_agent_sonnet_model(), "native-sonnet")
+        self.assertEqual(settings.get_agent_haiku_model(), "native-haiku")
 
     def test_unknown_agent_runtime_is_rejected(self):
         with patch.dict(os.environ, {"AGENT_RUNTIME": "custom"}, clear=False):

@@ -91,8 +91,35 @@ class Settings(BaseSettings):
     claude_agent_effort: str = Field(default="max", alias="CLAUDE_AGENT_EFFORT")
     claude_agent_max_turns: int = Field(default=8, alias="CLAUDE_AGENT_MAX_TURNS")
 
+    # Native Claude Code / Agent SDK environment names. These take precedence
+    # over the Reveal-specific CLAUDE_AGENT_* names when present.
+    anthropic_base_url: str = Field(default="", alias="ANTHROPIC_BASE_URL")
+    anthropic_auth_token: str = Field(default="", alias="ANTHROPIC_AUTH_TOKEN")
+    anthropic_model: str = Field(default="", alias="ANTHROPIC_MODEL")
+    anthropic_default_opus_model: str = Field(default="", alias="ANTHROPIC_DEFAULT_OPUS_MODEL")
+    anthropic_default_sonnet_model: str = Field(default="", alias="ANTHROPIC_DEFAULT_SONNET_MODEL")
+    anthropic_default_haiku_model: str = Field(default="", alias="ANTHROPIC_DEFAULT_HAIKU_MODEL")
+
     def is_agent_configured(self) -> bool:
-        return bool(self.openai_api_key or self.claude_agent_auth_token)
+        return bool(self.get_agent_auth_token())
+
+    def get_agent_base_url(self) -> str:
+        return self.anthropic_base_url or self.claude_agent_base_url
+
+    def get_agent_auth_token(self) -> str:
+        return self.anthropic_auth_token or self.claude_agent_auth_token or self.openai_api_key
+
+    def get_agent_model(self) -> str:
+        return self.anthropic_model or self.claude_agent_model
+
+    def get_agent_opus_model(self) -> str:
+        return self.anthropic_default_opus_model or self.get_agent_model()
+
+    def get_agent_sonnet_model(self) -> str:
+        return self.anthropic_default_sonnet_model or self.get_agent_model()
+
+    def get_agent_haiku_model(self) -> str:
+        return self.anthropic_default_haiku_model or self.claude_agent_small_model
 
     @field_validator("twitter_accounts", mode="before")
     @classmethod

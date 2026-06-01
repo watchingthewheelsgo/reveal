@@ -124,6 +124,12 @@ DeepSeek 配置示例：
 ```env
 OPENAI_API_KEY=<DeepSeek API Key>
 AGENT_RUNTIME=claude_sdk
+ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic
+ANTHROPIC_AUTH_TOKEN=<DeepSeek API Key>
+ANTHROPIC_MODEL=deepseek-v4-pro[1m]
+ANTHROPIC_DEFAULT_OPUS_MODEL=deepseek-v4-pro[1m]
+ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-v4-pro[1m]
+ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-v4-flash
 CLAUDE_AGENT_BASE_URL=https://api.deepseek.com/anthropic
 CLAUDE_AGENT_MODEL=deepseek-v4-pro[1m]
 CLAUDE_AGENT_SMALL_MODEL=deepseek-v4-flash
@@ -131,6 +137,6 @@ CLAUDE_AGENT_EFFORT=max
 CLAUDE_AGENT_MAX_TURNS=8
 ```
 
-也可以把 research agent 的 token 单独放在 `CLAUDE_AGENT_AUTH_TOKEN`；为空时会复用 `OPENAI_API_KEY`。
+优先使用 `ANTHROPIC_*` 这组 Claude Code / Agent SDK 原生变量名。`ANTHROPIC_AUTH_TOKEN` 为空时会尝试 `CLAUDE_AGENT_AUTH_TOKEN`，再为空才复用 `OPENAI_API_KEY`。
 
 Claude Agent SDK 运行时只开放 `WebSearch` 和 `WebFetch`，不会读取本地文件、运行命令或修改文件。

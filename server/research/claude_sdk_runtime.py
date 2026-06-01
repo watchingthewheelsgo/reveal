@@ -41,23 +41,29 @@ class AgentConfigurationError(AgentRuntimeError):
 
 async def run_agent(prompt: str, resume: str | None = None) -> AgentRunResult:
     settings = get_settings()
-    token = settings.claude_agent_auth_token or settings.openai_api_key
+    token = settings.get_agent_auth_token()
     if not token:
         raise AgentConfigurationError(
-            "Claude Agent SDK runtime requires OPENAI_API_KEY or CLAUDE_AGENT_AUTH_TOKEN.",
+            "Claude Agent SDK runtime requires ANTHROPIC_AUTH_TOKEN, "
+            "CLAUDE_AGENT_AUTH_TOKEN, or OPENAI_API_KEY.",
             "研究 Agent 未配置 DeepSeek API Key。"
-            "请设置 OPENAI_API_KEY 或 CLAUDE_AGENT_AUTH_TOKEN。",
+            "请设置 ANTHROPIC_AUTH_TOKEN、CLAUDE_AGENT_AUTH_TOKEN 或 OPENAI_API_KEY。",
         )
 
+    base_url = settings.get_agent_base_url()
+    model = settings.get_agent_model()
+    opus_model = settings.get_agent_opus_model()
+    sonnet_model = settings.get_agent_sonnet_model()
+    haiku_model = settings.get_agent_haiku_model()
     env = {
-        "ANTHROPIC_BASE_URL": settings.claude_agent_base_url,
+        "ANTHROPIC_BASE_URL": base_url,
         "ANTHROPIC_AUTH_TOKEN": token,
         "ANTHROPIC_API_KEY": token,
-        "ANTHROPIC_MODEL": settings.claude_agent_model,
-        "ANTHROPIC_DEFAULT_OPUS_MODEL": settings.claude_agent_model,
-        "ANTHROPIC_DEFAULT_SONNET_MODEL": settings.claude_agent_model,
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL": settings.claude_agent_small_model,
-        "CLAUDE_CODE_SUBAGENT_MODEL": settings.claude_agent_small_model,
+        "ANTHROPIC_MODEL": model,
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": opus_model,
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": sonnet_model,
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": haiku_model,
+        "CLAUDE_CODE_SUBAGENT_MODEL": haiku_model,
         "CLAUDE_CODE_EFFORT_LEVEL": settings.claude_agent_effort,
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
     }
@@ -69,7 +75,7 @@ async def run_agent(prompt: str, resume: str | None = None) -> AgentRunResult:
         strict_mcp_config=True,
         mcp_servers={},
         permission_mode="dontAsk",
-        model=settings.claude_agent_model,
+        model=model,
         max_turns=settings.claude_agent_max_turns,
         cwd=Path.cwd(),
         env=env,
