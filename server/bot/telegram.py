@@ -1,7 +1,7 @@
 """Telegram Bot implementation using python-telegram-bot."""
 
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from config.settings import get_settings
 from server.bot.base import (
@@ -11,6 +11,9 @@ from server.bot.base import (
 )
 from server.bot.base import (
     CommandHandler as BotCommandHandler,
+)
+from server.bot.base import (
+    MessageHandler as BotMessageHandler,
 )
 
 
@@ -86,6 +89,23 @@ class TelegramBot(BotAdapter):
             await handler(ctx)
 
         self.app.add_handler(CommandHandler(command, wrapper))
+
+    def register_message_handler(self, handler: BotMessageHandler) -> None:
+        async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if update.effective_chat is None or update.message is None:
+                return
+            text = update.message.text or ""
+            ctx = BotContext(
+                chat_id=str(update.effective_chat.id),
+                user_id=str(update.effective_user.id if update.effective_user else ""),
+                text=text,
+                command="",
+                args=[],
+                raw_data={"update": update, "context": context},
+            )
+            await handler(ctx)
+
+        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, wrapper))
 
     def _format_card(self, card: dict) -> str:
         title = card.get("title", "")

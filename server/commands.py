@@ -5,6 +5,7 @@ Bot command handlers shared across Telegram and Feishu.
 from loguru import logger
 
 from server.bot.base import BotContext
+from server.research.service import ResearchError
 
 
 async def cmd_help(ctx: BotContext, adapter):
@@ -19,6 +20,9 @@ async def cmd_help(ctx: BotContext, adapter):
 /twatch list — 查看监控列表
 /twatch add @user — 添加监控
 /twatch del @user — 删除监控
+/deep latest — 深挖最近一条更新
+/ask latest 问题 — 基于更新追问
+/topic start latest — 开启研究线程
 
 *交易日记*
 /log buy TICKER PRICE QTY — 记录买入
@@ -246,6 +250,133 @@ async def cmd_pnl(ctx: BotContext, adapter):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Research Commands
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+async def cmd_deep(ctx: BotContext, adapter):
+    """Run deep research for a social post: /deep latest|POST_ID [focus]"""
+    if not ctx.args:
+        await adapter.send_message(
+            ctx.chat_id, "用法: /deep latest [研究重点] 或 /deep POST_ID [研究重点]"
+        )
+        return
+
+    post_ref = ctx.args[0]
+    focus = " ".join(ctx.args[1:]).strip()
+    await adapter.send_message(
+        ctx.chat_id, "🔎 正在深挖这条更新，会结合原文、引用、外链和搜索结果..."
+    )
+    try:
+        from server.research.service import run_deep_research
+
+        run = await run_deep_research(ctx.chat_id, post_ref, focus)
+        text = (
+            f"*研究线程 #{run.session_id} · 推文 #{run.post.id}*\n\n"
+            f"{run.answer}\n\n"
+            "继续追问可以直接发普通消息，或使用:\n"
+            f"/ask {run.post.id} 你的问题\n"
+            "/topic summary\n"
+            "/topic stop"
+        )
+        await adapter.send_message(ctx.chat_id, text)
+    except ResearchError as e:
+        await adapter.send_message(ctx.chat_id, f"❌ {e}")
+    except Exception as e:
+        logger.exception(f"Deep research failed: {e}")
+        await adapter.send_message(ctx.chat_id, "❌ 深挖失败，请稍后重试。")
+
+
+async def cmd_ask(ctx: BotContext, adapter):
+    """Ask about a social post: /ask latest|POST_ID question"""
+    if len(ctx.args) < 2:
+        await adapter.send_message(ctx.chat_id, "用法: /ask latest 问题 或 /ask POST_ID 问题")
+        return
+
+    post_ref = ctx.args[0]
+    question = " ".join(ctx.args[1:]).strip()
+    await adapter.send_message(ctx.chat_id, "🤔 正在基于这条更新和已收集材料回答...")
+    try:
+        from server.research.service import ask_about_post
+
+        answer = await ask_about_post(ctx.chat_id, post_ref, question)
+        await adapter.send_message(ctx.chat_id, answer)
+    except ResearchError as e:
+        await adapter.send_message(ctx.chat_id, f"❌ {e}")
+    except Exception as e:
+        logger.exception(f"Research ask failed: {e}")
+        await adapter.send_message(ctx.chat_id, "❌ 回答失败，请稍后重试。")
+
+
+async def cmd_topic(ctx: BotContext, adapter):
+    """Manage a research topic: /topic start|summary|stop"""
+    sub = ctx.args[0].lower() if ctx.args else "status"
+    try:
+        from server.research.service import (
+            get_active_topic,
+            start_topic,
+            stop_topic,
+            summarize_topic,
+        )
+
+        if sub == "start" and len(ctx.args) >= 2:
+            post_ref = ctx.args[1]
+            focus = " ".join(ctx.args[2:]).strip()
+            topic = await start_topic(ctx.chat_id, post_ref, focus)
+            await adapter.send_message(
+                ctx.chat_id,
+                f"✅ 已开启研究线程 #{topic.id}。\n"
+                "现在可以直接发送普通消息继续追问；需要联网深挖时使用 /deep "
+                f"{topic.source_id}。",
+            )
+        elif sub == "summary":
+            summary = await summarize_topic(ctx.chat_id)
+            await adapter.send_message(ctx.chat_id, summary)
+        elif sub in {"stop", "reset"}:
+            stopped = await stop_topic(ctx.chat_id)
+            await adapter.send_message(
+                ctx.chat_id, "✅ 已结束当前研究线程。" if stopped else "当前没有活跃研究线程。"
+            )
+        elif sub == "status":
+            topic = await get_active_topic(ctx.chat_id)
+            if topic:
+                await adapter.send_message(
+                    ctx.chat_id,
+                    f"当前研究线程: #{topic.id}\n主题: {topic.topic or '未命名'}",
+                )
+            else:
+                await adapter.send_message(
+                    ctx.chat_id, "当前没有活跃研究线程。用 /topic start latest 开启。"
+                )
+        else:
+            await adapter.send_message(
+                ctx.chat_id,
+                "用法:\n/topic start latest [研究重点]\n/topic summary\n/topic stop",
+            )
+    except ResearchError as e:
+        await adapter.send_message(ctx.chat_id, f"❌ {e}")
+    except Exception as e:
+        logger.exception(f"Topic command failed: {e}")
+        await adapter.send_message(ctx.chat_id, "❌ 研究线程操作失败，请稍后重试。")
+
+
+async def handle_plain_message(ctx: BotContext, adapter):
+    """Route normal text into the active research topic, if one exists."""
+    text = ctx.text.strip()
+    if not text:
+        return
+    try:
+        from server.research.service import handle_topic_message
+
+        answer = await handle_topic_message(ctx.chat_id, text)
+        if answer:
+            await adapter.send_message(ctx.chat_id, answer)
+    except Exception as e:
+        logger.exception(f"Topic message handling failed: {e}")
+        await adapter.send_message(ctx.chat_id, "❌ 当前研究线程处理失败。")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Twitter Commands
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -313,9 +444,13 @@ def register_all_commands(router, adapter):
             "pick": lambda ctx: cmd_pick(ctx, adapter),
             "track": lambda ctx: cmd_track(ctx, adapter),
             "score": lambda ctx: cmd_score(ctx, adapter),
+            "deep": lambda ctx: cmd_deep(ctx, adapter),
+            "ask": lambda ctx: cmd_ask(ctx, adapter),
+            "topic": lambda ctx: cmd_topic(ctx, adapter),
             "log": lambda ctx: cmd_log(ctx, adapter),
             "journal": lambda ctx: cmd_journal(ctx, adapter),
             "pnl": lambda ctx: cmd_pnl(ctx, adapter),
             "twatch": lambda ctx: cmd_twatch(ctx, adapter),
         }
     )
+    router.register_message_handler(lambda ctx: handle_plain_message(ctx, adapter))

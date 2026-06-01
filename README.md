@@ -78,3 +78,38 @@ Bot 命令默认只允许配置的管理员 chat 使用。至少配置一个：
 ```
 
 首次添加账号后的第一次检查只会记录当前最新推文作为基线，不会回推历史推文。后续新推文会推送正文、原文链接、外部链接、媒体 URL，以及引用/转推/回复关联信息。
+
+## Deep Research
+
+每条 Twitter/X 推送都会带一个稳定的消息 ID，并给出后续操作命令：
+
+```text
+/deep POST_ID [研究重点]
+/ask POST_ID 问题
+/topic start POST_ID [研究重点]
+```
+
+也可以用 `latest` 指向最近一条更新：
+
+```text
+/deep latest
+/ask latest 这条消息对 NVDA 有什么影响？
+/topic start latest AI 基建
+```
+
+`/deep` 会基于原推、引用推、外部链接和搜索结果生成深度解析。`/topic start` 会开启一个绑定到该消息的研究线程，之后可以直接发送普通消息继续追问；用 `/topic summary` 汇总当前线程，用 `/topic stop` 结束线程。
+
+搜索是可选能力。默认 `SEARCH_PROVIDER=none`，只使用原推和已有链接；配置搜索后会额外联网检索：
+
+```env
+SEARCH_PROVIDER=google
+GOOGLE_SEARCH_API_KEY=...
+GOOGLE_SEARCH_ENGINE_ID=...
+```
+
+或：
+
+```env
+SEARCH_PROVIDER=brave
+BRAVE_SEARCH_API_KEY=...
+```

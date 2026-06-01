@@ -312,6 +312,9 @@ async def push_tweet(post, adapter: BotAdapter):
     if post.links:
         lines.append("")
         lines.extend(_format_link_lines(post.links))
+    if post.id:
+        lines.append("")
+        lines.extend(_format_action_lines(post.id))
 
     text = "\n".join(lines)
 
@@ -580,6 +583,16 @@ def _format_link_lines(links: list[str]) -> list[str]:
     if len(links) > 5:
         lines.append(f"- 还有 {len(links) - 5} 个链接")
     return lines
+
+
+def _format_action_lines(post_id: int) -> list[str]:
+    return [
+        f"消息 ID: {post_id}",
+        "继续操作:",
+        f"- /deep {post_id} 深挖",
+        f"- /ask {post_id} 你的问题",
+        f"- /topic start {post_id}",
+    ]
 
 
 def _post_type_label(post) -> str:

@@ -109,6 +109,43 @@ class SocialPost(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
 
 
+class ResearchSession(Base):
+    __tablename__ = "research_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    chat_id: Mapped[str] = mapped_column(String(100), index=True)
+    source_type: Mapped[str] = mapped_column(String(50), default="twitter")
+    source_id: Mapped[int] = mapped_column(Integer, index=True)
+    topic: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="active")
+    answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
+
+
+class ResearchSource(Base):
+    __tablename__ = "research_sources"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(Integer, index=True)
+    query: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    title: Mapped[str] = mapped_column(String(500))
+    url: Mapped[str] = mapped_column(String(1000))
+    snippet: Mapped[str | None] = mapped_column(Text, nullable=True)
+    extracted_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+
+class ConversationMessage(Base):
+    __tablename__ = "conversation_messages"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(Integer, index=True)
+    role: Mapped[str] = mapped_column(String(20))
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Scoring Weights (dynamic, updated by feedback)
 # ═══════════════════════════════════════════════════════════════════════════════

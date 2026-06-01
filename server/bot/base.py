@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from loguru import logger
 
 CommandHandler = Callable[["BotContext"], Awaitable[None]]
+MessageHandler = Callable[["BotContext"], Awaitable[None]]
 
 
 @dataclass
@@ -33,6 +34,9 @@ class BotAdapter(ABC):
     @abstractmethod
     def register_command(self, command: str, handler: CommandHandler) -> None: ...
 
+    def register_message_handler(self, handler: MessageHandler) -> None:
+        return None
+
     @abstractmethod
     async def push_to_admin(self, text: str) -> None: ...
 
@@ -46,6 +50,7 @@ class CommandRouter:
     def __init__(self, adapter: BotAdapter):
         self.adapter = adapter
         self._handlers: dict[str, CommandHandler] = {}
+        self._message_handler: MessageHandler | None = None
 
     def register(self, command: str, handler: CommandHandler):
         self._handlers[command] = handler
@@ -54,6 +59,10 @@ class CommandRouter:
     def register_many(self, commands: dict[str, CommandHandler]):
         for cmd, handler in commands.items():
             self.register(cmd, handler)
+
+    def register_message_handler(self, handler: MessageHandler):
+        self._message_handler = handler
+        self.adapter.register_message_handler(handler)
 
     async def handle(self, ctx: BotContext):
         if not self.adapter.is_authorized(ctx):
@@ -73,3 +82,14 @@ class CommandRouter:
             await self.adapter.send_message(
                 ctx.chat_id, f"未知命令: /{ctx.command}\n输入 /help 查看可用命令。"
             )
+
+    async def handle_message(self, ctx: BotContext):
+        if not self.adapter.is_authorized(ctx):
+            logger.warning(
+                "Unauthorized bot message: chat_id={} user_id={}",
+                ctx.chat_id,
+                ctx.user_id,
+            )
+            return
+        if self._message_handler:
+            await self._message_handler(ctx)

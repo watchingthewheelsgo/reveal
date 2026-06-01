@@ -25,6 +25,9 @@ from server.bot.base import (
 from server.bot.base import (
     CommandHandler as BotCommandHandler,
 )
+from server.bot.base import (
+    MessageHandler as BotMessageHandler,
+)
 
 
 class FeishuBot(BotAdapter):
@@ -111,9 +114,6 @@ class FeishuBot(BotAdapter):
             return {"status": "ignored"}
 
         text = self._extract_text(content_str)
-        if not text.startswith("/"):
-            return {"status": "ignored"}
-
         sender_id = sender.get("sender_id", {})
         ctx = self._make_context(
             chat_id=chat_id,
@@ -122,7 +122,10 @@ class FeishuBot(BotAdapter):
             raw_data={"event": event_data, "body": body},
         )
         if self._router:
-            await self._router.handle(ctx)
+            if text.startswith("/"):
+                await self._router.handle(ctx)
+            else:
+                await self._router.handle_message(ctx)
         return {"status": "ok"}
 
     async def send_message(self, chat_id: str, text: str, **kwargs) -> None:
@@ -147,6 +150,10 @@ class FeishuBot(BotAdapter):
         # Feishu commands are dispatched via _handle_ws_message/handle_event -> router.handle.
         return None
 
+    def register_message_handler(self, handler: BotMessageHandler) -> None:
+        # Feishu plain messages are dispatched through the same event entrypoints.
+        return None
+
     def _handle_ws_message(self, data: P2ImMessageReceiveV1) -> None:
         if not data.event or not data.event.message:
             return
@@ -167,8 +174,6 @@ class FeishuBot(BotAdapter):
         if text.startswith("@"):
             parts = text.split(maxsplit=1)
             text = parts[1] if len(parts) > 1 else ""
-        if not text.startswith("/"):
-            return
 
         sender_id = data.event.sender.sender_id.open_id if data.event.sender else ""
         ctx = self._make_context(
@@ -178,7 +183,12 @@ class FeishuBot(BotAdapter):
             raw_data={"event": data},
         )
         if self._router and self._event_loop and not self._event_loop.is_closed():
-            future = asyncio.run_coroutine_threadsafe(self._router.handle(ctx), self._event_loop)
+            coro = (
+                self._router.handle(ctx)
+                if text.startswith("/")
+                else self._router.handle_message(ctx)
+            )
+            future = asyncio.run_coroutine_threadsafe(coro, self._event_loop)
             try:
                 future.result(timeout=120)
             except Exception as e:

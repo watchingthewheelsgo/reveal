@@ -78,6 +78,21 @@ class Settings(BaseSettings):
         default_factory=list, alias="TWITTER_ACCOUNTS"
     )
 
+    # Research / search
+    search_provider: str = Field(default="none", alias="SEARCH_PROVIDER")
+    google_search_api_key: str = Field(default="", alias="GOOGLE_SEARCH_API_KEY")
+    google_search_engine_id: str = Field(default="", alias="GOOGLE_SEARCH_ENGINE_ID")
+    brave_search_api_key: str = Field(default="", alias="BRAVE_SEARCH_API_KEY")
+    search_max_results: int = Field(default=6, alias="SEARCH_MAX_RESULTS")
+    research_fetch_max_pages: int = Field(default=4, alias="RESEARCH_FETCH_MAX_PAGES")
+
+    def is_search_configured(self) -> bool:
+        if self.search_provider == "google":
+            return bool(self.google_search_api_key and self.google_search_engine_id)
+        if self.search_provider == "brave":
+            return bool(self.brave_search_api_key)
+        return False
+
     @field_validator("twitter_accounts", mode="before")
     @classmethod
     def parse_twitter_accounts(cls, value) -> list[str]:
@@ -125,6 +140,21 @@ class Settings(BaseSettings):
     def validate_positive_interval(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("TWITTER_MONITOR_INTERVAL must be positive")
+        return value
+
+    @field_validator("search_provider")
+    @classmethod
+    def validate_search_provider(cls, value: str) -> str:
+        normalized = value.lower().strip()
+        if normalized not in {"none", "google", "brave"}:
+            raise ValueError("SEARCH_PROVIDER must be one of: none, google, brave")
+        return normalized
+
+    @field_validator("search_max_results", "research_fetch_max_pages")
+    @classmethod
+    def validate_positive_research_limits(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("research/search limits must be positive")
         return value
 
     @field_validator("scheduler_timezone")
