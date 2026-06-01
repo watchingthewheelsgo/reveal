@@ -10,6 +10,12 @@ cp .env.example .env
 uv run start
 ```
 
+Web 工作台默认随服务启动，但它不是 Reveal 的即时研究主路径。它只作为电脑边上的辅助看板，后续用于实盘操作、关注股票和消息归档查看：
+
+```text
+http://127.0.0.1:8000
+```
+
 开发热重载：
 
 ```bash
@@ -77,7 +83,17 @@ Bot 命令默认只允许配置的管理员 chat 使用。至少配置一个：
 /twatch check
 ```
 
-首次添加账号后的第一次检查只会记录当前最新推文作为基线，不会回推历史推文。后续新推文会推送正文、原文链接、外部链接、媒体 URL，以及引用/转推/回复关联信息。
+首次添加账号后会立即检查一次，最多回拉最近 10 条推文并缓存。之后按 `TWITTER_MONITOR_INTERVAL` 增量检查新推文，默认每 3600 秒一次。飞书/Telegram 是主交互入口：系统会推送可操作研究卡片，完整正文、外链、媒体和引用信息保存在 Reveal 数据库中。
+
+收到提醒后，优先在 IM 里继续操作：
+
+```text
+/research POST_ID [研究重点]  # 建立研究话题
+/deep POST_ID [研究重点]      # 让 Agent 主动深挖
+/ask POST_ID 问题            # 基于这条更新直接追问
+```
+
+`/research` 建立话题后，直接发送普通消息就会进入当前研究话题；用 `/topic summary` 汇总，用 `/topic stop` 结束。
 
 ## Deep Research
 
@@ -86,6 +102,7 @@ Bot 命令默认只允许配置的管理员 chat 使用。至少配置一个：
 ```text
 /deep POST_ID [研究重点]
 /ask POST_ID 问题
+/research POST_ID [研究重点]
 /topic start POST_ID [研究重点]
 ```
 
@@ -94,10 +111,11 @@ Bot 命令默认只允许配置的管理员 chat 使用。至少配置一个：
 ```text
 /deep latest
 /ask latest 这条消息对 NVDA 有什么影响？
+/research latest AI 基建
 /topic start latest AI 基建
 ```
 
-`/deep` 会通过 Claude Agent SDK 调用 DeepSeek，并让 agent 使用 WebSearch/WebFetch 对原推、引用推、外部链接和外部证据做深度解析。`/topic start` 会开启一个绑定到该消息的研究线程，之后可以直接发送普通消息继续追问；用 `/topic summary` 汇总当前线程，用 `/topic stop` 结束线程。
+`/deep` 会通过 Claude Agent SDK 调用 DeepSeek，并让 agent 使用 WebSearch/WebFetch 对原推、引用推、外部链接和外部证据做深度解析。`/research` 和 `/topic start` 都会开启一个绑定到该消息的研究线程，之后可以直接发送普通消息继续追问；用 `/topic summary` 汇总当前线程，用 `/topic stop` 结束线程。
 
 Deep research 不再维护 Reveal 自己的 Google/SearXNG/Brave planner 或抓取 runtime。Reveal 只保存研究线程状态，把联网搜索、页面读取和多轮工具循环交给 Claude Agent SDK。
 

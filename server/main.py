@@ -7,11 +7,14 @@ import asyncio
 import os
 import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Header, Request
+from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
 from config.settings import global_settings
+from server.web import router as web_router
 
 
 def configure_logging() -> None:
@@ -170,6 +173,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Reveal", version="0.1.0", lifespan=lifespan)
+app.mount(
+    "/static",
+    StaticFiles(directory=Path(__file__).parent / "static"),
+    name="static",
+)
+app.include_router(web_router)
 
 
 @app.get("/health")

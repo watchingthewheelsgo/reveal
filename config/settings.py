@@ -158,6 +158,14 @@ class Settings(BaseSettings):
             raise ValueError("CLAUDE_AGENT_MAX_TURNS must be positive")
         return value
 
+    @field_validator("claude_agent_effort")
+    @classmethod
+    def validate_claude_agent_effort(cls, value: str) -> str:
+        normalized = value.lower().strip()
+        if normalized not in {"low", "medium", "high", "xhigh", "max"}:
+            raise ValueError("CLAUDE_AGENT_EFFORT must be one of: low, medium, high, xhigh, max")
+        return normalized
+
     @field_validator("scheduler_timezone")
     @classmethod
     def validate_timezone(cls, value: str) -> str:

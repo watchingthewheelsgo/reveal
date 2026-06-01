@@ -1,12 +1,14 @@
 import asyncio
 import os
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from pydantic import ValidationError
 
 from config.settings import Settings
 from server.bot.base import BotAdapter, BotContext, CommandRouter
+from server.commands import cmd_research
 
 
 class SettingsTest(unittest.TestCase):
@@ -51,6 +53,11 @@ class SettingsTest(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 self.build_settings()
 
+    def test_agent_effort_must_be_known_value(self):
+        with patch.dict(os.environ, {"CLAUDE_AGENT_EFFORT": "extreme"}, clear=False):
+            with self.assertRaises(ValidationError):
+                self.build_settings()
+
 
 class DummyAdapter(BotAdapter):
     def __init__(self, authorized: bool):
@@ -90,6 +97,29 @@ class CommandRouterTest(unittest.TestCase):
 
         self.assertFalse(called)
         self.assertEqual(adapter.messages, [("chat-1", "未授权访问。")])
+
+
+class ResearchCommandTest(unittest.TestCase):
+    def test_research_command_starts_topic(self):
+        adapter = DummyAdapter(authorized=True)
+        ctx = BotContext(
+            chat_id="chat-1",
+            user_id="user-1",
+            text="/research 42 AI 基建",
+            command="research",
+            args=["42", "AI", "基建"],
+        )
+        topic = SimpleNamespace(id=7, source_id=42)
+
+        with patch(
+            "server.research.service.start_topic", new=AsyncMock(return_value=topic)
+        ) as mock:
+            asyncio.run(cmd_research(ctx, adapter))
+
+        mock.assert_awaited_once_with("chat-1", "42", "AI 基建")
+        self.assertEqual(len(adapter.messages), 1)
+        self.assertIn("已建立研究话题 #7", adapter.messages[0][1])
+        self.assertIn("/deep 42", adapter.messages[0][1])
 
 
 if __name__ == "__main__":

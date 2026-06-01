@@ -14,13 +14,15 @@ from server.social.monitor import check_and_notify
 
 class DummyAdapter(BotAdapter):
     def __init__(self):
+        self.admin_chat_ids = ["admin"]
         self.messages: list[tuple[str, str]] = []
+        self.cards: list[tuple[str, dict]] = []
 
     async def send_message(self, chat_id: str, text: str, **kwargs) -> None:
         self.messages.append((chat_id, text))
 
     async def send_card(self, chat_id: str, card: dict) -> None:
-        self.messages.append((chat_id, str(card)))
+        self.cards.append((chat_id, card))
 
     def register_command(self, command: str, handler) -> None:
         return None
@@ -54,13 +56,13 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
         await db_engine.close_db()
         self.tmpdir.cleanup()
 
-    async def test_first_check_sets_baseline_without_pushing_history(self):
+    async def test_first_check_backfills_latest_ten_tweets(self):
         async def fake_fetch_user_tweets(username: str):
             return {
                 "screen_name": username,
                 "latest_tweets": [
-                    {"tweetID": "100", "date_epoch": 100, "text": "old"},
-                    {"tweetID": "101", "date_epoch": 101, "text": "latest"},
+                    {"tweetID": str(tweet_id), "date_epoch": tweet_id, "text": f"tweet {tweet_id}"}
+                    for tweet_id in range(101, 113)
                 ],
             }
 
@@ -68,8 +70,17 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
         with patch("server.social.monitor.fetch_user_tweets", new=fake_fetch_user_tweets):
             posts = await check_and_notify("alice", adapter)
 
-        self.assertEqual(posts, [])
-        self.assertEqual(adapter.messages, [])
+        self.assertEqual(len(posts), 10)
+        self.assertEqual(len(adapter.cards), 1)
+        self.assertEqual(adapter.cards[0][0], "admin")
+        digest = "\n".join([adapter.cards[0][1]["title"], *adapter.cards[0][1]["sections"]])
+        self.assertIn("已缓存最近 10 条更新", digest)
+        self.assertIn("显示最近 5 条", digest)
+        self.assertIn("tweet 112", digest)
+        self.assertIn("tweet 108", digest)
+        self.assertNotIn("tweet 103", digest)
+        self.assertIn("/research", digest)
+        self.assertIn("/deep", digest)
 
         session_factory = get_session_factory()
         async with session_factory() as session:
@@ -77,9 +88,17 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
                 await session.execute(select(TwitterState).where(TwitterState.username == "alice"))
             ).scalar_one()
             post_count = await session.scalar(select(func.count()).select_from(SocialPost))
+            old_post = (
+                await session.execute(select(SocialPost).where(SocialPost.tweet_id == "101"))
+            ).scalar_one_or_none()
+            latest_post = (
+                await session.execute(select(SocialPost).where(SocialPost.tweet_id == "112"))
+            ).scalar_one()
 
-        self.assertEqual(state.last_tweet_epoch, 101)
-        self.assertEqual(post_count, 0)
+        self.assertEqual(state.last_tweet_epoch, 112)
+        self.assertEqual(post_count, 10)
+        self.assertIsNone(old_post)
+        self.assertTrue(latest_post.is_pushed)
 
     async def test_new_tweet_stores_and_pushes_rich_metadata(self):
         session_factory = get_session_factory()
@@ -125,11 +144,13 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
             posts = await check_and_notify("alice", adapter, processor)
 
         self.assertEqual(len(posts), 1)
-        pushed = adapter.messages[0][1]
+        self.assertEqual(len(adapter.cards), 1)
+        pushed = "\n".join([adapter.cards[0][1]["title"], *adapter.cards[0][1]["sections"]])
+        self.assertIn("有 1 条新更新", pushed)
         self.assertIn("https://x.com/alice/status/101", pushed)
-        self.assertIn("https://pbs.twimg.com/media/chart.jpg", pushed)
-        self.assertIn("https://x.com/bob/status/88", pushed)
-        self.assertIn("https://example.com/report", pushed)
+        self.assertIn("1 link / 1 media / 1 ref", pushed)
+        self.assertIn("/research", pushed)
+        self.assertIn("/deep", pushed)
         self.assertIn("引用", pushed)
         self.assertIn("quoted context", processor.summary_input)
 

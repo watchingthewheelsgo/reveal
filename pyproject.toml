@@ -35,6 +35,9 @@ build-backend = "setuptools.build_meta"
 include = ["config*", "server*"]
 exclude = ["data*", "tests*"]
 
+[tool.setuptools.package-data]
+server = ["static/*"]
+
 [tool.uv]
 package = true
 

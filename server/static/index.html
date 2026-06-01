@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Reveal Research Desk</title>
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="rail">
+        <div class="brand">
+          <div class="brand-mark">R</div>
+          <div>
+            <h1>Reveal</h1>
+            <p>Research Desk</p>
+          </div>
+        </div>
+
+        <section class="control-panel">
+          <label class="field">
+            <span>Search</span>
+            <input id="searchInput" type="search" placeholder="keyword, ticker, theme" />
+          </label>
+          <label class="field">
+            <span>Account</span>
+            <select id="accountFilter">
+              <option value="">All accounts</option>
+            </select>
+          </label>
+          <button id="refreshButton" class="button primary" type="button">Refresh</button>
+        </section>
+
+        <section class="stats" aria-label="workspace stats">
+          <div>
+            <span id="postCount">0</span>
+            <small>updates</small>
+          </div>
+          <div>
+            <span id="activeResearchCount">0</span>
+            <small>research</small>
+          </div>
+        </section>
+
+        <section class="queue-section">
+          <div class="section-title">
+            <span>Inbox</span>
+            <span id="syncState">idle</span>
+          </div>
+          <div id="postList" class="post-list"></div>
+        </section>
+      </aside>
+
+      <section class="workspace">
+        <header class="workspace-header">
+          <div>
+            <p id="detailEyebrow" class="eyebrow">No update selected</p>
+            <h2 id="detailTitle">Select a Twitter/X update</h2>
+          </div>
+          <a id="originalLink" class="button ghost hidden" target="_blank" rel="noreferrer">Open X</a>
+        </header>
+
+        <div class="workspace-grid">
+          <section class="detail-panel">
+            <div class="panel-header">
+              <span>Source</span>
+              <span id="detailMeta">-</span>
+            </div>
+            <article id="postDetail" class="post-detail empty">
+              <p>Pick an item from the inbox.</p>
+            </article>
+          </section>
+
+          <aside class="agent-panel">
+            <div class="panel-header">
+              <span>Agent</span>
+              <span id="agentStatus">ready</span>
+            </div>
+
+            <div class="agent-action">
+              <label class="field">
+                <span>Research focus</span>
+                <textarea id="focusInput" rows="3" placeholder="background, market impact, counterargument"></textarea>
+              </label>
+              <button id="deepButton" class="button primary" type="button">Deep Research</button>
+            </div>
+
+            <div class="agent-action">
+              <label class="field">
+                <span>Follow-up</span>
+                <textarea id="questionInput" rows="3" placeholder="What should I verify next?"></textarea>
+              </label>
+              <button id="askButton" class="button secondary" type="button">Ask</button>
+            </div>
+
+            <section class="answer-box">
+              <div class="panel-header">
+                <span>Latest Answer</span>
+                <span id="answerSession">-</span>
+              </div>
+              <div id="answerOutput" class="answer-output">No research yet.</div>
+            </section>
+          </aside>
+        </div>
+      </section>
+    </main>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

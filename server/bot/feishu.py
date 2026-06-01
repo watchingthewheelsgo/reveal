@@ -230,6 +230,7 @@ class FeishuBot(BotAdapter):
             raise RuntimeError(f"Feishu send failed: {response.code} - {response.msg}")
 
     def _send_card_sync(self, chat_id: str, card: dict) -> None:
+        payload = self._format_feishu_card(card)
         request = (
             CreateMessageRequest.builder()
             .receive_id_type("chat_id")
@@ -237,7 +238,7 @@ class FeishuBot(BotAdapter):
                 CreateMessageRequestBody.builder()
                 .receive_id(chat_id)
                 .msg_type("interactive")
-                .content(json.dumps(card))
+                .content(json.dumps(payload))
                 .build()
             )
             .build()
@@ -245,3 +246,35 @@ class FeishuBot(BotAdapter):
         response = self.client.im.v1.message.create(request)
         if not response.success():
             raise RuntimeError(f"Feishu card send failed: {response.code} - {response.msg}")
+
+    def _format_feishu_card(self, card: dict) -> dict:
+        if card.get("elements") or card.get("header"):
+            allowed_keys = {
+                "card_link",
+                "config",
+                "elements",
+                "header",
+                "i18n_elements",
+                "i18n_header",
+            }
+            return {key: value for key, value in card.items() if key in allowed_keys}
+
+        title = str(card.get("title") or "Reveal")
+        sections = [str(section) for section in card.get("sections", [])]
+        footer = str(card.get("footer") or "")
+        elements: list[dict] = []
+        for section in sections:
+            elements.append({"tag": "div", "text": {"tag": "lark_md", "content": section}})
+            elements.append({"tag": "hr"})
+        if footer:
+            elements.append({"tag": "div", "text": {"tag": "lark_md", "content": footer}})
+        if elements and elements[-1].get("tag") == "hr":
+            elements.pop()
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "template": "blue",
+                "title": {"tag": "plain_text", "content": title},
+            },
+            "elements": elements,
+        }

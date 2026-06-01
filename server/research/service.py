@@ -7,7 +7,7 @@ from sqlalchemy import desc, select
 
 from server.db.engine import get_session_factory
 from server.db.models import ConversationMessage, ResearchSession, SocialPost
-from server.research.claude_sdk_runtime import run_agent
+from server.research.claude_sdk_runtime import AgentRunResult, AgentRuntimeError, run_agent
 
 
 class ResearchError(ValueError):
@@ -51,8 +51,8 @@ async def resolve_social_post(ref: str) -> SocialPost:
 
 async def run_deep_research(chat_id: str, post_ref: str, focus: str = "") -> ResearchRun:
     post = await resolve_social_post(post_ref)
+    result = await _run_new_agent(_deep_prompt(post, focus))
     session_id = await _create_session(chat_id, post.id, focus or _default_topic(post))
-    result = await run_agent(_deep_prompt(post, focus))
     await _save_answer(session_id, result.answer, result.agent_session_id)
     return ResearchRun(session_id=session_id, post=post, answer=result.answer)
 
@@ -61,10 +61,15 @@ async def ask_about_post(chat_id: str, post_ref: str, question: str) -> str:
     if not question.strip():
         raise ResearchError("请提供问题。")
     post = await resolve_social_post(post_ref)
-    session = await _get_or_create_session(chat_id, post, _default_topic(post))
-    result = await run_agent(_ask_prompt(post, question), resume=session.agent_session_id)
-    await _append_message(session.id, "user", question)
-    await _append_message(session.id, "assistant", result.answer, result.agent_session_id)
+    session = await _find_active_session_for_post(chat_id, post)
+    if session is None:
+        result = await _run_new_agent(_ask_prompt(post, question))
+        session_id = await _create_session(chat_id, post.id, _default_topic(post))
+    else:
+        result = await _run_agent_for_session(session, post, _ask_prompt(post, question))
+        session_id = session.id
+    await _append_message(session_id, "user", question)
+    await _append_message(session_id, "assistant", result.answer, result.agent_session_id)
     return result.answer
 
 
@@ -123,7 +128,7 @@ async def handle_topic_message(chat_id: str, message: str) -> str | None:
     if topic is None:
         return None
     post = await resolve_social_post(str(topic.source_id))
-    result = await run_agent(_topic_prompt(post, message), resume=topic.agent_session_id)
+    result = await _run_agent_for_session(topic, post, _topic_prompt(post, message))
     await _append_message(topic.id, "user", message)
     await _append_message(topic.id, "assistant", result.answer, result.agent_session_id)
     return result.answer
@@ -152,7 +157,7 @@ async def summarize_topic(chat_id: str) -> str:
 历史对话:
 {history_text}
 """
-    result = await run_agent(prompt, resume=topic.agent_session_id)
+    result = await _run_agent_for_session(topic, post, prompt)
     await _append_message(topic.id, "assistant", result.answer, result.agent_session_id)
     return result.answer
 
@@ -185,6 +190,20 @@ async def _create_session(chat_id: str, source_id: int, topic: str) -> int:
 
 
 async def _get_or_create_session(chat_id: str, post: SocialPost, topic: str) -> ResearchSession:
+    existing = await _find_active_session_for_post(chat_id, post)
+    if existing:
+        return existing
+
+    session_id = await _create_session(chat_id, post.id, topic)
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        result = await session.execute(
+            select(ResearchSession).where(ResearchSession.id == session_id)
+        )
+        return result.scalar_one()
+
+
+async def _find_active_session_for_post(chat_id: str, post: SocialPost) -> ResearchSession | None:
     session_factory = get_session_factory()
     async with session_factory() as session:
         result = await session.execute(
@@ -197,16 +216,7 @@ async def _get_or_create_session(chat_id: str, post: SocialPost, topic: str) -> 
             .order_by(desc(ResearchSession.updated_at), desc(ResearchSession.created_at))
         )
         existing = result.scalars().first()
-        if existing:
-            return existing
-
-    session_id = await _create_session(chat_id, post.id, topic)
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        result = await session.execute(
-            select(ResearchSession).where(ResearchSession.id == session_id)
-        )
-        return result.scalar_one()
+        return existing
 
 
 async def _load_history(session_id: int, limit: int) -> list[ConversationMessage]:
@@ -219,6 +229,72 @@ async def _load_history(session_id: int, limit: int) -> list[ConversationMessage
             .limit(limit)
         )
         return list(reversed(result.scalars().all()))
+
+
+async def _run_new_agent(prompt: str) -> AgentRunResult:
+    try:
+        return await run_agent(prompt)
+    except AgentRuntimeError as exc:
+        raise ResearchError(exc.user_message) from exc
+
+
+async def _run_agent_for_session(
+    research_session: ResearchSession,
+    post: SocialPost,
+    prompt: str,
+) -> AgentRunResult:
+    if not research_session.agent_session_id:
+        return await _run_new_agent(prompt)
+
+    try:
+        return await run_agent(prompt, resume=research_session.agent_session_id)
+    except AgentRuntimeError as exc:
+        if not _is_resume_error(exc):
+            raise ResearchError(exc.user_message) from exc
+
+    await _set_agent_session_id(research_session.id, None)
+    history = await _load_history(research_session.id, limit=20)
+    return await _run_new_agent(_resume_rebuild_prompt(post, history, prompt))
+
+
+async def _set_agent_session_id(session_id: int, agent_session_id: str | None) -> None:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        result = await session.execute(
+            select(ResearchSession).where(ResearchSession.id == session_id)
+        )
+        research_session = result.scalar_one_or_none()
+        if research_session:
+            research_session.agent_session_id = agent_session_id
+            await session.commit()
+
+
+def _is_resume_error(exc: AgentRuntimeError) -> bool:
+    text = f"{exc} {exc.user_message}".lower()
+    markers = ["resume", "session", "conversation", "not found", "does not exist", "invalid"]
+    return any(marker in text for marker in markers)
+
+
+def _resume_rebuild_prompt(
+    post: SocialPost,
+    history: list[ConversationMessage],
+    prompt: str,
+) -> str:
+    history_text = "\n".join(f"{message.role}: {message.content}" for message in history)
+    if not history_text:
+        history_text = "（无历史对话）"
+    return f"""上一个 Agent 会话无法恢复。
+请基于 Reveal 保存的上下文继续研究，并开启新的 Agent 会话。
+
+原始更新:
+{_post_context(post)}
+
+已保存的历史对话:
+{history_text}
+
+当前任务:
+{prompt}
+"""
 
 
 async def _save_answer(

@@ -2,6 +2,8 @@
 Bot command handlers shared across Telegram and Feishu.
 """
 
+import asyncio
+
 from loguru import logger
 
 from server.bot.base import BotContext
@@ -22,7 +24,8 @@ async def cmd_help(ctx: BotContext, adapter):
 /twatch del @user — 删除监控
 /deep latest — 深挖最近一条更新
 /ask latest 问题 — 基于更新追问
-/topic start latest — 开启研究线程
+/research latest — 建立研究话题
+/topic summary — 汇总当前研究话题
 
 *交易日记*
 /log buy TICKER PRICE QTY — 记录买入
@@ -265,26 +268,12 @@ async def cmd_deep(ctx: BotContext, adapter):
     post_ref = ctx.args[0]
     focus = " ".join(ctx.args[1:]).strip()
     await adapter.send_message(
-        ctx.chat_id, "🔎 正在调用研究 Agent 深挖这条更新，会结合原文、引用、外链和外部证据..."
+        ctx.chat_id, "🔎 已开始调用研究 Agent。完成后会把深挖结果推送到这里。"
     )
-    try:
-        from server.research.service import run_deep_research
-
-        run = await run_deep_research(ctx.chat_id, post_ref, focus)
-        text = (
-            f"*研究线程 #{run.session_id} · 推文 #{run.post.id}*\n\n"
-            f"{run.answer}\n\n"
-            "继续追问可以直接发普通消息，或使用:\n"
-            f"/ask {run.post.id} 你的问题\n"
-            "/topic summary\n"
-            "/topic stop"
-        )
-        await adapter.send_message(ctx.chat_id, text)
-    except ResearchError as e:
-        await adapter.send_message(ctx.chat_id, f"❌ {e}")
-    except Exception as e:
-        logger.exception(f"Deep research failed: {e}")
-        await adapter.send_message(ctx.chat_id, "❌ 深挖失败，请稍后重试。")
+    _spawn_background_task(
+        _run_deep_research_job(ctx.chat_id, post_ref, focus, adapter),
+        "deep research",
+    )
 
 
 async def cmd_ask(ctx: BotContext, adapter):
@@ -295,17 +284,25 @@ async def cmd_ask(ctx: BotContext, adapter):
 
     post_ref = ctx.args[0]
     question = " ".join(ctx.args[1:]).strip()
-    await adapter.send_message(ctx.chat_id, "🤔 正在调用研究 Agent，必要时会联网核验后回答...")
-    try:
-        from server.research.service import ask_about_post
+    await adapter.send_message(ctx.chat_id, "🤔 已开始调用研究 Agent。完成后会推送回答。")
+    _spawn_background_task(
+        _run_research_ask_job(ctx.chat_id, post_ref, question, adapter),
+        "research ask",
+    )
 
-        answer = await ask_about_post(ctx.chat_id, post_ref, question)
-        await adapter.send_message(ctx.chat_id, answer)
-    except ResearchError as e:
-        await adapter.send_message(ctx.chat_id, f"❌ {e}")
-    except Exception as e:
-        logger.exception(f"Research ask failed: {e}")
-        await adapter.send_message(ctx.chat_id, "❌ 回答失败，请稍后重试。")
+
+async def cmd_research(ctx: BotContext, adapter):
+    """Start a research topic for a social post: /research latest|POST_ID [focus]"""
+    if not ctx.args:
+        await adapter.send_message(
+            ctx.chat_id,
+            "用法: /research latest [研究重点] 或 /research POST_ID [研究重点]",
+        )
+        return
+
+    post_ref = ctx.args[0]
+    focus = " ".join(ctx.args[1:]).strip()
+    await _start_research_topic(ctx, adapter, post_ref, focus)
 
 
 async def cmd_topic(ctx: BotContext, adapter):
@@ -314,24 +311,19 @@ async def cmd_topic(ctx: BotContext, adapter):
     try:
         from server.research.service import (
             get_active_topic,
-            start_topic,
             stop_topic,
-            summarize_topic,
         )
 
         if sub == "start" and len(ctx.args) >= 2:
             post_ref = ctx.args[1]
             focus = " ".join(ctx.args[2:]).strip()
-            topic = await start_topic(ctx.chat_id, post_ref, focus)
-            await adapter.send_message(
-                ctx.chat_id,
-                f"✅ 已开启研究线程 #{topic.id}。\n"
-                "现在可以直接发送普通消息继续追问；研究 Agent 会按需联网核验。也可以使用 /deep "
-                f"{topic.source_id}。",
-            )
+            await _start_research_topic(ctx, adapter, post_ref, focus)
         elif sub == "summary":
-            summary = await summarize_topic(ctx.chat_id)
-            await adapter.send_message(ctx.chat_id, summary)
+            await adapter.send_message(ctx.chat_id, "正在总结当前研究线程，完成后会推送结果。")
+            _spawn_background_task(
+                _run_topic_summary_job(ctx.chat_id, adapter),
+                "topic summary",
+            )
         elif sub in {"stop", "reset"}:
             stopped = await stop_topic(ctx.chat_id)
             await adapter.send_message(
@@ -346,12 +338,16 @@ async def cmd_topic(ctx: BotContext, adapter):
                 )
             else:
                 await adapter.send_message(
-                    ctx.chat_id, "当前没有活跃研究线程。用 /topic start latest 开启。"
+                    ctx.chat_id, "当前没有活跃研究话题。用 /research latest 开启。"
                 )
         else:
             await adapter.send_message(
                 ctx.chat_id,
-                "用法:\n/topic start latest [研究重点]\n/topic summary\n/topic stop",
+                "用法:\n"
+                "/research latest [研究重点]\n"
+                "/topic start latest [研究重点]\n"
+                "/topic summary\n"
+                "/topic stop",
             )
     except ResearchError as e:
         await adapter.send_message(ctx.chat_id, f"❌ {e}")
@@ -360,20 +356,140 @@ async def cmd_topic(ctx: BotContext, adapter):
         await adapter.send_message(ctx.chat_id, "❌ 研究线程操作失败，请稍后重试。")
 
 
+async def _start_research_topic(
+    ctx: BotContext,
+    adapter,
+    post_ref: str,
+    focus: str = "",
+) -> None:
+    try:
+        from server.research.service import start_topic
+
+        topic = await start_topic(ctx.chat_id, post_ref, focus)
+        await adapter.send_message(
+            ctx.chat_id,
+            f"✅ 已建立研究话题 #{topic.id}，绑定消息 #{topic.source_id}。\n"
+            "现在直接发送普通消息即可继续追问；需要 Agent 主动深挖时使用 "
+            f"/deep {topic.source_id}。",
+        )
+    except ResearchError as e:
+        await adapter.send_message(ctx.chat_id, f"❌ {e}")
+    except Exception as e:
+        logger.exception(f"Start research topic failed: {e}")
+        await adapter.send_message(ctx.chat_id, "❌ 建立研究话题失败，请稍后重试。")
+
+
 async def handle_plain_message(ctx: BotContext, adapter):
     """Route normal text into the active research topic, if one exists."""
     text = ctx.text.strip()
     if not text:
         return
     try:
-        from server.research.service import handle_topic_message
+        from server.research.service import get_active_topic
 
-        answer = await handle_topic_message(ctx.chat_id, text)
-        if answer:
-            await adapter.send_message(ctx.chat_id, answer)
+        topic = await get_active_topic(ctx.chat_id)
+        if topic is None:
+            return
+        await adapter.send_message(ctx.chat_id, "收到，正在让研究 Agent 继续分析。")
+        _spawn_background_task(
+            _run_topic_message_job(ctx.chat_id, text, adapter),
+            "topic message",
+        )
     except Exception as e:
         logger.exception(f"Topic message handling failed: {e}")
         await adapter.send_message(ctx.chat_id, "❌ 当前研究线程处理失败。")
+
+
+def _spawn_background_task(coro, label: str) -> None:
+    task = asyncio.create_task(coro)
+
+    def _log_result(done_task: asyncio.Task) -> None:
+        try:
+            done_task.result()
+        except Exception as e:
+            logger.exception(f"{label} background task failed: {e}")
+
+    task.add_done_callback(_log_result)
+
+
+async def _run_deep_research_job(chat_id: str, post_ref: str, focus: str, adapter) -> None:
+    try:
+        from server.research.service import run_deep_research
+
+        run = await run_deep_research(chat_id, post_ref, focus)
+        text = (
+            f"*研究线程 #{run.session_id} · 推文 #{run.post.id}*\n\n"
+            f"{run.answer}\n\n"
+            "继续追问可以直接发普通消息，或使用:\n"
+            f"/ask {run.post.id} 你的问题\n"
+            "/topic summary\n"
+            "/topic stop"
+        )
+        await adapter.send_message(chat_id, text)
+    except ResearchError as e:
+        await adapter.send_message(chat_id, f"❌ {e}")
+    except Exception as e:
+        logger.exception(f"Deep research failed: {e}")
+        await adapter.send_message(chat_id, "❌ 深挖失败，请稍后重试。")
+
+
+async def _run_research_ask_job(chat_id: str, post_ref: str, question: str, adapter) -> None:
+    try:
+        from server.research.service import ask_about_post
+
+        answer = await ask_about_post(chat_id, post_ref, question)
+        await adapter.send_message(chat_id, answer)
+    except ResearchError as e:
+        await adapter.send_message(chat_id, f"❌ {e}")
+    except Exception as e:
+        logger.exception(f"Research ask failed: {e}")
+        await adapter.send_message(chat_id, "❌ 回答失败，请稍后重试。")
+
+
+async def _run_topic_summary_job(chat_id: str, adapter) -> None:
+    try:
+        from server.research.service import summarize_topic
+
+        summary = await summarize_topic(chat_id)
+        await adapter.send_message(chat_id, summary)
+    except ResearchError as e:
+        await adapter.send_message(chat_id, f"❌ {e}")
+    except Exception as e:
+        logger.exception(f"Topic summary failed: {e}")
+        await adapter.send_message(chat_id, "❌ 研究线程总结失败，请稍后重试。")
+
+
+async def _run_topic_message_job(chat_id: str, text: str, adapter) -> None:
+    try:
+        from server.research.service import handle_topic_message
+
+        answer = await handle_topic_message(chat_id, text)
+        if answer:
+            await adapter.send_message(chat_id, answer)
+    except ResearchError as e:
+        await adapter.send_message(chat_id, f"❌ {e}")
+    except Exception as e:
+        logger.exception(f"Topic message handling failed: {e}")
+        await adapter.send_message(chat_id, "❌ 当前研究线程处理失败。")
+
+
+async def _run_twitter_check_job(
+    accounts: list[str],
+    reply_chat_id: str,
+    adapter,
+    no_updates_text: str | None = None,
+) -> None:
+    try:
+        from server.social.monitor import run_twitter_monitor
+        from server.social.processor import TweetProcessor
+
+        processor = TweetProcessor()
+        total = await run_twitter_monitor(accounts, adapter, processor)
+        if total == 0 and no_updates_text:
+            await adapter.send_message(reply_chat_id, no_updates_text)
+    except Exception as e:
+        logger.exception(f"Twitter monitor check failed: {e}")
+        await adapter.send_message(reply_chat_id, "❌ Twitter 检查失败，请稍后重试。")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -403,7 +519,16 @@ async def cmd_twatch(ctx: BotContext, adapter):
         await set_twitter_account_active(username, True)
         await adapter.send_message(
             ctx.chat_id,
-            f"✅ 已添加 @{username}\n首次检查只会建立当前最新推文基线，不会回推历史推文。",
+            f"✅ 已添加 @{username}\n正在获取最近最多 10 条推文；后续会按缓存增量检查。",
+        )
+        _spawn_background_task(
+            _run_twitter_check_job(
+                [username],
+                ctx.chat_id,
+                adapter,
+                "✅ 首次检查完成，没有获取到新推文。",
+            ),
+            "twitter watch add",
         )
 
     elif sub == "del" and len(ctx.args) > 1:
@@ -416,13 +541,13 @@ async def cmd_twatch(ctx: BotContext, adapter):
     elif sub == "check":
         await adapter.send_message(ctx.chat_id, "🔍 正在检查新推文...")
         from config.settings import get_settings
-        from server.social.monitor import list_active_twitter_accounts, run_twitter_monitor
-        from server.social.processor import TweetProcessor
+        from server.social.monitor import list_active_twitter_accounts
 
-        processor = TweetProcessor()
         accounts = await list_active_twitter_accounts(get_settings().twitter_accounts)
-        await run_twitter_monitor(accounts, adapter, processor)
-        await adapter.send_message(ctx.chat_id, "✅ 检查完成")
+        _spawn_background_task(
+            _run_twitter_check_job(accounts, ctx.chat_id, adapter, "✅ 检查完成，没有新推文。"),
+            "twitter manual check",
+        )
 
     else:
         await adapter.send_message(
@@ -431,7 +556,11 @@ async def cmd_twatch(ctx: BotContext, adapter):
             "/twatch list — 查看列表\n"
             "/twatch add @user — 添加\n"
             "/twatch del @user — 删除\n"
-            "/twatch check — 立即检查",
+            "/twatch check — 立即检查\n\n"
+            "收到提醒后:\n"
+            "/research latest [研究重点] — 建立研究话题\n"
+            "/deep latest [研究重点] — 让 Agent 主动深挖\n"
+            "/ask latest 问题 — 直接追问",
         )
 
 
@@ -446,6 +575,8 @@ def register_all_commands(router, adapter):
             "score": lambda ctx: cmd_score(ctx, adapter),
             "deep": lambda ctx: cmd_deep(ctx, adapter),
             "ask": lambda ctx: cmd_ask(ctx, adapter),
+            "research": lambda ctx: cmd_research(ctx, adapter),
+            "thread": lambda ctx: cmd_research(ctx, adapter),
             "topic": lambda ctx: cmd_topic(ctx, adapter),
             "log": lambda ctx: cmd_log(ctx, adapter),
             "journal": lambda ctx: cmd_journal(ctx, adapter),

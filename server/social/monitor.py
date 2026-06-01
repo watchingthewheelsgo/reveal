@@ -15,6 +15,8 @@ from server.db.models import SocialPost, TwitterState
 TWITTER_STATUS_URL_RE = re.compile(r"https?://(?:www\.)?(?:twitter|x)\.com/([^/\s]+)/status/(\d+)")
 URL_RE = re.compile(r"https?://[^\s<>)\]]+")
 MAX_PUSHED_MEDIA = 4
+INITIAL_WATCH_BACKFILL_LIMIT = 10
+DIGEST_PREVIEW_LIMIT = 5
 
 
 async def list_active_twitter_accounts(configured_accounts: list[str] | None = None) -> list[str]:
@@ -143,6 +145,7 @@ async def check_and_notify(
     posts_to_push = []
     max_seen_epoch = 0
     last_epoch = 0
+    first_check = False
 
     async with session_factory() as session:
         from sqlalchemy import select
@@ -156,25 +159,12 @@ async def check_and_notify(
         last_epoch = state.last_tweet_epoch if state else 0
         max_seen_epoch = last_epoch
         if last_epoch <= 0:
-            latest_epoch = max((tweet.get("date_epoch") or 0 for tweet in tweets), default=0)
-            if latest_epoch > 0:
-                if state:
-                    state.last_tweet_epoch = latest_epoch
-                    state.last_check_at = datetime.now(UTC)
-                    state.is_active = True
-                else:
-                    session.add(
-                        TwitterState(
-                            username=account_key,
-                            last_tweet_epoch=latest_epoch,
-                            last_check_at=datetime.now(UTC),
-                        )
-                    )
-                await session.commit()
-                logger.info(
-                    f"@{account_key}: baseline set at {latest_epoch}; historical tweets skipped"
-                )
-                return []
+            first_check = True
+            tweets = tweets[-INITIAL_WATCH_BACKFILL_LIMIT:]
+            logger.info(
+                f"@{account_key}: first watch check; backfilling up to "
+                f"{INITIAL_WATCH_BACKFILL_LIMIT} tweets"
+            )
 
         for tweet in tweets:
             _enrich_tweet(tweet, display_username, data)
@@ -208,7 +198,7 @@ async def check_and_notify(
             translated = None
             summary = None
             llm_context = _llm_context(content, tweet_url, links, references)
-            if llm_processor and llm_context:
+            if llm_processor and llm_context and not first_check:
                 try:
                     if content:
                         translated = await llm_processor.translate(content)
@@ -242,13 +232,12 @@ async def check_and_notify(
     successful_tweet_ids: list[str] = []
     push_failed = False
     if adapter and posts_to_push:
-        for post in posts_to_push:
-            try:
-                await push_tweet(post, adapter)
-                successful_tweet_ids.append(post.tweet_id)
-            except Exception as e:
-                push_failed = True
-                logger.warning(f"Tweet push failed for @{account_key}/{post.tweet_id}: {e}")
+        try:
+            await push_tweet_digest(posts_to_push, adapter, is_backfill=first_check)
+            successful_tweet_ids = [post.tweet_id for post in posts_to_push]
+        except Exception as e:
+            push_failed = True
+            logger.warning(f"Tweet digest push failed for @{account_key}: {e}")
     elif not adapter:
         successful_tweet_ids = [post.tweet_id for post in posts_to_push]
 
@@ -281,9 +270,38 @@ async def check_and_notify(
         await session.commit()
 
     if posts_to_push:
-        logger.info(f"@{account_key}: {len(successful_tweet_ids)} tweets pushed")
+        logger.info(f"@{account_key}: {len(successful_tweet_ids)} tweets notified")
 
     return posts_to_push
+
+
+async def push_tweet_digest(
+    posts: list[SocialPost],
+    adapter: BotAdapter,
+    is_backfill: bool = False,
+) -> None:
+    """Push a compact digest for a batch of stored tweets."""
+    if not posts:
+        return
+
+    ordered_posts = sorted(posts, key=lambda post: post.posted_at)
+    latest_posts = list(reversed(ordered_posts))[:DIGEST_PREVIEW_LIMIT]
+    username = ordered_posts[-1].username
+    title = (
+        f"🐦 @{username} 已缓存最近 {len(posts)} 条更新"
+        if is_backfill
+        else f"🐦 @{username} 有 {len(posts)} 条新更新"
+    )
+    sections: list[str] = []
+    if len(posts) > DIGEST_PREVIEW_LIMIT:
+        sections.append(f"显示最近 {DIGEST_PREVIEW_LIMIT} 条，其余已入库。")
+
+    for index, post in enumerate(latest_posts, start=1):
+        sections.append(_format_digest_section(index, post))
+
+    footer = "完整正文、引用、外链和媒体已缓存到 Reveal；飞书消息就是即时研究入口。"
+    card = _build_research_card(title=title, sections=sections, footer=footer)
+    await _push_card_to_admin(adapter, card)
 
 
 async def push_tweet(post, adapter: BotAdapter):
@@ -318,26 +336,18 @@ async def push_tweet(post, adapter: BotAdapter):
 
     text = "\n".join(lines)
 
-    try:
-        admin_chat_id = getattr(adapter, "admin_chat_id", None)
-        if admin_chat_id:
-            await adapter.send_message(admin_chat_id, text)
-        else:
-            await adapter.push_to_admin(text)
-    except Exception:
-        # Fall back to push_to_admin
-        await adapter.push_to_admin(text)
+    await _push_to_admin(adapter, text)
 
 
 async def run_twitter_monitor(
     usernames: list[str],
     adapter: BotAdapter | None = None,
     llm_processor=None,
-):
+) -> int:
     """Run one round of Twitter monitoring across all configured users."""
     if not usernames:
         logger.debug("No Twitter accounts configured")
-        return
+        return 0
 
     logger.info(f"Checking {len(usernames)} Twitter accounts...")
     tasks = [check_and_notify(u, adapter, llm_processor) for u in usernames]
@@ -348,6 +358,7 @@ async def run_twitter_monitor(
         if isinstance(r, list):
             total += len(r)
     logger.info(f"Twitter monitor: {total} new tweets across {len(usernames)} accounts")
+    return total
 
 
 def _time_ago(dt: datetime) -> str:
@@ -589,10 +600,113 @@ def _format_action_lines(post_id: int) -> list[str]:
     return [
         f"消息 ID: {post_id}",
         "继续操作:",
-        f"- /deep {post_id} 深挖",
+        f"- /research {post_id} 建立研究话题",
+        f"- /deep {post_id} 让 Agent 主动深挖",
         f"- /ask {post_id} 你的问题",
-        f"- /topic start {post_id}",
     ]
+
+
+async def _push_card_to_admin(adapter: BotAdapter, card: dict) -> None:
+    try:
+        chat_ids = _admin_chat_ids(adapter)
+        if chat_ids:
+            for chat_id in chat_ids:
+                await adapter.send_card(chat_id, card)
+            return
+    except Exception as e:
+        logger.warning(f"Card push failed, falling back to text: {e}")
+    await _push_to_admin(adapter, _card_to_text(card))
+
+
+async def _push_to_admin(adapter: BotAdapter, text: str) -> None:
+    try:
+        admin_chat_id = getattr(adapter, "admin_chat_id", None)
+        if admin_chat_id:
+            await adapter.send_message(admin_chat_id, text)
+        else:
+            await adapter.push_to_admin(text)
+    except Exception:
+        await adapter.push_to_admin(text)
+
+
+def _compact_text(text: str, limit: int) -> str:
+    clean = re.sub(r"\s+", " ", text).strip()
+    if len(clean) <= limit:
+        return clean
+    return clean[: limit - 1].rstrip() + "..."
+
+
+def _compact_metadata(post: SocialPost) -> str:
+    parts = []
+    if post.links:
+        parts.append(f"{len(post.links)} link")
+    if post.media:
+        parts.append(f"{len(post.media)} media")
+    if post.referenced_tweets:
+        parts.append(f"{len(post.referenced_tweets)} ref")
+    return " / ".join(parts)
+
+
+def _format_digest_section(index: int, post: SocialPost) -> str:
+    flags = _post_type_label(post)
+    preview = _compact_text(post.summary or post.content or "（无正文）", 180)
+    lines = [f"{index}. #{post.id} {_time_ago(post.posted_at)}{flags}", preview]
+    metadata = _compact_metadata(post)
+    if metadata:
+        lines.append(metadata)
+    if post.tweet_url:
+        lines.append(f"原文: {post.tweet_url}")
+    if post.id:
+        lines.append(_format_research_actions(post.id))
+    return "\n".join(lines)
+
+
+def _format_research_actions(post_id: int) -> str:
+    return f"操作: /research {post_id} 建话题 | /deep {post_id} 深挖 | /ask {post_id} 你的问题"
+
+
+def _build_research_card(title: str, sections: list[str], footer: str) -> dict:
+    elements: list[dict[str, Any]] = []
+    for section in sections:
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": section}})
+        elements.append({"tag": "hr"})
+    if footer:
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": footer}})
+    if elements and elements[-1].get("tag") == "hr":
+        elements.pop()
+    return {
+        "title": title,
+        "sections": sections,
+        "footer": footer,
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": "blue",
+            "title": {"tag": "plain_text", "content": title},
+        },
+        "elements": elements,
+    }
+
+
+def _card_to_text(card: dict) -> str:
+    lines = []
+    if title := card.get("title"):
+        lines.extend([str(title), ""])
+    for section in card.get("sections", []):
+        lines.extend([str(section), ""])
+    if footer := card.get("footer"):
+        lines.append(str(footer))
+    return "\n".join(lines).strip()
+
+
+def _admin_chat_ids(adapter: BotAdapter) -> list[str]:
+    chat_ids: list[str] = []
+    admin_chat_ids = getattr(adapter, "admin_chat_ids", None)
+    if isinstance(admin_chat_ids, (list, tuple, set)):
+        chat_ids.extend(str(chat_id) for chat_id in admin_chat_ids if chat_id)
+    admin_chat_id = getattr(adapter, "admin_chat_id", None)
+    if admin_chat_id:
+        chat_ids.append(str(admin_chat_id))
+    return list(dict.fromkeys(chat_ids))
 
 
 def _post_type_label(post) -> str:
