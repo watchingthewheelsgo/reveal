@@ -40,12 +40,12 @@ class SettingsTest(unittest.TestCase):
         settings = self.build_settings()
 
         self.assertEqual(settings.agent_runtime, "claude_sdk")
-        self.assertEqual(settings.claude_agent_base_url, "https://api.deepseek.com/anthropic")
-        self.assertEqual(settings.claude_agent_model, "deepseek-v4-pro[1m]")
+        self.assertEqual(settings.agent_effort, "max")
+        self.assertEqual(settings.agent_max_turns, 8)
         self.assertEqual(settings.get_agent_base_url(), "https://api.deepseek.com/anthropic")
         self.assertEqual(settings.get_agent_model(), "deepseek-v4-pro[1m]")
 
-    def test_anthropic_agent_env_overrides_legacy_settings(self):
+    def test_anthropic_agent_env_configures_runtime(self):
         with patch.dict(
             os.environ,
             {
@@ -55,10 +55,6 @@ class SettingsTest(unittest.TestCase):
                 "ANTHROPIC_DEFAULT_OPUS_MODEL": "native-opus",
                 "ANTHROPIC_DEFAULT_SONNET_MODEL": "native-sonnet",
                 "ANTHROPIC_DEFAULT_HAIKU_MODEL": "native-haiku",
-                "CLAUDE_AGENT_BASE_URL": "https://legacy.example.com",
-                "CLAUDE_AGENT_AUTH_TOKEN": "legacy-token",
-                "CLAUDE_AGENT_MODEL": "legacy-model",
-                "CLAUDE_AGENT_SMALL_MODEL": "legacy-small",
             },
             clear=False,
         ):
@@ -77,12 +73,12 @@ class SettingsTest(unittest.TestCase):
                 self.build_settings()
 
     def test_agent_max_turns_must_be_positive(self):
-        with patch.dict(os.environ, {"CLAUDE_AGENT_MAX_TURNS": "0"}, clear=False):
+        with patch.dict(os.environ, {"AGENT_MAX_TURNS": "0"}, clear=False):
             with self.assertRaises(ValidationError):
                 self.build_settings()
 
     def test_agent_effort_must_be_known_value(self):
-        with patch.dict(os.environ, {"CLAUDE_AGENT_EFFORT": "extreme"}, clear=False):
+        with patch.dict(os.environ, {"AGENT_EFFORT": "extreme"}, clear=False):
             with self.assertRaises(ValidationError):
                 self.build_settings()
 

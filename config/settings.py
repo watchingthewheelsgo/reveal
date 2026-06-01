@@ -80,46 +80,45 @@ class Settings(BaseSettings):
 
     # Claude Agent SDK runtime backed by DeepSeek's Anthropic-compatible API.
     agent_runtime: str = Field(default="claude_sdk", alias="AGENT_RUNTIME")
-    claude_agent_base_url: str = Field(
-        default="https://api.deepseek.com/anthropic", alias="CLAUDE_AGENT_BASE_URL"
-    )
-    claude_agent_auth_token: str = Field(default="", alias="CLAUDE_AGENT_AUTH_TOKEN")
-    claude_agent_model: str = Field(default="deepseek-v4-pro[1m]", alias="CLAUDE_AGENT_MODEL")
-    claude_agent_small_model: str = Field(
-        default="deepseek-v4-flash", alias="CLAUDE_AGENT_SMALL_MODEL"
-    )
-    claude_agent_effort: str = Field(default="max", alias="CLAUDE_AGENT_EFFORT")
-    claude_agent_max_turns: int = Field(default=8, alias="CLAUDE_AGENT_MAX_TURNS")
+    agent_effort: str = Field(default="max", alias="AGENT_EFFORT")
+    agent_max_turns: int = Field(default=8, alias="AGENT_MAX_TURNS")
 
-    # Native Claude Code / Agent SDK environment names. These take precedence
-    # over the Reveal-specific CLAUDE_AGENT_* names when present.
-    anthropic_base_url: str = Field(default="", alias="ANTHROPIC_BASE_URL")
+    # Native Claude Code / Agent SDK environment names.
+    anthropic_base_url: str = Field(
+        default="https://api.deepseek.com/anthropic", alias="ANTHROPIC_BASE_URL"
+    )
     anthropic_auth_token: str = Field(default="", alias="ANTHROPIC_AUTH_TOKEN")
-    anthropic_model: str = Field(default="", alias="ANTHROPIC_MODEL")
-    anthropic_default_opus_model: str = Field(default="", alias="ANTHROPIC_DEFAULT_OPUS_MODEL")
-    anthropic_default_sonnet_model: str = Field(default="", alias="ANTHROPIC_DEFAULT_SONNET_MODEL")
-    anthropic_default_haiku_model: str = Field(default="", alias="ANTHROPIC_DEFAULT_HAIKU_MODEL")
+    anthropic_model: str = Field(default="deepseek-v4-pro[1m]", alias="ANTHROPIC_MODEL")
+    anthropic_default_opus_model: str = Field(
+        default="deepseek-v4-pro[1m]", alias="ANTHROPIC_DEFAULT_OPUS_MODEL"
+    )
+    anthropic_default_sonnet_model: str = Field(
+        default="deepseek-v4-pro[1m]", alias="ANTHROPIC_DEFAULT_SONNET_MODEL"
+    )
+    anthropic_default_haiku_model: str = Field(
+        default="deepseek-v4-flash", alias="ANTHROPIC_DEFAULT_HAIKU_MODEL"
+    )
 
     def is_agent_configured(self) -> bool:
         return bool(self.get_agent_auth_token())
 
     def get_agent_base_url(self) -> str:
-        return self.anthropic_base_url or self.claude_agent_base_url
+        return self.anthropic_base_url
 
     def get_agent_auth_token(self) -> str:
-        return self.anthropic_auth_token or self.claude_agent_auth_token or self.openai_api_key
+        return self.anthropic_auth_token or self.openai_api_key
 
     def get_agent_model(self) -> str:
-        return self.anthropic_model or self.claude_agent_model
+        return self.anthropic_model
 
     def get_agent_opus_model(self) -> str:
-        return self.anthropic_default_opus_model or self.get_agent_model()
+        return self.anthropic_default_opus_model
 
     def get_agent_sonnet_model(self) -> str:
-        return self.anthropic_default_sonnet_model or self.get_agent_model()
+        return self.anthropic_default_sonnet_model
 
     def get_agent_haiku_model(self) -> str:
-        return self.anthropic_default_haiku_model or self.claude_agent_small_model
+        return self.anthropic_default_haiku_model
 
     @field_validator("twitter_accounts", mode="before")
     @classmethod
@@ -178,19 +177,19 @@ class Settings(BaseSettings):
             raise ValueError("AGENT_RUNTIME must be claude_sdk")
         return normalized
 
-    @field_validator("claude_agent_max_turns")
+    @field_validator("agent_max_turns")
     @classmethod
     def validate_positive_agent_limits(cls, value: int) -> int:
         if value <= 0:
-            raise ValueError("CLAUDE_AGENT_MAX_TURNS must be positive")
+            raise ValueError("AGENT_MAX_TURNS must be positive")
         return value
 
-    @field_validator("claude_agent_effort")
+    @field_validator("agent_effort")
     @classmethod
-    def validate_claude_agent_effort(cls, value: str) -> str:
+    def validate_agent_effort(cls, value: str) -> str:
         normalized = value.lower().strip()
         if normalized not in {"low", "medium", "high", "xhigh", "max"}:
-            raise ValueError("CLAUDE_AGENT_EFFORT must be one of: low, medium, high, xhigh, max")
+            raise ValueError("AGENT_EFFORT must be one of: low, medium, high, xhigh, max")
         return normalized
 
     @field_validator("scheduler_timezone")

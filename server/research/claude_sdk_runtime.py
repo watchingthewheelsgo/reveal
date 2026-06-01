@@ -44,10 +44,8 @@ async def run_agent(prompt: str, resume: str | None = None) -> AgentRunResult:
     token = settings.get_agent_auth_token()
     if not token:
         raise AgentConfigurationError(
-            "Claude Agent SDK runtime requires ANTHROPIC_AUTH_TOKEN, "
-            "CLAUDE_AGENT_AUTH_TOKEN, or OPENAI_API_KEY.",
-            "研究 Agent 未配置 DeepSeek API Key。"
-            "请设置 ANTHROPIC_AUTH_TOKEN、CLAUDE_AGENT_AUTH_TOKEN 或 OPENAI_API_KEY。",
+            "Claude Agent SDK runtime requires ANTHROPIC_AUTH_TOKEN, or OPENAI_API_KEY.",
+            "研究 Agent 未配置 DeepSeek API Key。请设置 ANTHROPIC_AUTH_TOKEN 或 OPENAI_API_KEY。",
         )
 
     base_url = settings.get_agent_base_url()
@@ -64,7 +62,7 @@ async def run_agent(prompt: str, resume: str | None = None) -> AgentRunResult:
         "ANTHROPIC_DEFAULT_SONNET_MODEL": sonnet_model,
         "ANTHROPIC_DEFAULT_HAIKU_MODEL": haiku_model,
         "CLAUDE_CODE_SUBAGENT_MODEL": haiku_model,
-        "CLAUDE_CODE_EFFORT_LEVEL": settings.claude_agent_effort,
+        "CLAUDE_CODE_EFFORT_LEVEL": settings.agent_effort,
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
     }
 
@@ -76,10 +74,10 @@ async def run_agent(prompt: str, resume: str | None = None) -> AgentRunResult:
         mcp_servers={},
         permission_mode="dontAsk",
         model=model,
-        max_turns=settings.claude_agent_max_turns,
+        max_turns=settings.agent_max_turns,
         cwd=Path.cwd(),
         env=env,
-        effort=cast(AgentEffort, settings.claude_agent_effort),
+        effort=cast(AgentEffort, settings.agent_effort),
         resume=resume,
         setting_sources=[],
         extra_args={"bare": None},

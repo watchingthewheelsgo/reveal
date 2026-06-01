@@ -130,13 +130,10 @@ ANTHROPIC_MODEL=deepseek-v4-pro[1m]
 ANTHROPIC_DEFAULT_OPUS_MODEL=deepseek-v4-pro[1m]
 ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-v4-pro[1m]
 ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-v4-flash
-CLAUDE_AGENT_BASE_URL=https://api.deepseek.com/anthropic
-CLAUDE_AGENT_MODEL=deepseek-v4-pro[1m]
-CLAUDE_AGENT_SMALL_MODEL=deepseek-v4-flash
-CLAUDE_AGENT_EFFORT=max
-CLAUDE_AGENT_MAX_TURNS=8
+AGENT_EFFORT=max
+AGENT_MAX_TURNS=8
 ```
 
-优先使用 `ANTHROPIC_*` 这组 Claude Code / Agent SDK 原生变量名。`ANTHROPIC_AUTH_TOKEN` 为空时会尝试 `CLAUDE_AGENT_AUTH_TOKEN`，再为空才复用 `OPENAI_API_KEY`。
+使用 `ANTHROPIC_*` 这组 Claude Code / Agent SDK 原生变量名。`ANTHROPIC_AUTH_TOKEN` 为空时会复用 `OPENAI_API_KEY`。`AGENT_EFFORT` 和 `AGENT_MAX_TURNS` 是 Reveal 对 Agent 循环强度和最大轮数的控制。
 
 Claude Agent SDK 运行时只开放 `WebSearch` 和 `WebFetch`，不会读取本地文件、运行命令或修改文件。
