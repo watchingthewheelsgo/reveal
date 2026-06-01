@@ -78,19 +78,21 @@ class Settings(BaseSettings):
         default_factory=list, alias="TWITTER_ACCOUNTS"
     )
 
-    # Research / search
-    search_provider: str = Field(default="none", alias="SEARCH_PROVIDER")
-    searxng_base_url: str = Field(default="", alias="SEARXNG_BASE_URL")
-    brave_search_api_key: str = Field(default="", alias="BRAVE_SEARCH_API_KEY")
-    search_max_results: int = Field(default=6, alias="SEARCH_MAX_RESULTS")
-    research_fetch_max_pages: int = Field(default=4, alias="RESEARCH_FETCH_MAX_PAGES")
+    # Claude Agent SDK runtime backed by DeepSeek's Anthropic-compatible API.
+    agent_runtime: str = Field(default="claude_sdk", alias="AGENT_RUNTIME")
+    claude_agent_base_url: str = Field(
+        default="https://api.deepseek.com/anthropic", alias="CLAUDE_AGENT_BASE_URL"
+    )
+    claude_agent_auth_token: str = Field(default="", alias="CLAUDE_AGENT_AUTH_TOKEN")
+    claude_agent_model: str = Field(default="deepseek-v4-pro[1m]", alias="CLAUDE_AGENT_MODEL")
+    claude_agent_small_model: str = Field(
+        default="deepseek-v4-flash", alias="CLAUDE_AGENT_SMALL_MODEL"
+    )
+    claude_agent_effort: str = Field(default="max", alias="CLAUDE_AGENT_EFFORT")
+    claude_agent_max_turns: int = Field(default=8, alias="CLAUDE_AGENT_MAX_TURNS")
 
-    def is_search_configured(self) -> bool:
-        if self.search_provider == "searxng":
-            return bool(self.searxng_base_url)
-        if self.search_provider == "brave":
-            return bool(self.brave_search_api_key)
-        return False
+    def is_agent_configured(self) -> bool:
+        return bool(self.openai_api_key or self.claude_agent_auth_token)
 
     @field_validator("twitter_accounts", mode="before")
     @classmethod
@@ -141,19 +143,19 @@ class Settings(BaseSettings):
             raise ValueError("TWITTER_MONITOR_INTERVAL must be positive")
         return value
 
-    @field_validator("search_provider")
+    @field_validator("agent_runtime")
     @classmethod
-    def validate_search_provider(cls, value: str) -> str:
+    def validate_agent_runtime(cls, value: str) -> str:
         normalized = value.lower().strip()
-        if normalized not in {"none", "searxng", "brave"}:
-            raise ValueError("SEARCH_PROVIDER must be one of: none, searxng, brave")
+        if normalized != "claude_sdk":
+            raise ValueError("AGENT_RUNTIME must be claude_sdk")
         return normalized
 
-    @field_validator("search_max_results", "research_fetch_max_pages")
+    @field_validator("claude_agent_max_turns")
     @classmethod
-    def validate_positive_research_limits(cls, value: int) -> int:
+    def validate_positive_agent_limits(cls, value: int) -> int:
         if value <= 0:
-            raise ValueError("research/search limits must be positive")
+            raise ValueError("CLAUDE_AGENT_MAX_TURNS must be positive")
         return value
 
     @field_validator("scheduler_timezone")

@@ -114,6 +114,8 @@ class ResearchSession(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     chat_id: Mapped[str] = mapped_column(String(100), index=True)
+    agent_runtime: Mapped[str] = mapped_column(String(50), default="claude_sdk")
+    agent_session_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     source_type: Mapped[str] = mapped_column(String(50), default="twitter")
     source_id: Mapped[int] = mapped_column(Integer, index=True)
     topic: Mapped[str | None] = mapped_column(String(300), nullable=True)
@@ -121,19 +123,6 @@ class ResearchSession(Base):
     answer: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
-
-
-class ResearchSource(Base):
-    __tablename__ = "research_sources"
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    session_id: Mapped[int] = mapped_column(Integer, index=True)
-    query: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    title: Mapped[str] = mapped_column(String(500))
-    url: Mapped[str] = mapped_column(String(1000))
-    snippet: Mapped[str | None] = mapped_column(Text, nullable=True)
-    extracted_text: Mapped[str | None] = mapped_column(Text, nullable=True)
-    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
 
 
 class ConversationMessage(Base):

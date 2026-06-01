@@ -8,13 +8,9 @@ from sqlalchemy import select
 
 from server.db import engine as db_engine
 from server.db.engine import get_session_factory
-from server.db.models import ConversationMessage, ResearchSession, ResearchSource, SocialPost
+from server.db.models import ConversationMessage, ResearchSession, SocialPost
+from server.research.claude_sdk_runtime import AgentRunResult
 from server.research.service import handle_topic_message, run_deep_research, start_topic
-
-
-class DummyLLM:
-    async def chat(self, messages, **kwargs) -> str:
-        return "LLM answer"
 
 
 class ResearchServiceTest(unittest.IsolatedAsyncioTestCase):
@@ -24,7 +20,7 @@ class ResearchServiceTest(unittest.IsolatedAsyncioTestCase):
         await db_engine.close_db()
         db_engine.global_settings.database_url = f"sqlite+aiosqlite:///{db_path}"
         db_engine.global_settings.database_echo = False
-        db_engine.global_settings.search_provider = "none"
+        db_engine.global_settings.openai_api_key = "test-key"
         await db_engine.init_db()
 
     async def asyncTearDown(self):
@@ -58,14 +54,23 @@ class ResearchServiceTest(unittest.IsolatedAsyncioTestCase):
             await session.commit()
             return post_id
 
-    async def test_deep_latest_creates_active_session_and_sources(self):
+    async def test_deep_latest_uses_agent_sdk_runtime(self):
         post_id = await self.create_post()
+        calls: list[tuple[str, str | None]] = []
 
-        with patch("server.research.service.get_llm_client", return_value=None):
+        async def fake_run_agent(prompt: str, resume: str | None = None) -> AgentRunResult:
+            calls.append((prompt, resume))
+            return AgentRunResult("agent answer", "agent-session-1")
+
+        with patch("server.research.service.run_agent", new=fake_run_agent):
             run = await run_deep_research("chat-1", "latest", "AI infra")
 
         self.assertEqual(run.post.id, post_id)
-        self.assertIn("LLM 未配置", run.answer)
+        self.assertEqual(run.answer, "agent answer")
+        self.assertEqual(len(calls), 1)
+        self.assertIsNone(calls[0][1])
+        self.assertIn("WebSearch", calls[0][0])
+        self.assertIn("AI infra", calls[0][0])
 
         session_factory = get_session_factory()
         async with session_factory() as session:
@@ -74,27 +79,27 @@ class ResearchServiceTest(unittest.IsolatedAsyncioTestCase):
                     select(ResearchSession).where(ResearchSession.id == run.session_id)
                 )
             ).scalar_one()
-            sources = (
-                (
-                    await session.execute(
-                        select(ResearchSource).where(ResearchSource.session_id == run.session_id)
-                    )
-                )
-                .scalars()
-                .all()
-            )
 
         self.assertEqual(research_session.status, "active")
-        self.assertGreaterEqual(len(sources), 3)
+        self.assertEqual(research_session.agent_runtime, "claude_sdk")
+        self.assertEqual(research_session.agent_session_id, "agent-session-1")
 
     async def test_active_topic_accepts_plain_followup_message(self):
         post_id = await self.create_post()
         topic = await start_topic("chat-1", str(post_id), "AI infra")
+        calls: list[tuple[str, str | None]] = []
 
-        with patch("server.research.service.get_llm_client", return_value=DummyLLM()):
+        async def fake_run_agent(prompt: str, resume: str | None = None) -> AgentRunResult:
+            calls.append((prompt, resume))
+            return AgentRunResult("LLM answer", "agent-session-2")
+
+        with patch("server.research.service.run_agent", new=fake_run_agent):
             answer = await handle_topic_message("chat-1", "这个对 NVDA 有什么影响？")
 
         self.assertEqual(answer, "LLM answer")
+        self.assertEqual(len(calls), 1)
+        self.assertIsNone(calls[0][1])
+        self.assertIn("NVDA", calls[0][0])
 
         session_factory = get_session_factory()
         async with session_factory() as session:
@@ -109,10 +114,14 @@ class ResearchServiceTest(unittest.IsolatedAsyncioTestCase):
                 .scalars()
                 .all()
             )
+            research_session = (
+                await session.execute(select(ResearchSession).where(ResearchSession.id == topic.id))
+            ).scalar_one()
 
         self.assertGreaterEqual(len(messages), 3)
         self.assertEqual(messages[-2].role, "user")
         self.assertEqual(messages[-1].role, "assistant")
+        self.assertEqual(research_session.agent_session_id, "agent-session-2")
 
 
 if __name__ == "__main__":

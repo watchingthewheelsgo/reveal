@@ -34,14 +34,20 @@ class SettingsTest(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 self.build_settings()
 
-    def test_search_provider_accepts_searxng(self):
-        with patch.dict(os.environ, {"SEARCH_PROVIDER": "searxng"}, clear=False):
-            settings = self.build_settings()
+    def test_agent_runtime_defaults_to_claude_sdk(self):
+        settings = self.build_settings()
 
-        self.assertEqual(settings.search_provider, "searxng")
+        self.assertEqual(settings.agent_runtime, "claude_sdk")
+        self.assertEqual(settings.claude_agent_base_url, "https://api.deepseek.com/anthropic")
+        self.assertEqual(settings.claude_agent_model, "deepseek-v4-pro[1m]")
 
-    def test_legacy_google_search_provider_is_rejected(self):
-        with patch.dict(os.environ, {"SEARCH_PROVIDER": "google"}, clear=False):
+    def test_unknown_agent_runtime_is_rejected(self):
+        with patch.dict(os.environ, {"AGENT_RUNTIME": "custom"}, clear=False):
+            with self.assertRaises(ValidationError):
+                self.build_settings()
+
+    def test_agent_max_turns_must_be_positive(self):
+        with patch.dict(os.environ, {"CLAUDE_AGENT_MAX_TURNS": "0"}, clear=False):
             with self.assertRaises(ValidationError):
                 self.build_settings()
 

@@ -265,7 +265,7 @@ async def cmd_deep(ctx: BotContext, adapter):
     post_ref = ctx.args[0]
     focus = " ".join(ctx.args[1:]).strip()
     await adapter.send_message(
-        ctx.chat_id, "🔎 正在深挖这条更新，会结合原文、引用、外链和搜索结果..."
+        ctx.chat_id, "🔎 正在调用研究 Agent 深挖这条更新，会结合原文、引用、外链和外部证据..."
     )
     try:
         from server.research.service import run_deep_research
@@ -295,7 +295,7 @@ async def cmd_ask(ctx: BotContext, adapter):
 
     post_ref = ctx.args[0]
     question = " ".join(ctx.args[1:]).strip()
-    await adapter.send_message(ctx.chat_id, "🤔 正在基于这条更新和已收集材料回答...")
+    await adapter.send_message(ctx.chat_id, "🤔 正在调用研究 Agent，必要时会联网核验后回答...")
     try:
         from server.research.service import ask_about_post
 
@@ -326,7 +326,7 @@ async def cmd_topic(ctx: BotContext, adapter):
             await adapter.send_message(
                 ctx.chat_id,
                 f"✅ 已开启研究线程 #{topic.id}。\n"
-                "现在可以直接发送普通消息继续追问；需要联网深挖时使用 /deep "
+                "现在可以直接发送普通消息继续追问；研究 Agent 会按需联网核验。也可以使用 /deep "
                 f"{topic.source_id}。",
             )
         elif sub == "summary":

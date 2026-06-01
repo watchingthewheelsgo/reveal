@@ -97,20 +97,22 @@ Bot 命令默认只允许配置的管理员 chat 使用。至少配置一个：
 /topic start latest AI 基建
 ```
 
-`/deep` 会基于原推、引用推、外部链接和搜索结果生成深度解析。`/topic start` 会开启一个绑定到该消息的研究线程，之后可以直接发送普通消息继续追问；用 `/topic summary` 汇总当前线程，用 `/topic stop` 结束线程。
+`/deep` 会通过 Claude Agent SDK 调用 DeepSeek，并让 agent 使用 WebSearch/WebFetch 对原推、引用推、外部链接和外部证据做深度解析。`/topic start` 会开启一个绑定到该消息的研究线程，之后可以直接发送普通消息继续追问；用 `/topic summary` 汇总当前线程，用 `/topic stop` 结束线程。
 
-搜索是可选能力。默认 `SEARCH_PROVIDER=none`，只使用原推和已有链接。
+Deep research 不再维护 Reveal 自己的 Google/SearXNG/Brave planner 或抓取 runtime。Reveal 只保存研究线程状态，把联网搜索、页面读取和多轮工具循环交给 Claude Agent SDK。
 
-Reveal 使用 DeepSeek 时，推荐接外部搜索工具。开源/自托管优先用 SearXNG：
-
-```env
-SEARCH_PROVIDER=searxng
-SEARXNG_BASE_URL=http://127.0.0.1:8080
-```
-
-SearXNG 实例需要启用 JSON 输出格式。也可以使用 hosted fallback：
+DeepSeek 配置示例：
 
 ```env
-SEARCH_PROVIDER=brave
-BRAVE_SEARCH_API_KEY=...
+OPENAI_API_KEY=<DeepSeek API Key>
+AGENT_RUNTIME=claude_sdk
+CLAUDE_AGENT_BASE_URL=https://api.deepseek.com/anthropic
+CLAUDE_AGENT_MODEL=deepseek-v4-pro[1m]
+CLAUDE_AGENT_SMALL_MODEL=deepseek-v4-flash
+CLAUDE_AGENT_EFFORT=max
+CLAUDE_AGENT_MAX_TURNS=8
 ```
+
+也可以把 research agent 的 token 单独放在 `CLAUDE_AGENT_AUTH_TOKEN`；为空时会复用 `OPENAI_API_KEY`。
+
+Claude Agent SDK 运行时只开放 `WebSearch` 和 `WebFetch`，不会读取本地文件、运行命令或修改文件。

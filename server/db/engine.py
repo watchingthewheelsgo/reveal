@@ -34,6 +34,7 @@ async def init_db() -> None:
         await conn.run_sync(Base.metadata.create_all)
         if db_url.startswith("sqlite"):
             await _migrate_sqlite_social_posts(conn)
+            await _migrate_sqlite_research_sessions(conn)
 
 
 async def get_db_session() -> AsyncGenerator[AsyncSession]:
@@ -81,3 +82,20 @@ async def _migrate_sqlite_social_posts(conn) -> None:
     for column, column_type in columns.items():
         if column not in existing_columns:
             await conn.execute(text(f"ALTER TABLE social_posts ADD COLUMN {column} {column_type}"))
+
+
+async def _migrate_sqlite_research_sessions(conn) -> None:
+    """Add columns for research sessions created before the Agent SDK runtime."""
+    result = await conn.execute(text("PRAGMA table_info(research_sessions)"))
+    existing_columns = {row[1] for row in result.fetchall()}
+    if not existing_columns:
+        return
+    columns = {
+        "agent_runtime": "VARCHAR(50) NOT NULL DEFAULT 'claude_sdk'",
+        "agent_session_id": "VARCHAR(100)",
+    }
+    for column, column_type in columns.items():
+        if column not in existing_columns:
+            await conn.execute(
+                text(f"ALTER TABLE research_sessions ADD COLUMN {column} {column_type}")
+            )
