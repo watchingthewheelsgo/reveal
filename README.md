@@ -99,15 +99,16 @@ Bot 命令默认只允许配置的管理员 chat 使用。至少配置一个：
 
 `/deep` 会基于原推、引用推、外部链接和搜索结果生成深度解析。`/topic start` 会开启一个绑定到该消息的研究线程，之后可以直接发送普通消息继续追问；用 `/topic summary` 汇总当前线程，用 `/topic stop` 结束线程。
 
-搜索是可选能力。默认 `SEARCH_PROVIDER=none`，只使用原推和已有链接；配置搜索后会额外联网检索：
+搜索是可选能力。默认 `SEARCH_PROVIDER=none`，只使用原推和已有链接。
+
+Reveal 使用 DeepSeek 时，推荐接外部搜索工具。开源/自托管优先用 SearXNG：
 
 ```env
-SEARCH_PROVIDER=google
-GOOGLE_SEARCH_API_KEY=...
-GOOGLE_SEARCH_ENGINE_ID=...
+SEARCH_PROVIDER=searxng
+SEARXNG_BASE_URL=http://127.0.0.1:8080
 ```
 
-或：
+SearXNG 实例需要启用 JSON 输出格式。也可以使用 hosted fallback：
 
 ```env
 SEARCH_PROVIDER=brave

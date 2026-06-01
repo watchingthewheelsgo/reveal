@@ -25,28 +25,26 @@ class NullSearchProvider:
         return []
 
 
-class GoogleSearchProvider:
-    def __init__(self, api_key: str, engine_id: str):
-        self.api_key = api_key
-        self.engine_id = engine_id
+class SearXNGSearchProvider:
+    def __init__(self, base_url: str):
+        self.base_url = base_url.rstrip("/")
 
     async def search(self, query: str, max_results: int) -> list[SearchResult]:
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.get(
-                "https://www.googleapis.com/customsearch/v1",
+                f"{self.base_url}/search",
                 params={
-                    "key": self.api_key,
-                    "cx": self.engine_id,
                     "q": query,
-                    "num": min(max_results, 10),
+                    "format": "json",
+                    "categories": "general",
                 },
             )
             response.raise_for_status()
             data = response.json()
 
         results: list[SearchResult] = []
-        for item in data.get("items", []):
-            url = item.get("link")
+        for item in data.get("results", [])[:max_results]:
+            url = item.get("url")
             title = item.get("title")
             if not url or not title:
                 continue
@@ -55,7 +53,7 @@ class GoogleSearchProvider:
                     query=query,
                     title=title,
                     url=url,
-                    snippet=item.get("snippet", ""),
+                    snippet=item.get("content") or item.get("snippet") or "",
                 )
             )
         return results
@@ -97,10 +95,8 @@ class BraveSearchProvider:
 
 def get_search_provider() -> SearchProvider:
     settings = get_settings()
-    if settings.search_provider == "google" and settings.is_search_configured():
-        return GoogleSearchProvider(
-            settings.google_search_api_key, settings.google_search_engine_id
-        )
+    if settings.search_provider == "searxng" and settings.is_search_configured():
+        return SearXNGSearchProvider(settings.searxng_base_url)
     if settings.search_provider == "brave" and settings.is_search_configured():
         return BraveSearchProvider(settings.brave_search_api_key)
     return NullSearchProvider()

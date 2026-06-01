@@ -34,6 +34,17 @@ class SettingsTest(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 self.build_settings()
 
+    def test_search_provider_accepts_searxng(self):
+        with patch.dict(os.environ, {"SEARCH_PROVIDER": "searxng"}, clear=False):
+            settings = self.build_settings()
+
+        self.assertEqual(settings.search_provider, "searxng")
+
+    def test_legacy_google_search_provider_is_rejected(self):
+        with patch.dict(os.environ, {"SEARCH_PROVIDER": "google"}, clear=False):
+            with self.assertRaises(ValidationError):
+                self.build_settings()
+
 
 class DummyAdapter(BotAdapter):
     def __init__(self, authorized: bool):
