@@ -181,3 +181,16 @@ async def get_tracking_report(ticker: str | None = None) -> str:
             lines.append("")
 
         return "\n".join(lines)
+
+
+async def get_active_tickers() -> list[str]:
+    """Return tickers currently being tracked (active picks)."""
+    from sqlalchemy import select
+
+    from server.db.models import StockPick
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        result = await session.execute(select(StockPick.ticker).where(StockPick.status == "active"))
+        rows = result.all()
+        return sorted({r[0] for r in rows})

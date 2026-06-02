@@ -36,6 +36,8 @@ async def cmd_help(ctx: BotContext, adapter):
 /pnl — 盈亏汇总
 
 *系统*
+/alert — 查看/配置告警阈值
+/alert check — 立即检查告警
 /status — 系统状态
 /help — 帮助"""
     await adapter.send_message(ctx.chat_id, text)
@@ -564,6 +566,73 @@ async def cmd_twatch(ctx: BotContext, adapter):
         )
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Alert Commands
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+async def cmd_alert(ctx: BotContext, adapter):
+    """Alert config and manual check: /alert [check|config]"""
+    sub = ctx.args[0] if ctx.args else "status"
+    from config.settings import get_settings
+    from server.alerts.engine import get_active_tickers_for_alert
+
+    settings = get_settings()
+
+    if sub == "check":
+        await adapter.send_message(ctx.chat_id, "🔍 正在检查告警...")
+        from server.alerts.engine import run_alert_cycle
+
+        await run_alert_cycle(adapter)
+        await adapter.send_message(ctx.chat_id, "✅ 告警检查完成")
+
+    elif sub == "config" and len(ctx.args) >= 2:
+        key = ctx.args[1].lower()
+        try:
+            val = float(ctx.args[2]) if len(ctx.args) > 2 else 0
+        except ValueError:
+            await adapter.send_message(ctx.chat_id, "阈值必须是数字")
+            return
+
+        if key == "price" and val > 0:
+            settings.alert_price_pct = val
+            await adapter.send_message(ctx.chat_id, f"✅ 价格告警阈值设为 {val}%")
+        elif key == "volume" and val > 0:
+            settings.alert_volume_ratio = val
+            await adapter.send_message(ctx.chat_id, f"✅ 成交量告警阈值设为 {val}x")
+        else:
+            await adapter.send_message(
+                ctx.chat_id, "用法: /alert config price 3.0 或 /alert config volume 2.5"
+            )
+
+    else:
+        tickers = await get_active_tickers_for_alert()
+        text = (
+            "*⚙️ 告警配置*\n\n"
+            f"状态: {'✅ 启用' if settings.alert_enabled else '❌ 禁用'}\n"
+            f"检查间隔: {settings.alert_interval_minutes} 分钟\n"
+            f"价格阈值: {settings.alert_price_pct}%\n"
+            f"成交量阈值: {settings.alert_volume_ratio}x 均量\n\n"
+            f"*监控标的 ({len(tickers)}):*\n"
+            + (" ".join(f"`{t}`" for t in tickers) if tickers else "暂无")
+        )
+        await adapter.send_message(ctx.chat_id, text)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Briefing Command
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+async def cmd_briefing(ctx: BotContext, adapter):
+    """Manually trigger daily briefing."""
+    await adapter.send_message(ctx.chat_id, "📋 正在生成每日简报...")
+    from server.briefing import generate_daily_briefing
+
+    text = await generate_daily_briefing()
+    await adapter.send_message(ctx.chat_id, text)
+
+
 def register_all_commands(router, adapter):
     """Register all shared command handlers."""
     router.register_many(
@@ -582,6 +651,8 @@ def register_all_commands(router, adapter):
             "journal": lambda ctx: cmd_journal(ctx, adapter),
             "pnl": lambda ctx: cmd_pnl(ctx, adapter),
             "twatch": lambda ctx: cmd_twatch(ctx, adapter),
+            "alert": lambda ctx: cmd_alert(ctx, adapter),
+            "briefing": lambda ctx: cmd_briefing(ctx, adapter),
         }
     )
     router.register_message_handler(lambda ctx: handle_plain_message(ctx, adapter))

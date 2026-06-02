@@ -119,10 +119,9 @@ async def lifespan(app: FastAPI):
     # Daily briefing (before market open ~8:30 AM ET)
     async def daily_briefing_job():
         logger.info("Running daily briefing...")
-        from server.stock.tracker import get_tracking_report
+        from server.briefing import generate_daily_briefing
 
-        report = await get_tracking_report()
-        text = f"*📋 盘前简报*\n\n{report}"
+        text = await generate_daily_briefing()
         if telegram_bot:
             await telegram_bot.push_to_admin(text)
         if feishu_bot:
@@ -147,6 +146,19 @@ async def lifespan(app: FastAPI):
     scheduler.register_interval(
         "twitter_monitor", twitter_monitor_job, settings.twitter_monitor_interval
     )
+
+    # Intraday alerts (every 30 min during market hours)
+    if settings.alert_enabled:
+
+        async def alert_cycle_job():
+            from server.alerts.engine import run_alert_cycle
+
+            tg = telegram_bot if telegram_bot else feishu_bot
+            await run_alert_cycle(tg)
+
+        scheduler.register_interval(
+            "alert_cycle", alert_cycle_job, settings.alert_interval_minutes * 60
+        )
 
     scheduler.start()
     logger.info("Scheduler started")

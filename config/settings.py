@@ -73,6 +73,12 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
+    # Alerts
+    alert_enabled: bool = Field(default=True, alias="ALERT_ENABLED")
+    alert_interval_minutes: int = Field(default=30, alias="ALERT_INTERVAL_MINUTES")
+    alert_price_pct: float = Field(default=3.0, alias="ALERT_PRICE_PCT")
+    alert_volume_ratio: float = Field(default=2.5, alias="ALERT_VOLUME_RATIO")
+
     # Twitter monitor
     twitter_accounts: Annotated[list[str], NoDecode] = Field(
         default_factory=list, alias="TWITTER_ACCOUNTS"
