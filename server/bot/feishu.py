@@ -6,10 +6,14 @@ import hashlib
 import hmac
 import json
 import threading
+from io import BytesIO
 from typing import Any
 
+import httpx
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import (
+    CreateImageRequest,
+    CreateImageRequestBody,
     CreateMessageRequest,
     CreateMessageRequestBody,
     P2ImMessageReceiveV1,
@@ -48,6 +52,7 @@ class FeishuBot(BotAdapter):
         self._ws_loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._processed_message_ids: set[str] = set()
+        self._image_key_cache: dict[str, str] = {}
         self.client = lark.Client.builder().app_id(self.app_id).app_secret(self.app_secret).build()
 
     def set_router(self, router: CommandRouter):
@@ -164,6 +169,10 @@ class FeishuBot(BotAdapter):
     async def reply_card_in_thread(self, chat_id: str, message_id: str, card: dict) -> str | None:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._reply_card_in_thread_sync, message_id, card)
+
+    async def upload_image(self, image_url: str, alt_text: str | None = None) -> str | None:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._upload_image_url_sync, image_url, alt_text)
 
     async def push_to_admin(self, text: str) -> None:
         for chat_id in self.admin_chat_ids:
@@ -362,6 +371,57 @@ class FeishuBot(BotAdapter):
             return response.data.message_id
         return None
 
+    def _upload_image_url_sync(self, image_url: str, alt_text: str | None = None) -> str | None:
+        if not image_url:
+            return None
+        cached = self._image_key_cache.get(image_url)
+        if cached:
+            return cached
+
+        try:
+            response = httpx.get(
+                image_url,
+                follow_redirects=True,
+                headers={"User-Agent": "Reveal/1.0"},
+                timeout=20,
+            )
+            response.raise_for_status()
+        except Exception as e:
+            logger.debug(f"Feishu image download failed: {image_url} ({e})")
+            return None
+
+        image_bytes = response.content
+        if not image_bytes:
+            return None
+        if len(image_bytes) > 10 * 1024 * 1024:
+            logger.debug(f"Feishu image skipped because it is too large: {image_url}")
+            return None
+
+        image_stream = BytesIO(image_bytes)
+        image_stream.name = _image_filename(image_url, alt_text)
+        request = (
+            CreateImageRequest.builder()
+            .request_body(
+                CreateImageRequestBody.builder().image_type("message").image(image_stream).build()
+            )
+            .build()
+        )
+        upload_response = self.client.im.v1.image.create(request)
+        if not upload_response.success():
+            logger.warning(
+                "Feishu image upload failed: {} - {}",
+                upload_response.code,
+                upload_response.msg,
+            )
+            return None
+        if upload_response.data and upload_response.data.image_key:
+            image_key = upload_response.data.image_key
+            self._image_key_cache[image_url] = image_key
+            if len(self._image_key_cache) > 512:
+                self._image_key_cache.pop(next(iter(self._image_key_cache)))
+            return image_key
+        return None
+
     def _format_feishu_card(self, card: dict) -> dict:
         if card.get("elements") or card.get("header"):
             allowed_keys = {
@@ -410,3 +470,13 @@ class FeishuBot(BotAdapter):
                 }
             ],
         }
+
+
+def _image_filename(image_url: str, alt_text: str | None = None) -> str:
+    suffix = image_url.rsplit("/", maxsplit=1)[-1].split("?", maxsplit=1)[0]
+    suffix = suffix if "." in suffix else "tweet-image.jpg"
+    if alt_text:
+        safe_alt = "".join(ch for ch in alt_text[:32] if ch.isalnum() or ch in {"-", "_"})
+        if safe_alt:
+            return f"{safe_alt}-{suffix}"
+    return suffix

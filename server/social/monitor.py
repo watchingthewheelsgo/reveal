@@ -16,7 +16,8 @@ TWITTER_STATUS_URL_RE = re.compile(r"https?://(?:www\.)?(?:twitter|x)\.com/([^/\
 URL_RE = re.compile(r"https?://[^\s<>)\]]+")
 MAX_PUSHED_MEDIA = 4
 INITIAL_WATCH_BACKFILL_LIMIT = 10
-DIGEST_PREVIEW_LIMIT = 5
+MAX_CARD_IMAGES = 4
+MAX_CARD_REFERENCES = 3
 
 
 async def list_active_twitter_accounts(configured_accounts: list[str] | None = None) -> list[str]:
@@ -246,11 +247,12 @@ async def check_and_notify(
     push_failed = False
     if adapter and posts_to_push:
         try:
-            await push_tweet_digest(posts_to_push, adapter, is_backfill=first_check)
-            successful_tweet_ids = [post.tweet_id for post in posts_to_push]
+            pushed_posts = await push_tweet_cards(posts_to_push, adapter, is_backfill=first_check)
+            successful_tweet_ids = [post.tweet_id for post in pushed_posts]
+            push_failed = len(successful_tweet_ids) != len(posts_to_push)
         except Exception as e:
             push_failed = True
-            logger.warning(f"Tweet digest push failed for @{account_key}: {e}")
+            logger.warning(f"Tweet card push failed for @{account_key}: {e}")
     elif not adapter:
         successful_tweet_ids = [post.tweet_id for post in posts_to_push]
 
@@ -288,74 +290,55 @@ async def check_and_notify(
     return posts_to_push
 
 
+async def push_tweet_cards(
+    posts: list[SocialPost],
+    adapter: BotAdapter,
+    is_backfill: bool = False,
+) -> list[SocialPost]:
+    """Push stored tweets as separate fixed-template cards."""
+    if not posts:
+        return []
+
+    cross_ref = await _cross_reference_posts(posts) if not is_backfill else {}
+    ordered_posts = sorted(posts, key=lambda post: post.posted_at)
+    pushed_posts: list[SocialPost] = []
+    for post in ordered_posts:
+        try:
+            await push_tweet_card(
+                post,
+                adapter,
+                cross_ref=cross_ref.get(post.id),
+                is_backfill=is_backfill,
+            )
+            pushed_posts.append(post)
+        except Exception as e:
+            logger.warning(f"Tweet card push failed for #{post.id or post.tweet_id}: {e}")
+    return pushed_posts
+
+
 async def push_tweet_digest(
     posts: list[SocialPost],
     adapter: BotAdapter,
     is_backfill: bool = False,
 ) -> None:
-    """Push a compact digest for a batch of stored tweets."""
-    if not posts:
-        return
-
-    cross_ref = await _cross_reference_posts(posts) if not is_backfill else {}
-    ordered_posts = sorted(posts, key=lambda post: post.posted_at)
-    latest_posts = list(reversed(ordered_posts))[:DIGEST_PREVIEW_LIMIT]
-    username = ordered_posts[-1].username
-
-    has_high = any(post.urgency == "high" for post in latest_posts)
-    icon = "🔴" if has_high else "🐦"
-    title = (
-        f"🐦 @{username} 已缓存最近 {len(posts)} 条更新"
-        if is_backfill
-        else f"{icon} @{username} 有 {len(posts)} 条新更新"
-    )
-    sections: list[str] = []
-    if len(posts) > DIGEST_PREVIEW_LIMIT:
-        sections.append(f"显示最近 {DIGEST_PREVIEW_LIMIT} 条，其余已入库。")
-
-    for index, post in enumerate(latest_posts, start=1):
-        sections.append(_format_digest_section(index, post, cross_ref.get(post.id)))
-
-    footer = "完整正文、引用、外链和媒体已缓存到 Reveal；飞书消息就是即时研究入口。"
-    card = _build_research_card(title=title, sections=sections, footer=footer)
-    sent_messages = await _push_card_to_admin(adapter, card)
-    if len(posts) == 1:
-        await _bind_sent_messages(sent_messages, posts[0].id)
+    """Compatibility wrapper: tweets are now pushed as separate cards."""
+    await push_tweet_cards(posts, adapter, is_backfill=is_backfill)
 
 
 async def push_tweet(post, adapter: BotAdapter):
-    """Push a single tweet as a formatted message."""
-    flags = _post_type_label(post)
-    lines = [
-        f"🐦 *@{post.username}* — {_time_ago(post.posted_at)}{flags}",
-        "",
-        post.content[:500] if post.content else "（无正文）",
-    ]
-    if post.tweet_url:
-        lines.append("")
-        lines.append(f"原文: {post.tweet_url}")
-    if post.translated_content:
-        lines.append("")
-        lines.append(f"🌐 {post.translated_content[:300]}")
-    if post.summary:
-        lines.append("")
-        lines.append(f"📝 摘要: {post.summary[:300]}")
-    if post.referenced_tweets:
-        lines.append("")
-        lines.extend(_format_reference_lines(post.referenced_tweets))
-    if post.media:
-        lines.append("")
-        lines.extend(_format_media_lines(post.media))
-    if post.links:
-        lines.append("")
-        lines.extend(_format_link_lines(post.links))
-    if post.id:
-        lines.append("")
-        lines.extend(_format_action_lines(post.id))
+    """Push a single tweet as a fixed-template card."""
+    await push_tweet_card(post, adapter)
 
-    text = "\n".join(lines)
 
-    sent_messages = await _push_to_admin(adapter, text)
+async def push_tweet_card(
+    post: SocialPost,
+    adapter: BotAdapter,
+    cross_ref: dict | None = None,
+    is_backfill: bool = False,
+) -> None:
+    """Push one tweet as a rich card and bind the sent message to the post."""
+    card = await _build_tweet_card(post, adapter, cross_ref=cross_ref, is_backfill=is_backfill)
+    sent_messages = await _push_card_to_admin(adapter, card)
     await _bind_sent_messages(sent_messages, post.id)
 
 
@@ -433,32 +416,80 @@ def _tweet_media(tweet: dict[str, Any]) -> list[dict[str, Any]]:
     media: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in media_raw:
+        preview_url = None
+        video_url = None
         if isinstance(item, str):
             url = item
             media_type = None
             alt_text = None
         elif isinstance(item, dict):
+            video_url = _best_video_url(item)
+            preview_url = (
+                item.get("preview_image_url")
+                or item.get("thumbnail_url")
+                or item.get("thumb")
+                or item.get("poster")
+            )
             url = (
                 item.get("url")
                 or item.get("media_url_https")
-                or item.get("preview_image_url")
+                or preview_url
+                or video_url
                 or item.get("src")
             )
             media_type = item.get("type") or item.get("format")
+            if not media_type and video_url:
+                media_type = "video"
+            elif not media_type and str(url).lower().split("?", maxsplit=1)[0].endswith(".mp4"):
+                media_type = "video"
             alt_text = item.get("altText") or item.get("alt_text")
         else:
             continue
         if not url or url in seen:
             continue
         seen.add(url)
-        media.append(
-            {
-                "url": str(url),
-                "type": media_type,
-                "alt_text": alt_text,
-            }
-        )
+        media_item = {
+            "url": str(url),
+            "type": media_type or "image",
+            "alt_text": alt_text,
+        }
+        if isinstance(item, dict):
+            if preview_url and preview_url != url:
+                media_item["preview_url"] = str(preview_url)
+            if video_url and video_url != url:
+                media_item["video_url"] = str(video_url)
+        media.append(media_item)
     return media
+
+
+def _best_video_url(item: dict[str, Any]) -> str | None:
+    for key in ("video_url", "videoUrl", "source", "source_url", "mp4"):
+        if value := item.get(key):
+            return str(value)
+
+    variants = item.get("variants") or item.get("video_info", {}).get("variants")
+    if not isinstance(variants, list):
+        return None
+
+    candidates: list[tuple[int, str]] = []
+    for variant in variants:
+        if not isinstance(variant, dict):
+            continue
+        url = variant.get("url")
+        if not url:
+            continue
+        content_type = str(variant.get("content_type") or variant.get("type") or "")
+        if content_type and "mp4" not in content_type:
+            continue
+        bitrate = variant.get("bitrate") or variant.get("bit_rate") or 0
+        try:
+            score = int(bitrate)
+        except (TypeError, ValueError):
+            score = 0
+        candidates.append((score, str(url)))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda candidate: candidate[0])[1]
 
 
 def _referenced_tweets(username: str, tweet: dict[str, Any]) -> list[dict[str, Any]]:
@@ -526,6 +557,8 @@ def _tweet_links(
     if tweet_url:
         excluded.add(tweet_url)
     excluded.update(str(item["url"]) for item in media if item.get("url"))
+    excluded.update(str(item["preview_url"]) for item in media if item.get("preview_url"))
+    excluded.update(str(item["video_url"]) for item in media if item.get("video_url"))
     excluded.update(str(reference["url"]) for reference in references if reference.get("url"))
 
     links: list[str] = []
@@ -624,6 +657,252 @@ def _format_action_lines(post_id: int) -> list[str]:
         f"- /deep {post_id} 让 Agent 主动深挖",
         f"- /ask {post_id} 你的问题",
     ]
+
+
+async def _build_tweet_card(
+    post: SocialPost,
+    adapter: BotAdapter,
+    cross_ref: dict | None = None,
+    is_backfill: bool = False,
+) -> dict:
+    title = _tweet_card_title(post, is_backfill=is_backfill)
+    elements: list[dict[str, Any]] = []
+    sections: list[str] = []
+
+    metadata = _tweet_metadata_text(post)
+    elements.append(_md_div(metadata))
+    sections.append(metadata)
+
+    if post.summary:
+        summary = f"**Summary**\n{_trim_text(post.summary, 700)}"
+        elements.extend([{"tag": "hr"}, _md_div(summary)])
+        sections.append(summary)
+
+    body = f"**正文**\n{_trim_text(post.content or '（无正文）', 1800)}"
+    elements.extend([{"tag": "hr"}, _md_div(body)])
+    sections.append(body)
+
+    if post.translated_content:
+        translation = f"**译文**\n{_trim_text(post.translated_content, 900)}"
+        elements.extend([{"tag": "hr"}, _md_div(translation)])
+        sections.append(translation)
+
+    if post.media:
+        media_elements, media_section = await _tweet_media_card_elements(post.media, adapter)
+        if media_elements:
+            elements.extend([{"tag": "hr"}, *media_elements])
+        if media_section:
+            sections.append(media_section)
+
+    if post.referenced_tweets:
+        reference_elements, reference_section = await _reference_card_elements(
+            post.referenced_tweets,
+            adapter,
+        )
+        if reference_elements:
+            elements.extend([{"tag": "hr"}, *reference_elements])
+        if reference_section:
+            sections.append(reference_section)
+
+    if post.links:
+        links = "**引用链接 / 外部链接**\n" + "\n".join(
+            f"- [{_display_url(link)}]({link})" for link in post.links[:8]
+        )
+        elements.extend([{"tag": "hr"}, _md_div(links)])
+        sections.append(links)
+
+    if cross_ref and cross_ref.get("matches"):
+        match_text = f"**关联持仓/关注**\n{cross_ref['matches']}"
+        elements.extend([{"tag": "hr"}, _md_div(match_text)])
+        sections.append(match_text)
+
+    if post.tweet_url or post.id:
+        actions = _tweet_action_text(post)
+        elements.extend([{"tag": "hr"}, _md_div(actions)])
+        sections.append(actions)
+
+    return {
+        "title": title,
+        "sections": sections,
+        "footer": "在这张卡片下 @Reveal 继续提问，会基于这条推文进入研究线程。",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": _tweet_card_template(post),
+            "title": {"tag": "plain_text", "content": title},
+        },
+        "elements": elements,
+    }
+
+
+def _tweet_card_title(post: SocialPost, is_backfill: bool = False) -> str:
+    prefix = "Twitter Backfill" if is_backfill else "Twitter Update"
+    flags = _post_type_label(post)
+    summary = _trim_text(post.summary or post.content or "新推文", 52)
+    return f"{prefix} · @{post.username}{flags} · {summary}"
+
+
+def _tweet_card_template(post: SocialPost) -> str:
+    if post.urgency == "high":
+        return "red"
+    if post.urgency == "medium":
+        return "orange"
+    return "blue"
+
+
+def _tweet_metadata_text(post: SocialPost) -> str:
+    user_url = f"https://x.com/{post.username}"
+    parts = [
+        f"**用户**: [@{post.username}]({user_url})",
+        f"**时间**: {_time_ago(post.posted_at)}",
+    ]
+    if labels := _post_type_label(post):
+        parts.append(f"**类型**: {labels.strip(' ()')}")
+    if post.mentioned_tickers:
+        parts.append("**Ticker**: " + ", ".join(str(t) for t in post.mentioned_tickers[:8]))
+    if post.topics:
+        parts.append("**Topic**: " + " · ".join(str(t) for t in post.topics[:5]))
+    if sentiment := _sentiment_label(post.sentiment):
+        parts.append(f"**情绪**: {sentiment}")
+    if post.urgency:
+        parts.append(f"**优先级**: {post.urgency}")
+    return "\n".join(parts)
+
+
+async def _tweet_media_card_elements(
+    media: list[dict[str, Any]],
+    adapter: BotAdapter,
+) -> tuple[list[dict[str, Any]], str]:
+    elements: list[dict[str, Any]] = [_md_div("**媒体**")]
+    section_lines = ["**媒体**"]
+    image_count = 0
+
+    for item in media[:MAX_PUSHED_MEDIA]:
+        media_type = str(item.get("type") or "media").lower()
+        display_url = str(item.get("video_url") or item.get("url") or "")
+        preview_url = _media_preview_url(item)
+        alt_text = str(item.get("alt_text") or media_type)
+
+        image_key = None
+        if preview_url and image_count < MAX_CARD_IMAGES:
+            image_key = await _upload_card_image(adapter, preview_url, alt_text)
+        if image_key:
+            elements.append(
+                {
+                    "tag": "img",
+                    "img_key": image_key,
+                    "alt": {"tag": "plain_text", "content": _trim_text(alt_text, 80)},
+                }
+            )
+            image_count += 1
+
+        if media_type.startswith("video"):
+            line = f"- 视频: [{_display_url(display_url)}]({display_url})"
+        else:
+            line = f"- 图片: [{_display_url(display_url)}]({display_url})"
+        if alt := item.get("alt_text"):
+            line += f" ({_trim_text(str(alt), 80)})"
+        section_lines.append(line)
+
+    if len(media) > MAX_PUSHED_MEDIA:
+        section_lines.append(f"- 还有 {len(media) - MAX_PUSHED_MEDIA} 个媒体已缓存")
+    if len(section_lines) > 1:
+        elements.append(_md_div("\n".join(section_lines)))
+    return elements, "\n".join(section_lines)
+
+
+async def _reference_card_elements(
+    references: list[dict[str, Any]],
+    adapter: BotAdapter,
+) -> tuple[list[dict[str, Any]], str]:
+    elements: list[dict[str, Any]] = [_md_div("**关联推文**")]
+    section_lines = ["**关联推文**"]
+
+    for reference in references[:MAX_CARD_REFERENCES]:
+        label = _reference_type_label(str(reference.get("type") or "reference"))
+        url = str(reference.get("url") or "")
+        text = _trim_text(str(reference.get("text") or ""), 500)
+        username = reference.get("username")
+        heading = f"- {label}"
+        if username:
+            heading += f" @{username}"
+        if url:
+            heading += f": [{_display_url(url)}]({url})"
+        if text:
+            heading += f"\n{text}"
+        section_lines.append(heading)
+        elements.append(_md_div(heading))
+
+        media = reference.get("media")
+        if isinstance(media, list):
+            media_elements, _ = await _tweet_media_card_elements(media[:2], adapter)
+            elements.extend(media_elements[1:3])
+
+    if len(references) > MAX_CARD_REFERENCES:
+        section_lines.append(f"- 还有 {len(references) - MAX_CARD_REFERENCES} 条关联推文已缓存")
+    return elements, "\n".join(section_lines)
+
+
+def _media_preview_url(item: dict[str, Any]) -> str | None:
+    media_type = str(item.get("type") or "").lower()
+    preview_url = item.get("preview_url")
+    if preview_url:
+        return str(preview_url)
+    url = str(item.get("url") or "")
+    if media_type.startswith("video") or url.lower().split("?", maxsplit=1)[0].endswith(".mp4"):
+        return None
+    return url or None
+
+
+async def _upload_card_image(
+    adapter: BotAdapter,
+    image_url: str,
+    alt_text: str | None = None,
+) -> str | None:
+    try:
+        return await adapter.upload_image(image_url, alt_text)
+    except Exception as e:
+        logger.debug(f"Card image upload failed: {image_url} ({e})")
+        return None
+
+
+def _tweet_action_text(post: SocialPost) -> str:
+    lines = ["**操作**"]
+    if post.tweet_url:
+        lines.append(f"- [打开原文]({post.tweet_url})")
+    if post.id:
+        lines.extend(
+            [
+                f"- `/research {post.id}` 建立研究话题",
+                f"- `/deep {post.id}` 让 Agent 主动深挖",
+                f"- `/ask {post.id} 你的问题`",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _md_div(content: str) -> dict[str, Any]:
+    return {"tag": "div", "text": {"tag": "lark_md", "content": content}}
+
+
+def _trim_text(text: str, limit: int) -> str:
+    clean = re.sub(r"\n{3,}", "\n\n", text).strip()
+    if len(clean) <= limit:
+        return clean
+    return clean[: limit - 1].rstrip() + "..."
+
+
+def _display_url(url: str) -> str:
+    clean = url.replace("https://", "").replace("http://", "")
+    return _trim_text(clean, 70)
+
+
+def _sentiment_label(sentiment: str | None) -> str:
+    return {
+        "bullish": "看多",
+        "bearish": "看空",
+        "mixed": "分歧",
+        "neutral": "中性",
+    }.get(sentiment or "", "")
 
 
 async def _cross_reference_posts(posts: list[SocialPost]) -> dict[int, dict]:

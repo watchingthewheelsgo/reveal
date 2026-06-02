@@ -46,13 +46,14 @@ class TweetAnalysis:
 class TweetProcessor:
     def __init__(self):
         self._llm = get_llm_client()
+        self._auth_failed = False
 
     @property
     def is_available(self) -> bool:
-        return self._llm is not None
+        return self._llm is not None and not self._auth_failed
 
     async def analyze(self, context: str, author: str = "") -> TweetAnalysis | None:
-        if not self._llm or not context.strip():
+        if not self._llm or self._auth_failed or not context.strip():
             return None
         user_content = context
         if author:
@@ -68,21 +69,28 @@ class TweetProcessor:
             )
             return _parse_analysis(raw)
         except Exception as e:
-            logger.warning(f"Tweet analysis failed: {e}")
+            if _is_auth_error(e):
+                self._auth_failed = True
+                logger.warning(
+                    "Tweet analysis disabled: LLM authentication failed. "
+                    "Check OPENAI_API_KEY / OPENAI_BASE_URL for the lightweight tweet analyzer."
+                )
+            else:
+                logger.warning(f"Tweet analysis failed: {e}")
             return None
 
     async def translate(self, text: str) -> str | None:
-        if not self._llm:
+        if not self._llm or self._auth_failed:
             return None
         return await self._llm.translate(text, target_lang="中文")
 
     async def summarize(self, text: str) -> str | None:
-        if not self._llm:
+        if not self._llm or self._auth_failed:
             return None
         return await self._llm.summarize(text, lang="中文")
 
     async def ask(self, tweet_text: str, question: str) -> str | None:
-        if not self._llm:
+        if not self._llm or self._auth_failed:
             return None
         return await self._llm.ask(tweet_text, question)
 
@@ -110,3 +118,8 @@ def _parse_analysis(raw: str) -> TweetAnalysis:
         urgency=str(data.get("urgency") or "low"),
         urgency_reason=str(data.get("urgency_reason") or ""),
     )
+
+
+def _is_auth_error(error: Exception) -> bool:
+    text = str(error).lower()
+    return "401" in text or "authentication" in text or "api key" in text

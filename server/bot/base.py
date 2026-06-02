@@ -58,6 +58,10 @@ class BotAdapter(ABC):
         await self.send_card(chat_id, card)
         return None
 
+    async def upload_image(self, image_url: str, alt_text: str | None = None) -> str | None:
+        """Upload an external image and return an adapter-native image key if supported."""
+        return None
+
     async def edit_message(self, chat_id: str, message_id: str, text: str) -> None:
         """Edit a previously sent message in-place."""
 

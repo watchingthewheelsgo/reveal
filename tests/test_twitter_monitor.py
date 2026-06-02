@@ -18,12 +18,21 @@ class DummyAdapter(BotAdapter):
         self.admin_chat_ids = ["admin"]
         self.messages: list[tuple[str, str]] = []
         self.cards: list[tuple[str, dict]] = []
+        self.uploaded_images: list[str] = []
 
     async def send_message(self, chat_id: str, text: str, **kwargs) -> None:
         self.messages.append((chat_id, text))
 
     async def send_card(self, chat_id: str, card: dict) -> None:
         self.cards.append((chat_id, card))
+
+    async def send_card_returning_id(self, chat_id: str, card: dict) -> str | None:
+        self.cards.append((chat_id, card))
+        return f"card-{len(self.cards)}"
+
+    async def upload_image(self, image_url: str, alt_text: str | None = None) -> str | None:
+        self.uploaded_images.append(image_url)
+        return f"img-{len(self.uploaded_images)}"
 
     def register_command(self, command: str, handler) -> None:
         return None
@@ -84,16 +93,17 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
             posts = await check_and_notify("alice", adapter)
 
         self.assertEqual(len(posts), 10)
-        self.assertEqual(len(adapter.cards), 1)
+        self.assertEqual(len(adapter.cards), 10)
         self.assertEqual(adapter.cards[0][0], "admin")
-        digest = "\n".join([adapter.cards[0][1]["title"], *adapter.cards[0][1]["sections"]])
-        self.assertIn("已缓存最近 10 条更新", digest)
-        self.assertIn("显示最近 5 条", digest)
-        self.assertIn("tweet 112", digest)
-        self.assertIn("tweet 108", digest)
-        self.assertNotIn("tweet 103", digest)
-        self.assertIn("/research", digest)
-        self.assertIn("/deep", digest)
+        pushed = "\n".join(
+            line for _, card in adapter.cards for line in [card["title"], *card["sections"]]
+        )
+        self.assertIn("Twitter Backfill · @alice", pushed)
+        self.assertIn("tweet 112", pushed)
+        self.assertIn("tweet 103", pushed)
+        self.assertNotIn("tweet 102", pushed)
+        self.assertIn("/research", pushed)
+        self.assertIn("/deep", pushed)
 
         session_factory = get_session_factory()
         async with session_factory() as session:
@@ -159,13 +169,19 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(posts), 1)
         self.assertEqual(len(adapter.cards), 1)
         pushed = "\n".join([adapter.cards[0][1]["title"], *adapter.cards[0][1]["sections"]])
-        self.assertIn("有 1 条新更新", pushed)
+        self.assertIn("Twitter Update · @alice", pushed)
+        self.assertIn("测试摘要", pushed)
+        self.assertIn("hello https://example.com/report", pushed)
         self.assertIn("https://x.com/alice/status/101", pushed)
-        self.assertIn("1 link / 1 media / 1 ref", pushed)
+        self.assertIn("图片", pushed)
+        self.assertIn("引用", pushed)
+        self.assertIn("引用链接 / 外部链接", pushed)
         self.assertIn("/research", pushed)
         self.assertIn("/deep", pushed)
-        self.assertIn("引用", pushed)
         self.assertIn("quoted context", processor.summary_input)
+        elements = adapter.cards[0][1]["elements"]
+        self.assertTrue(any(element.get("tag") == "img" for element in elements))
+        self.assertEqual(adapter.uploaded_images, ["https://pbs.twimg.com/media/chart.jpg"])
 
         async with session_factory() as session:
             post = (
