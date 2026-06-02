@@ -8,7 +8,11 @@ from pydantic import ValidationError
 
 from config.settings import Settings
 from server.bot.base import BotAdapter, BotContext, CommandRouter
-from server.commands import cmd_research
+from server.commands import (
+    _parse_general_natural_command,
+    _parse_twitter_natural_language,
+    cmd_research,
+)
 from server.llm.client import classify_intent_locally
 
 
@@ -188,6 +192,37 @@ class IntentFallbackTest(unittest.TestCase):
 
         self.assertEqual(intent["intent"], "research")
         self.assertEqual(intent["ticker"], "MRVL")
+
+
+class NaturalCommandParseTest(unittest.TestCase):
+    def test_natural_twitter_watch_add(self):
+        intent = _parse_twitter_natural_language("把 OwenCarter_k 加到 watch list")
+
+        self.assertEqual(intent, {"action": "watch_add", "username": "OwenCarter_k"})
+
+    def test_natural_twitter_latest(self):
+        intent = _parse_twitter_natural_language("我想知道 OwenCarter_k 最新 7 条推特")
+
+        self.assertEqual(intent, {"action": "latest", "username": "OwenCarter_k", "limit": 7})
+
+    def test_natural_twitter_yesterday(self):
+        intent = _parse_twitter_natural_language("我想知道 OwenCarter_k 在昨天发了什么推特")
+
+        self.assertEqual(intent, {"action": "yesterday", "username": "OwenCarter_k"})
+
+    def test_natural_cached_twitter_search(self):
+        intent = _parse_twitter_natural_language("有没有关于 MRVL 的推特")
+
+        self.assertEqual(intent, {"action": "search", "query": "MRVL", "limit": 8})
+
+    def test_general_natural_commands_reuse_command_handlers(self):
+        self.assertEqual(
+            _parse_general_natural_command("今日选股"), {"command": "pick", "args": []}
+        )
+        self.assertEqual(
+            _parse_general_natural_command("给 MRVL 打分"),
+            {"command": "score", "args": ["MRVL"]},
+        )
 
 
 class ResearchCommandTest(unittest.TestCase):

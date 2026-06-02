@@ -98,6 +98,8 @@ async def _migrate_sqlite_social_posts(conn) -> None:
         "topics": "JSON",
         "sentiment": "VARCHAR(20)",
         "urgency": "VARCHAR(20)",
+        "is_noteworthy": "BOOLEAN NOT NULL DEFAULT 0",
+        "attention_reason": "TEXT",
     }
     for column, column_type in columns.items():
         if column not in existing_columns:

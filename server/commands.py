@@ -3,6 +3,8 @@ Bot command handlers shared across Telegram and Feishu.
 """
 
 import asyncio
+import re
+from datetime import UTC, datetime, time, timedelta
 
 from loguru import logger
 
@@ -445,7 +447,11 @@ async def handle_plain_message(ctx: BotContext, adapter):
             if routed:
                 return
 
-        # Priority 2: route to active research topic
+        # Priority 2: high-confidence Twitter operations in natural language.
+        if await _try_route_natural_command(ctx, adapter, text):
+            return
+
+        # Priority 3: route to active research topic
         topic = await get_active_topic(ctx.chat_id)
         if topic is not None:
             _spawn_background_task(
@@ -454,7 +460,7 @@ async def handle_plain_message(ctx: BotContext, adapter):
             )
             return
 
-        # Priority 3: classify intent with LLM
+        # Priority 4: classify intent with LLM
         from server.llm.client import classify_intent_locally, get_llm_client
 
         llm = get_llm_client()
@@ -524,6 +530,394 @@ async def _route_bound_reply(ctx: BotContext, adapter, text: str) -> bool:
     except ResearchError as e:
         await adapter.send_message(ctx.chat_id, f"❌ {e}")
         return True
+
+
+async def _try_route_natural_command(ctx: BotContext, adapter, text: str) -> bool:
+    if await _try_route_twitter_natural_language(ctx, adapter, text):
+        return True
+
+    route = _parse_general_natural_command(text)
+    if route is None:
+        confirmation = _natural_command_confirmation_prompt(text)
+        if not confirmation:
+            return False
+        await adapter.send_message(ctx.chat_id, confirmation)
+        return True
+
+    command = route["command"]
+    args = route.get("args", [])
+    routed_ctx = _ctx_for_command(ctx, command, args)
+    handlers = {
+        "help": cmd_help,
+        "status": cmd_status,
+        "pick": cmd_pick,
+        "track": cmd_track,
+        "score": cmd_score,
+        "deep": cmd_deep,
+        "research": cmd_research,
+        "pnl": cmd_pnl,
+        "alert": cmd_alert,
+        "briefing": cmd_briefing,
+    }
+    handler = handlers.get(command)
+    if handler is None:
+        return False
+    await handler(routed_ctx, adapter)
+    return True
+
+
+def _ctx_for_command(ctx: BotContext, command: str, args: list[str]) -> BotContext:
+    return BotContext(
+        chat_id=ctx.chat_id,
+        user_id=ctx.user_id,
+        text=ctx.text,
+        command=command,
+        args=args,
+        raw_data=ctx.raw_data,
+        reply_to_message_id=ctx.reply_to_message_id,
+    )
+
+
+def _parse_general_natural_command(text: str) -> dict | None:
+    lowered = text.lower().strip()
+    ticker = _extract_ticker(text)
+
+    if lowered in {"help", "status", "pnl"}:
+        return {"command": lowered, "args": []}
+    if any(phrase in text for phrase in ("帮助", "怎么用", "有哪些命令")):
+        return {"command": "help", "args": []}
+    if "系统状态" in text or text in {"状态", "服务状态"}:
+        return {"command": "status", "args": []}
+    if "每日简报" in text or "市场简报" in text or lowered == "briefing":
+        return {"command": "briefing", "args": []}
+    if "选股" in text or "推荐股票" in text or lowered in {"pick", "daily pick"}:
+        return {"command": "pick", "args": []}
+    if "盈亏" in text or "pnl" in lowered:
+        return {"command": "pnl", "args": []}
+    if "告警" in text or "alert" in lowered:
+        args = ["check"] if any(word in text for word in ("检查", "跑一下", "立即")) else []
+        return {"command": "alert", "args": args}
+    if ("评分" in text or "打分" in text or "score" in lowered) and ticker:
+        return {"command": "score", "args": [ticker]}
+    if ("追踪" in text or "tracking" in lowered or "track" in lowered) and "推特" not in text:
+        return {"command": "track", "args": [ticker] if ticker else []}
+    if ("深挖" in text or "deep" in lowered) and ("最新" in text or "latest" in lowered):
+        focus = _remaining_focus(text, ("深挖", "最新", "推文", "twitter", "tweet", "latest"))
+        return {"command": "deep", "args": ["latest", *focus]}
+    if ("研究" in text or "research" in lowered) and ("最新" in text or "latest" in lowered):
+        focus = _remaining_focus(text, ("研究", "最新", "推文", "twitter", "tweet", "latest"))
+        return {"command": "research", "args": ["latest", *focus]}
+    return None
+
+
+def _natural_command_confirmation_prompt(text: str) -> str | None:
+    lowered = text.lower()
+    if any(word in lowered or word in text for word in ("watch", "关注列表", "监控")):
+        return (
+            "你是不是想执行 Twitter 关注列表操作？\n"
+            "可以直接说：把 @username 加到 watch list，或把 @username 从 watch list 移除。"
+        )
+    if any(word in text for word in ("评分", "打分")):
+        return "你是不是想执行股票评分？请带上 ticker，例如：给 MRVL 打分。"
+    if "告警" in text:
+        return "你是不是想查看或检查告警？可以说：查看告警配置，或立即检查告警。"
+    if "推特" in text or "twitter" in lowered or "tweet" in lowered:
+        return (
+            "你是不是想查询 Twitter 更新？\n"
+            "可以说：@username 最新 5 条推特、@username 昨天发了什么推特，"
+            "或 有没有关于 MRVL 的推特。"
+        )
+    return None
+
+
+def _extract_ticker(text: str) -> str | None:
+    cashtag = re.search(r"\$([A-Za-z]{1,5})\b", text)
+    if cashtag:
+        return cashtag.group(1).upper()
+    match = re.search(r"\b([A-Z]{1,5})\b", text)
+    if match:
+        return match.group(1).upper()
+    return None
+
+
+def _remaining_focus(text: str, stop_words: tuple[str, ...]) -> list[str]:
+    cleaned = text
+    for word in stop_words:
+        cleaned = re.sub(re.escape(word), " ", cleaned, flags=re.IGNORECASE)
+    return [part for part in re.split(r"\s+", cleaned.strip()) if part]
+
+
+async def _try_route_twitter_natural_language(ctx: BotContext, adapter, text: str) -> bool:
+    intent = _parse_twitter_natural_language(text)
+    if not intent:
+        return False
+
+    action = intent["action"]
+    if action in {"watch_add", "watch_remove"}:
+        username = intent["username"]
+        from server.social.monitor import set_twitter_account_active
+
+        is_active = action == "watch_add"
+        await set_twitter_account_active(username, is_active)
+        if is_active:
+            await adapter.send_message(
+                ctx.chat_id,
+                f"✅ 已添加 @{username}\n正在获取最近最多 10 条推文；后续会按缓存增量检查。",
+            )
+            _spawn_background_task(
+                _run_twitter_check_job(
+                    [username],
+                    ctx.chat_id,
+                    adapter,
+                    "✅ 首次检查完成，没有获取到新推文。",
+                ),
+                "twitter natural watch add",
+            )
+        else:
+            await adapter.send_message(ctx.chat_id, f"✅ 已移除 @{username}")
+        return True
+
+    if action == "latest":
+        username = intent["username"]
+        limit = intent["limit"]
+        await adapter.send_message(ctx.chat_id, f"🔎 正在获取 @{username} 最新 {limit} 条推文...")
+        _spawn_background_task(
+            _run_twitter_latest_job(ctx.chat_id, username, limit, adapter),
+            "twitter latest lookup",
+        )
+        return True
+
+    if action == "yesterday":
+        username = intent["username"]
+        await adapter.send_message(ctx.chat_id, f"🔎 正在查 @{username} 昨天的推文...")
+        _spawn_background_task(
+            _run_twitter_yesterday_job(ctx.chat_id, username, adapter),
+            "twitter yesterday lookup",
+        )
+        return True
+
+    if action == "search":
+        query = intent["query"]
+        posts = await _search_cached_twitter_posts(query, limit=intent["limit"])
+        await adapter.send_message(
+            ctx.chat_id,
+            _format_twitter_posts(f"本地缓存中关于「{query}」的 Twitter 更新", posts),
+        )
+        return True
+
+    return False
+
+
+def _parse_twitter_natural_language(text: str) -> dict | None:
+    lowered = text.lower()
+    has_twitter_keyword = any(
+        keyword in lowered or keyword in text
+        for keyword in ("推特", "twitter", "tweet", "tweets", "watch", "监控", "关注列表")
+    )
+    if not has_twitter_keyword:
+        return None
+
+    if username := _parse_watch_username(text, add=True):
+        return {"action": "watch_add", "username": username}
+    if username := _parse_watch_username(text, add=False):
+        return {"action": "watch_remove", "username": username}
+
+    if ("最新" in text or "latest" in lowered) and (
+        "推特" in text or "twitter" in lowered or "tweet" in lowered
+    ):
+        username = _extract_twitter_username(text)
+        if username:
+            return {"action": "latest", "username": username, "limit": _extract_limit(text)}
+
+    if "昨天" in text and ("推特" in text or "twitter" in lowered or "tweet" in lowered):
+        username = _extract_twitter_username(text)
+        if username:
+            return {"action": "yesterday", "username": username}
+
+    query = _parse_cached_twitter_search_query(text)
+    if query:
+        return {"action": "search", "query": query, "limit": _extract_limit(text, default=8)}
+
+    return None
+
+
+def _parse_watch_username(text: str, add: bool) -> str | None:
+    lowered = text.lower()
+    if not any(keyword in lowered or keyword in text for keyword in ("watch", "关注", "监控")):
+        return None
+
+    action_words = (
+        ("加到", "加入", "添加", "关注", "add")
+        if add
+        else ("移除", "删除", "取消", "取关", "remove", "delete")
+    )
+    if not any(word in lowered or word in text for word in action_words):
+        return None
+    return _extract_twitter_username(text)
+
+
+def _extract_twitter_username(text: str) -> str | None:
+    url_match = re.search(r"(?:twitter|x)\.com/([A-Za-z0-9_]{1,20})(?:\b|/)", text)
+    if url_match:
+        return url_match.group(1)
+
+    at_match = re.search(r"@([A-Za-z0-9_]{1,20})", text)
+    if at_match:
+        return at_match.group(1)
+
+    patterns = [
+        r"(?:把|将)?\s*([A-Za-z][A-Za-z0-9_]{1,19})\s*(?:加到|加入|添加|移除|删除|取消|取关)",
+        r"([A-Za-z][A-Za-z0-9_]{1,19}).{0,8}(?:最新|昨天)",
+        r"([A-Za-z][A-Za-z0-9_]{1,19})\s*(?:最新|昨天)",
+        r"(?:最新|昨天)\s*([A-Za-z][A-Za-z0-9_]{1,19})",
+    ]
+    ignored = {"twitter", "tweet", "tweets", "watch", "list", "latest"}
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            username = match.group(1)
+            if username.lower() not in ignored:
+                return username
+    return None
+
+
+def _extract_limit(text: str, default: int = 5, max_limit: int = 20) -> int:
+    match = re.search(r"(\d{1,2})\s*(?:条|篇|个|tweets?)?", text, flags=re.IGNORECASE)
+    if not match:
+        return default
+    try:
+        return max(1, min(max_limit, int(match.group(1))))
+    except ValueError:
+        return default
+
+
+def _parse_cached_twitter_search_query(text: str) -> str | None:
+    patterns = [
+        r"关于\s*([A-Za-z0-9.$_\-\s\u4e00-\u9fff]{1,40}?)\s*(?:的)?(?:推特|twitter|tweets?)",
+        r"有没有\s*([A-Za-z0-9.$_\-\s\u4e00-\u9fff]{1,40}?)\s*(?:相关)?(?:推特|twitter|tweets?)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        query = re.sub(r"\s+", " ", match.group(1)).strip(" ，,。.?？")
+        if query and query not in {"某个公司", "某某某"}:
+            return query
+    return None
+
+
+async def _run_twitter_latest_job(chat_id: str, username: str, limit: int, adapter) -> None:
+    try:
+        from server.social.monitor import cache_user_tweets
+
+        posts = await cache_user_tweets(username, count=limit)
+        posts = sorted(posts, key=lambda post: post.posted_at, reverse=True)[:limit]
+        await adapter.send_message(chat_id, _format_twitter_posts(f"@{username} 最新推文", posts))
+    except Exception as e:
+        logger.exception(f"Twitter latest lookup failed: {e}")
+        await adapter.send_message(chat_id, "❌ 获取最新推文失败，请稍后重试。")
+
+
+async def _run_twitter_yesterday_job(chat_id: str, username: str, adapter) -> None:
+    try:
+        from server.social.monitor import cache_user_tweets
+
+        await cache_user_tweets(username, count=50)
+        start_utc, end_utc = _local_day_range_utc(days_ago=1)
+        posts = await _search_cached_twitter_posts(
+            "",
+            limit=20,
+            username=username,
+            start_utc=start_utc,
+            end_utc=end_utc,
+        )
+        await adapter.send_message(chat_id, _format_twitter_posts(f"@{username} 昨天的推文", posts))
+    except Exception as e:
+        logger.exception(f"Twitter yesterday lookup failed: {e}")
+        await adapter.send_message(chat_id, "❌ 查询昨天推文失败，请稍后重试。")
+
+
+async def _search_cached_twitter_posts(
+    query: str,
+    limit: int = 8,
+    username: str | None = None,
+    start_utc: datetime | None = None,
+    end_utc: datetime | None = None,
+) -> list:
+    from sqlalchemy import desc, select
+
+    from server.db.engine import get_session_factory
+    from server.db.models import SocialPost
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        statement = select(SocialPost)
+        if username:
+            statement = statement.where(SocialPost.username == username.strip().lstrip("@"))
+        if start_utc:
+            statement = statement.where(SocialPost.posted_at >= start_utc)
+        if end_utc:
+            statement = statement.where(SocialPost.posted_at < end_utc)
+        result = await session.execute(
+            statement.order_by(desc(SocialPost.posted_at), desc(SocialPost.id)).limit(300)
+        )
+        posts = list(result.scalars().all())
+
+    if query:
+        posts = [post for post in posts if _post_matches_cached_query(post, query)]
+    return posts[:limit]
+
+
+def _post_matches_cached_query(post, query: str) -> bool:
+    needle = query.strip().lower()
+    ticker = query.strip().upper().lstrip("$")
+    haystack = " ".join(
+        str(value or "")
+        for value in (
+            post.username,
+            post.content,
+            post.summary,
+            post.translated_content,
+            " ".join(str(item) for item in post.topics or []),
+            " ".join(str(item) for item in post.links or []),
+        )
+    ).lower()
+    if needle and needle in haystack:
+        return True
+    return ticker in {str(item).upper().lstrip("$") for item in post.mentioned_tickers or []}
+
+
+def _format_twitter_posts(title: str, posts: list) -> str:
+    if not posts:
+        return f"{title}\n\n本地缓存里暂时没有匹配内容。"
+
+    lines = [f"*{title}*", ""]
+    for post in posts:
+        posted = post.posted_at.astimezone().strftime("%Y-%m-%d %H:%M")
+        preview = _compact_text(post.summary or post.content or "（无正文）", 180)
+        marker = "重点关注 · " if getattr(post, "is_noteworthy", False) else ""
+        lines.append(f"#{post.id} {marker}@{post.username} · {posted}")
+        lines.append(preview)
+        if post.tweet_url:
+            lines.append(post.tweet_url)
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+def _compact_text(text: str, limit: int) -> str:
+    clean = re.sub(r"\n{3,}", "\n\n", text).strip()
+    if len(clean) <= limit:
+        return clean
+    return clean[: limit - 1].rstrip() + "..."
+
+
+def _local_day_range_utc(days_ago: int) -> tuple[datetime, datetime]:
+    local_tz = datetime.now().astimezone().tzinfo
+    now_local = datetime.now(local_tz)
+    target_date = (now_local - timedelta(days=days_ago)).date()
+    start_local = datetime.combine(target_date, time.min, tzinfo=local_tz)
+    end_local = start_local + timedelta(days=1)
+    return start_local.astimezone(UTC), end_local.astimezone(UTC)
 
 
 def _spawn_background_task(coro, label: str) -> None:

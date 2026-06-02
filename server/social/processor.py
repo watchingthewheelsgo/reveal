@@ -14,12 +14,14 @@ _ANALYZE_SYSTEM_PROMPT = """你是一个金融信息分析助手。分析以下 
 返回严格的 JSON（不要 markdown 代码块），包含以下字段:
 {
   "summary": "中文摘要，2-3句话概括核心信息",
-  "translation": "如果原文不是中文，翻译为中文；如果原文是中文则为 null",
+  "translation": "只翻译主推文正文；如果主推文原文是中文则为 null。不要把链接或引用内容放进译文",
   "mentioned_tickers": ["NVDA", "TSLA"],
   "topics": ["AI基建", "关税"],
   "sentiment": "bullish 或 bearish 或 neutral 或 mixed",
   "urgency": "high 或 medium 或 low",
-  "urgency_reason": "判定理由，一句话"
+  "urgency_reason": "判定理由，一句话",
+  "is_noteworthy": true,
+  "attention_reason": "如果非常值得关注，用一句话说明原因；否则为空字符串"
 }
 
 判定规则:
@@ -29,7 +31,10 @@ _ANALYZE_SYSTEM_PROMPT = """你是一个金融信息分析助手。分析以下 
 - urgency 判定:
   - high: 涉及政策变化、重大事件、财报意外、CEO 离职、并购等对股价有即时影响的信息
   - medium: 行业趋势、分析师观点、产品发布等有参考价值的信息
-  - low: 日常讨论、个人观点、非财经内容"""
+  - low: 日常讨论、个人观点、非财经内容
+- is_noteworthy: 只有当该信息值得用户立即停下来关注时才为 true，例如会显著影响持仓/关注
+  标的、揭示重大催化、出现异常市场信号，或包含可行动的新事实。普通观点、复述、涨跌感想
+  不要标为 true。"""
 
 
 @dataclass
@@ -41,6 +46,8 @@ class TweetAnalysis:
     sentiment: str = "neutral"
     urgency: str = "low"
     urgency_reason: str = ""
+    is_noteworthy: bool = False
+    attention_reason: str = ""
 
 
 class TweetProcessor:
@@ -118,7 +125,17 @@ def _parse_analysis(raw: str) -> TweetAnalysis:
         sentiment=str(data.get("sentiment") or "neutral"),
         urgency=str(data.get("urgency") or "low"),
         urgency_reason=str(data.get("urgency_reason") or ""),
+        is_noteworthy=_parse_bool(data.get("is_noteworthy")),
+        attention_reason=str(data.get("attention_reason") or ""),
     )
+
+
+def _parse_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "yes", "1", "是"}
+    return bool(value)
 
 
 def _is_auth_error(error: Exception) -> bool:

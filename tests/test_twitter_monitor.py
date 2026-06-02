@@ -11,7 +11,7 @@ from server.db import engine as db_engine
 from server.db.engine import get_session_factory
 from server.db.models import SocialPost, TwitterState
 from server.social.monitor import check_and_notify, fetch_user_tweets
-from server.social.processor import TweetAnalysis
+from server.social.processor import TweetAnalysis, _parse_analysis
 
 
 class DummyAdapter(BotAdapter):
@@ -54,8 +54,10 @@ class DummyProcessor:
             mentioned_tickers=["NVDA"],
             topics=["AI基建"],
             sentiment="neutral",
-            urgency="medium",
+            urgency="high",
             urgency_reason="测试",
+            is_noteworthy=True,
+            attention_reason="出现明确催化，值得立即关注。",
         )
 
     async def translate(self, text: str) -> str:
@@ -78,6 +80,27 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await db_engine.close_db()
         self.tmpdir.cleanup()
+
+    async def test_tweet_analysis_parser_preserves_attention_signal(self):
+        analysis = _parse_analysis(
+            """
+            {
+              "summary": "重大订单更新",
+              "translation": null,
+              "mentioned_tickers": ["nvda"],
+              "topics": ["AI基建"],
+              "sentiment": "bullish",
+              "urgency": "high",
+              "urgency_reason": "可能影响股价",
+              "is_noteworthy": true,
+              "attention_reason": "新增订单金额超预期"
+            }
+            """
+        )
+
+        self.assertTrue(analysis.is_noteworthy)
+        self.assertEqual(analysis.attention_reason, "新增订单金额超预期")
+        self.assertEqual(analysis.mentioned_tickers, ["NVDA"])
 
     async def test_fetch_user_tweets_prefers_graphql_when_auth_token_is_configured(self):
         graphql = AsyncMock(
@@ -210,17 +233,22 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(posts), 1)
         self.assertEqual(len(adapter.cards), 1)
         pushed = "\n".join([adapter.cards[0][1]["title"], *adapter.cards[0][1]["sections"]])
-        self.assertIn("Twitter Update · @alice", pushed)
+        self.assertIn("重点关注 · @alice", pushed)
+        self.assertIn("出现明确催化", pushed)
         self.assertIn("测试摘要", pushed)
         self.assertIn("hello https://example.com/report", pushed)
         self.assertIn("https://x.com/alice/status/101", pushed)
         self.assertIn("图片", pushed)
         self.assertIn("引用", pushed)
-        self.assertIn("引用链接 / 外部链接", pushed)
+        self.assertIn("参考", pushed)
+        self.assertNotIn("引用链接 / 外部链接", pushed)
+        self.assertNotIn("https://pbs.twimg.com/media/chart.jpg", pushed)
+        self.assertNotIn("quoted context", pushed)
         self.assertIn("消息 ID", pushed)
         self.assertNotIn("/research", pushed)
         self.assertNotIn("/deep", pushed)
         self.assertEqual(adapter.cards[0][1]["card_link"]["url"], "https://x.com/alice/status/101")
+        self.assertEqual(adapter.cards[0][1]["header"]["template"], "orange")
         self.assertIn("回复这张卡片", adapter.cards[0][1]["footer"])
         self.assertIn("quoted context", processor.summary_input)
         elements = adapter.cards[0][1]["elements"]
@@ -244,6 +272,8 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(media[0]["alt_text"], "chart")
         self.assertEqual(post.links, ["https://example.com/report"])
         self.assertEqual(references[0]["text"], "quoted context")
+        self.assertTrue(post.is_noteworthy)
+        self.assertEqual(post.attention_reason, "出现明确催化，值得立即关注。")
         self.assertEqual(quoted_post.username, "bob")
         self.assertEqual(quoted_post.content, "quoted context")
         self.assertFalse(quoted_post.is_pushed)

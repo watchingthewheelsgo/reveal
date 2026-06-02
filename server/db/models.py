@@ -4,7 +4,7 @@ All SQLAlchemy ORM models for Reveal.
 
 from datetime import date, datetime
 
-from sqlalchemy import JSON, Date, DateTime, Float, Integer, String, Text, func
+from sqlalchemy import JSON, Boolean, Date, DateTime, Float, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -111,6 +111,8 @@ class SocialPost(Base):
     topics: Mapped[list | None] = mapped_column(JSON, nullable=True)
     sentiment: Mapped[str | None] = mapped_column(String(20), nullable=True)
     urgency: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    is_noteworthy: Mapped[bool] = mapped_column(Boolean, default=False)
+    attention_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_pushed: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
 

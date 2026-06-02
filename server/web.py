@@ -170,6 +170,8 @@ def _post_summary(post: SocialPost, research: ResearchSession | None) -> dict[st
         "link_count": len(post.links or []),
         "media_count": len(post.media or []),
         "reference_count": len(post.referenced_tweets or []),
+        "is_noteworthy": post.is_noteworthy,
+        "attention_reason": post.attention_reason,
         "research": _research_summary(research) if research else None,
     }
 

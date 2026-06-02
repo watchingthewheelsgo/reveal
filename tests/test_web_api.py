@@ -35,6 +35,8 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
                 media=[{"url": "https://example.com/chart.png", "type": "image"}],
                 referenced_tweets=[{"type": "quote", "url": "https://x.com/bob/status/1"}],
                 raw_json={},
+                is_noteworthy=True,
+                attention_reason="High signal update",
                 posted_at=datetime.now(UTC),
                 is_pushed=True,
             )
@@ -60,6 +62,8 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(item["link_count"], 1)
         self.assertEqual(item["media_count"], 1)
         self.assertEqual(item["reference_count"], 1)
+        self.assertTrue(item["is_noteworthy"])
+        self.assertEqual(item["attention_reason"], "High signal update")
         self.assertEqual(item["research"]["status"], "active")
 
         detail_payload = await get_post(post_id)

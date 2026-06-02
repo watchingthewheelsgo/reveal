@@ -175,6 +175,8 @@ async def _upsert_social_post(
     post_topics = post.topics if post else None
     post_sentiment = post.sentiment if post else None
     post_urgency = post.urgency if post else None
+    post_is_noteworthy = bool(post.is_noteworthy) if post else False
+    post_attention_reason = post.attention_reason if post else None
 
     llm_context = _llm_context(content, tweet_url, links, references)
     if should_analyze and llm_processor and llm_context and not summary:
@@ -187,6 +189,8 @@ async def _upsert_social_post(
                 post_topics = analysis.topics or None
                 post_sentiment = analysis.sentiment
                 post_urgency = analysis.urgency
+                post_is_noteworthy = bool(analysis.is_noteworthy or analysis.urgency == "high")
+                post_attention_reason = analysis.attention_reason or analysis.urgency_reason or None
         except Exception as e:
             logger.warning(f"LLM processing failed for @{display_username}: {e}")
 
@@ -207,6 +211,8 @@ async def _upsert_social_post(
         "topics": post_topics,
         "sentiment": post_sentiment,
         "urgency": post_urgency,
+        "is_noteworthy": post_is_noteworthy,
+        "attention_reason": post_attention_reason,
         "posted_at": datetime.fromtimestamp(tweet_epoch, tz=UTC),
     }
 
@@ -255,6 +261,11 @@ async def check_and_notify(
     posts_to_push: list[SocialPost] = []
     max_cached_epoch = last_epoch
     newest_cached_tweet_id: str | None = None
+    push_candidate_ids = (
+        {_tweet_id(tweet) for tweet in tweets[-INITIAL_WATCH_BACKFILL_LIMIT:]}
+        if first_check
+        else None
+    )
 
     async with session_factory() as session:
         from sqlalchemy import select
@@ -284,7 +295,10 @@ async def check_and_notify(
                 max_cached_epoch = tweet_epoch
                 newest_cached_tweet_id = tweet_id
 
-            should_analyze = bool(tweet_epoch > last_epoch and llm_processor and not first_check)
+            push_candidate = tweet_epoch > last_epoch and (
+                push_candidate_ids is None or tweet_id in push_candidate_ids
+            )
+            should_analyze = bool(push_candidate and llm_processor)
             post = await _upsert_social_post(
                 session,
                 display_username,
@@ -296,11 +310,8 @@ async def check_and_notify(
             if post is None:
                 continue
 
-            if tweet_epoch > last_epoch and not post.is_pushed:
+            if push_candidate and not post.is_pushed:
                 posts_to_push.append(post)
-
-        if first_check and len(posts_to_push) > INITIAL_WATCH_BACKFILL_LIMIT:
-            posts_to_push = posts_to_push[-INITIAL_WATCH_BACKFILL_LIMIT:]
 
         if newest_cached_tweet_id:
             state.newest_tweet_id = newest_cached_tweet_id
@@ -359,6 +370,64 @@ async def check_and_notify(
         logger.info(f"@{account_key}: {len(successful_tweet_ids)} tweets notified")
 
     return posts_to_push
+
+
+async def cache_user_tweets(
+    username: str,
+    count: int = 10,
+    cursor: str | None = None,
+    llm_processor=None,
+) -> list[SocialPost]:
+    """Fetch a timeline page and persist every returned tweet without pushing cards."""
+    account_key = username.strip().lstrip("@")
+    data = await fetch_user_tweets(account_key, count=count, cursor=cursor)
+    if data is None:
+        return []
+
+    tweets = data.get("latest_tweets", [])
+    display_username = data.get("screen_name") or account_key
+    session_factory = get_session_factory()
+    cached_posts: list[SocialPost] = []
+    newest_cached_epoch = 0
+    newest_cached_tweet_id: str | None = None
+
+    async with session_factory() as session:
+        from sqlalchemy import select
+
+        for tweet in tweets:
+            tweet_epoch = _tweet_epoch(tweet)
+            tweet_id = _tweet_id(tweet)
+            if tweet_epoch > newest_cached_epoch:
+                newest_cached_epoch = tweet_epoch
+                newest_cached_tweet_id = tweet_id
+            post = await _upsert_social_post(
+                session,
+                display_username,
+                tweet,
+                data,
+                llm_processor=llm_processor,
+                should_analyze=bool(llm_processor),
+            )
+            if post is not None:
+                cached_posts.append(post)
+
+        result = await session.execute(
+            select(TwitterState).where(TwitterState.username == account_key)
+        )
+        state = result.scalar_one_or_none()
+        if state is None:
+            state = TwitterState(username=account_key, is_active=False)
+            session.add(state)
+        if newest_cached_epoch:
+            state.last_tweet_epoch = max(state.last_tweet_epoch, newest_cached_epoch)
+        if newest_cached_tweet_id:
+            state.newest_tweet_id = newest_cached_tweet_id
+        if history_cursor := data.get("history_cursor"):
+            state.history_cursor = str(history_cursor)
+        state.last_check_at = datetime.now(UTC)
+        await session.commit()
+
+    return cached_posts
 
 
 async def push_tweet_cards(
@@ -765,6 +834,13 @@ async def _build_tweet_card(
     elements.append(_md_div(metadata))
     sections.append(metadata)
 
+    if post.is_noteworthy:
+        alert = "**重点关注**"
+        if post.attention_reason:
+            alert += f"\n{_trim_text(post.attention_reason, 240)}"
+        elements.extend([{"tag": "hr"}, _md_div(alert)])
+        sections.append(alert)
+
     if post.summary:
         summary = f"**Summary**\n{_trim_text(post.summary, 700)}"
         elements.extend([{"tag": "hr"}, _md_div(summary)])
@@ -775,9 +851,16 @@ async def _build_tweet_card(
     sections.append(body)
 
     if post.translated_content:
-        translation = f"**译文**\n{_trim_text(post.translated_content, 900)}"
+        translation = (
+            f"**译文**\n{_trim_text(_display_translation_text(post.translated_content), 900)}"
+        )
         elements.extend([{"tag": "hr"}, _md_div(translation)])
         sections.append(translation)
+
+    if cross_ref and cross_ref.get("matches"):
+        match_text = f"**关联持仓/关注**\n{cross_ref['matches']}"
+        elements.extend([{"tag": "hr"}, _md_div(match_text)])
+        sections.append(match_text)
 
     if post.media:
         media_elements, media_section = await _tweet_media_card_elements(post.media, adapter)
@@ -786,27 +869,10 @@ async def _build_tweet_card(
         if media_section:
             sections.append(media_section)
 
-    if post.referenced_tweets:
-        reference_elements, reference_section = await _reference_card_elements(
-            post.referenced_tweets,
-            adapter,
-        )
-        if reference_elements:
-            elements.extend([{"tag": "hr"}, *reference_elements])
-        if reference_section:
-            sections.append(reference_section)
-
-    if post.links:
-        links = "**引用链接 / 外部链接**\n" + "\n".join(
-            f"- [{_display_url(link)}]({link})" for link in post.links[:8]
-        )
-        elements.extend([{"tag": "hr"}, _md_div(links)])
-        sections.append(links)
-
-    if cross_ref and cross_ref.get("matches"):
-        match_text = f"**关联持仓/关注**\n{cross_ref['matches']}"
-        elements.extend([{"tag": "hr"}, _md_div(match_text)])
-        sections.append(match_text)
+    reference_text = _reference_footer_text(post.referenced_tweets or [], post.links or [])
+    if reference_text:
+        elements.extend([{"tag": "hr"}, _md_div(reference_text)])
+        sections.append(reference_text)
 
     elements.extend([{"tag": "hr"}, _note_text("回复这张卡片并 @Reveal，可基于这条更新继续研究。")])
 
@@ -832,16 +898,25 @@ async def _build_tweet_card(
 
 
 def _tweet_card_title(post: SocialPost, is_backfill: bool = False) -> str:
-    prefix = "Twitter Backfill" if is_backfill else "New Twitter Update"
+    if post.is_noteworthy:
+        prefix = "重点关注"
+    else:
+        prefix = "Twitter Backfill" if is_backfill else "Twitter Update"
     flags = _post_type_label(post)
     summary = _trim_text(post.summary or post.content or "新推文", 52)
     return f"{prefix} · @{post.username}{flags} · {summary}"
 
 
 def _tweet_card_template(post: SocialPost) -> str:
-    if post.urgency == "high":
-        return "red"
-    return "orange"
+    if post.is_noteworthy or post.urgency == "high":
+        return "orange"
+    if post.urgency == "medium":
+        return "blue"
+    if post.urgency == "low" and (
+        post.mentioned_tickers or post.topics or post.sentiment in {"bullish", "bearish", "mixed"}
+    ):
+        return "green"
+    return "grey"
 
 
 def _tweet_metadata_text(post: SocialPost) -> str:
@@ -864,6 +939,8 @@ def _tweet_metadata_text(post: SocialPost) -> str:
         parts.append(f"**情绪**: {sentiment}")
     if post.urgency:
         parts.append(f"**优先级**: {post.urgency}")
+    if post.is_noteworthy:
+        parts.append("**标记**: 重点关注")
     return "\n".join(parts)
 
 
@@ -874,12 +951,18 @@ async def _tweet_media_card_elements(
     elements: list[dict[str, Any]] = [_md_div("**媒体**")]
     section_lines = ["**媒体**"]
     image_count = 0
+    image_total = 0
+    video_lines: list[str] = []
 
     for item in media[:MAX_PUSHED_MEDIA]:
         media_type = str(item.get("type") or "media").lower()
         display_url = str(item.get("video_url") or item.get("url") or "")
         preview_url = _media_preview_url(item)
         alt_text = str(item.get("alt_text") or media_type)
+
+        is_video = media_type.startswith(("video", "gif"))
+        if not is_video:
+            image_total += 1
 
         image_key = None
         if preview_url and image_count < MAX_CARD_IMAGES:
@@ -894,13 +977,14 @@ async def _tweet_media_card_elements(
             )
             image_count += 1
 
-        if media_type.startswith("video"):
-            line = f"- 视频: [{_display_url(display_url)}]({display_url})"
-        else:
-            line = f"- 图片: [{_display_url(display_url)}]({display_url})"
-        if alt := item.get("alt_text"):
-            line += f" ({_trim_text(str(alt), 80)})"
-        section_lines.append(line)
+        if is_video:
+            video_lines.append(f"- 视频: [{_display_url(display_url)}]({display_url})")
+
+    if image_count:
+        section_lines.append(f"- {image_count} 张图片已展示")
+    elif image_total:
+        section_lines.append(f"- {image_total} 张图片已缓存")
+    section_lines.extend(video_lines)
 
     if len(media) > MAX_PUSHED_MEDIA:
         section_lines.append(f"- 还有 {len(media) - MAX_PUSHED_MEDIA} 个媒体已缓存")
@@ -909,36 +993,35 @@ async def _tweet_media_card_elements(
     return elements, "\n".join(section_lines)
 
 
-async def _reference_card_elements(
+def _reference_footer_text(
     references: list[dict[str, Any]],
-    adapter: BotAdapter,
-) -> tuple[list[dict[str, Any]], str]:
-    elements: list[dict[str, Any]] = [_md_div("**关联推文**")]
-    section_lines = ["**关联推文**"]
+    links: list[str],
+) -> str:
+    lines: list[str] = []
+    if references:
+        ref_parts = []
+        for reference in references[:MAX_CARD_REFERENCES]:
+            label = _reference_type_label(str(reference.get("type") or "reference"))
+            username = reference.get("username")
+            url = str(reference.get("url") or "")
+            title = label if not username else f"{label} @{username}"
+            if url:
+                ref_parts.append(f"[{title}]({url})")
+            else:
+                ref_parts.append(title)
+        if len(references) > MAX_CARD_REFERENCES:
+            ref_parts.append(f"还有 {len(references) - MAX_CARD_REFERENCES} 条")
+        lines.append("引用: " + " · ".join(ref_parts))
 
-    for reference in references[:MAX_CARD_REFERENCES]:
-        label = _reference_type_label(str(reference.get("type") or "reference"))
-        url = str(reference.get("url") or "")
-        text = _trim_text(str(reference.get("text") or ""), 500)
-        username = reference.get("username")
-        heading = f"- {label}"
-        if username:
-            heading += f" @{username}"
-        if url:
-            heading += f": [{_display_url(url)}]({url})"
-        if text:
-            heading += f"\n{text}"
-        section_lines.append(heading)
-        elements.append(_md_div(heading))
+    if links:
+        link_parts = [f"[{_display_url(link)}]({link})" for link in links[:5]]
+        if len(links) > 5:
+            link_parts.append(f"还有 {len(links) - 5} 个")
+        lines.append("外链: " + " · ".join(link_parts))
 
-        media = reference.get("media")
-        if isinstance(media, list):
-            media_elements, _ = await _tweet_media_card_elements(media[:2], adapter)
-            elements.extend(media_elements[1:3])
-
-    if len(references) > MAX_CARD_REFERENCES:
-        section_lines.append(f"- 还有 {len(references) - MAX_CARD_REFERENCES} 条关联推文已缓存")
-    return elements, "\n".join(section_lines)
+    if not lines:
+        return ""
+    return "**参考**\n" + "\n".join(lines)
 
 
 def _media_preview_url(item: dict[str, Any]) -> str | None:
@@ -970,6 +1053,12 @@ def _md_div(content: str) -> dict[str, Any]:
 
 def _note_text(content: str) -> dict[str, Any]:
     return {"tag": "note", "elements": [{"tag": "plain_text", "content": content}]}
+
+
+def _display_translation_text(text: str) -> str:
+    context_prefixes = ("原文链接:", "外部链接:", "引用:", "回复:", "转发:")
+    lines = [line for line in text.splitlines() if not line.strip().startswith(context_prefixes)]
+    return "\n".join(lines).strip() or text
 
 
 def _trim_text(text: str, limit: int) -> str:
