@@ -3,9 +3,12 @@ Daily market briefing — integrated morning digest combining holdings, tracking
 Twitter signals, earnings calendar, and market context.
 """
 
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 
 from loguru import logger
+from sqlalchemy import desc, select
+
+from server.db.engine import get_session_factory
 
 
 async def generate_daily_briefing() -> str:
@@ -83,9 +86,6 @@ async def generate_daily_briefing() -> str:
 
     # Recent Twitter signals
     try:
-        from sqlalchemy import desc, select
-
-        from server.db.engine import get_session_factory
         from server.db.models import SocialPost
 
         session_factory = get_session_factory()
@@ -123,6 +123,41 @@ async def generate_daily_briefing() -> str:
         lines.append(f"{emoji} 昨日已实现盈亏: ${total_pnl:+.2f} ({len(yesterday_trades)} 笔)")
     else:
         lines.append("昨日无平仓交易")
+
+    lines.append("")
+    lines.append("*━━ 研究回顾 ━━*")
+
+    try:
+        from server.db.models import ResearchSession
+
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            seven_days_ago = today - timedelta(days=7)
+            result = await session.execute(
+                select(ResearchSession)
+                .where(
+                    ResearchSession.mentioned_tickers.isnot(None),
+                    ResearchSession.answer.isnot(None),
+                    ResearchSession.updated_at >= datetime.combine(seven_days_ago, time.min),
+                )
+                .order_by(desc(ResearchSession.updated_at))
+                .limit(5)
+            )
+            recent_research = result.scalars().all()
+
+        if recent_research:
+            for rs in recent_research:
+                tickers = rs.mentioned_tickers or []
+                if not tickers:
+                    continue
+                days_ago = (today - rs.updated_at.date()).days if rs.updated_at else 0
+                topic_preview = (rs.topic or rs.answer or "")[:60]
+                ticker_str = ", ".join(str(t) for t in tickers[:3])
+                lines.append(f"{days_ago}天前 [{ticker_str}]: {topic_preview}")
+        else:
+            lines.append("暂无近期研究记录")
+    except Exception:
+        lines.append("研究回顾数据暂不可用")
 
     lines.append("")
     lines.append("*━━ 今日事件 ━━*")

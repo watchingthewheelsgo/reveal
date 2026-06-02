@@ -1,5 +1,6 @@
 """Claude Agent SDK runtime configured for DeepSeek's Anthropic-compatible API."""
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
@@ -13,14 +14,23 @@ from claude_agent_sdk import (
     ProcessError,
     ResultMessage,
     SystemMessage,
+    ToolUseBlock,
     query,
 )
+from claude_agent_sdk.types import McpServerConfig, McpStdioServerConfig
 
 from config.settings import get_settings
 
-AGENT_TOOLS = ["WebSearch", "WebFetch"]
+AGENT_TOOLS = ["WebSearch", "WebFetch", "mcp__reveal"]
 DISALLOWED_LOCAL_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep"]
+MCP_SERVERS: dict[str, McpServerConfig] = {
+    "reveal": McpStdioServerConfig(
+        command="uv",
+        args=["run", "python", "-m", "server.mcp"],
+    ),
+}
 AgentEffort = Literal["low", "medium", "high", "xhigh", "max"]
+ProgressCallback = Callable[[str, str], Awaitable[None]]
 
 
 @dataclass
@@ -39,7 +49,11 @@ class AgentConfigurationError(AgentRuntimeError):
     pass
 
 
-async def run_agent(prompt: str, resume: str | None = None) -> AgentRunResult:
+async def run_agent(
+    prompt: str,
+    resume: str | None = None,
+    on_progress: ProgressCallback | None = None,
+) -> AgentRunResult:
     settings = get_settings()
     token = settings.get_agent_auth_token()
     if not token:
@@ -71,7 +85,7 @@ async def run_agent(prompt: str, resume: str | None = None) -> AgentRunResult:
         allowed_tools=AGENT_TOOLS,
         disallowed_tools=DISALLOWED_LOCAL_TOOLS,
         strict_mcp_config=True,
-        mcp_servers={},
+        mcp_servers=MCP_SERVERS,
         permission_mode="dontAsk",
         model=model,
         max_turns=settings.agent_max_turns,
@@ -82,9 +96,23 @@ async def run_agent(prompt: str, resume: str | None = None) -> AgentRunResult:
         setting_sources=[],
         extra_args={"bare": None},
         system_prompt=(
-            "你是 Reveal 的深度研究代理。围绕用户给定的 Twitter/X 更新做研究。"
-            "优先使用 WebSearch 和 WebFetch 获取外部证据。不要读取本地文件、运行命令或修改文件。"
-            "回答必须使用中文，区分事实、推断和不确定性，并在末尾列出来源 URL。"
+            "你是 Reveal 美股交易助手的研究代理。\n\n"
+            "你有以下工具可用:\n"
+            "- stock_quote: 查实时股价和涨跌幅\n"
+            "- technical_analysis: 查技术指标 (RSI, SMA, 量比, PE, PEG)\n"
+            "- stock_news: 查最近新闻\n"
+            "- portfolio: 查用户当前持仓和浮盈\n"
+            "- research_history: 查过去的研究结论\n"
+            "- stock_score: 多因子评分\n"
+            "- WebSearch: 搜索互联网\n"
+            "- WebFetch: 抓取网页内容\n\n"
+            "工作原则:\n"
+            "1. 先用内部工具 (stock_quote, technical_analysis 等) 获取精确数据\n"
+            "2. 再用 WebSearch/WebFetch 补充最新信息和外部观点\n"
+            "3. 结合用户持仓 (portfolio) 给出个性化建议\n"
+            "4. 区分事实、推断和不确定性\n"
+            "5. 输出中文，末尾列出来源 URL\n"
+            "6. 不要读取本地文件、运行命令或修改文件"
         ),
     )
 
@@ -101,6 +129,9 @@ async def run_agent(prompt: str, resume: str | None = None) -> AgentRunResult:
                     agent_session_id = str(session_id)
             elif isinstance(message, AssistantMessage):
                 for block in message.content:
+                    if isinstance(block, ToolUseBlock) and on_progress:
+                        detail = _format_tool_progress(block)
+                        await on_progress("tool_use", detail)
                     text = getattr(block, "text", None)
                     if text:
                         answer_parts.append(str(text))
@@ -131,6 +162,18 @@ async def run_agent(prompt: str, resume: str | None = None) -> AgentRunResult:
             "研究 Agent 没有返回内容，请稍后重试。",
         )
     return AgentRunResult(answer=answer, agent_session_id=agent_session_id)
+
+
+def _format_tool_progress(block: ToolUseBlock) -> str:
+    name = block.name or ""
+    input_data = block.input if isinstance(block.input, dict) else {}
+    if name == "WebSearch":
+        q = input_data.get("query", "")
+        return f"搜索: {q}"
+    if name == "WebFetch":
+        url = str(input_data.get("url", ""))
+        return f"抓取: {url[:80]}"
+    return f"工具: {name}"
 
 
 def _user_message_for_exception(exc: BaseException) -> str:

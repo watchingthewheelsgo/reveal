@@ -269,11 +269,8 @@ async def cmd_deep(ctx: BotContext, adapter):
 
     post_ref = ctx.args[0]
     focus = " ".join(ctx.args[1:]).strip()
-    await adapter.send_message(
-        ctx.chat_id, "🔎 已开始调用研究 Agent。完成后会把深挖结果推送到这里。"
-    )
     _spawn_background_task(
-        _run_deep_research_job(ctx.chat_id, post_ref, focus, adapter),
+        _run_deep_research_job(ctx.chat_id, post_ref, focus, adapter, ctx.reply_to_message_id),
         "deep research",
     )
 
@@ -286,25 +283,40 @@ async def cmd_ask(ctx: BotContext, adapter):
 
     post_ref = ctx.args[0]
     question = " ".join(ctx.args[1:]).strip()
-    await adapter.send_message(ctx.chat_id, "🤔 已开始调用研究 Agent。完成后会推送回答。")
     _spawn_background_task(
-        _run_research_ask_job(ctx.chat_id, post_ref, question, adapter),
+        _run_research_ask_job(ctx.chat_id, post_ref, question, adapter, ctx.reply_to_message_id),
         "research ask",
     )
 
 
 async def cmd_research(ctx: BotContext, adapter):
-    """Start a research topic for a social post: /research latest|POST_ID [focus]"""
+    """Start research: /research latest|POST_ID|TICKER|freeform question [focus]"""
     if not ctx.args:
         await adapter.send_message(
             ctx.chat_id,
-            "用法: /research latest [研究重点] 或 /research POST_ID [研究重点]",
+            "用法:\n"
+            "/research latest [研究重点] — 基于最新推文\n"
+            "/research NVDA [研究重点] — 研究某只股票\n"
+            "/research 美联储加息影响 — 自由研究",
         )
         return
 
-    post_ref = ctx.args[0]
+    first_arg = ctx.args[0]
     focus = " ".join(ctx.args[1:]).strip()
-    await _start_research_topic(ctx, adapter, post_ref, focus)
+
+    # Route: latest or numeric → tweet research
+    if first_arg == "latest" or first_arg.isdigit():
+        await _start_research_topic(ctx, adapter, first_arg, focus)
+        return
+
+    # Route: looks like a ticker (1-5 uppercase letters) → ticker research
+    if _looks_like_ticker(first_arg):
+        await _start_ticker_research(ctx, adapter, first_arg.upper(), focus)
+        return
+
+    # Route: freeform query
+    query = " ".join(ctx.args).strip()
+    await _start_freeform_research(ctx, adapter, query)
 
 
 async def cmd_topic(ctx: BotContext, adapter):
@@ -321,9 +333,8 @@ async def cmd_topic(ctx: BotContext, adapter):
             focus = " ".join(ctx.args[2:]).strip()
             await _start_research_topic(ctx, adapter, post_ref, focus)
         elif sub == "summary":
-            await adapter.send_message(ctx.chat_id, "正在总结当前研究线程，完成后会推送结果。")
             _spawn_background_task(
-                _run_topic_summary_job(ctx.chat_id, adapter),
+                _run_topic_summary_job(ctx.chat_id, adapter, ctx.reply_to_message_id),
                 "topic summary",
             )
         elif sub in {"stop", "reset"}:
@@ -358,6 +369,45 @@ async def cmd_topic(ctx: BotContext, adapter):
         await adapter.send_message(ctx.chat_id, "❌ 研究线程操作失败，请稍后重试。")
 
 
+def _looks_like_ticker(text: str) -> bool:
+    """Check if text looks like a US stock ticker (1-5 uppercase alpha chars)."""
+    cleaned = text.upper().strip()
+    return bool(cleaned) and len(cleaned) <= 5 and cleaned.isalpha()
+
+
+async def _start_ticker_research(
+    ctx: BotContext,
+    adapter,
+    ticker: str,
+    focus: str = "",
+) -> None:
+    try:
+        await adapter.send_message(ctx.chat_id, f"🔎 正在研究 {ticker}，完成后会推送结果。")
+        _spawn_background_task(
+            _run_ticker_research_job(ctx.chat_id, ticker, focus, adapter),
+            f"ticker research {ticker}",
+        )
+    except Exception as e:
+        logger.exception(f"Ticker research start failed: {e}")
+        await adapter.send_message(ctx.chat_id, "❌ 研究启动失败，请稍后重试。")
+
+
+async def _start_freeform_research(
+    ctx: BotContext,
+    adapter,
+    query: str,
+) -> None:
+    try:
+        await adapter.send_message(ctx.chat_id, "🔎 已开始自由研究，完成后会推送结果。")
+        _spawn_background_task(
+            _run_freeform_research_job(ctx.chat_id, query, adapter),
+            "freeform research",
+        )
+    except Exception as e:
+        logger.exception(f"Freeform research start failed: {e}")
+        await adapter.send_message(ctx.chat_id, "❌ 研究启动失败，请稍后重试。")
+
+
 async def _start_research_topic(
     ctx: BotContext,
     adapter,
@@ -382,24 +432,65 @@ async def _start_research_topic(
 
 
 async def handle_plain_message(ctx: BotContext, adapter):
-    """Route normal text into the active research topic, if one exists."""
+    """Route plain text: active topic → intent classification → action."""
     text = ctx.text.strip()
     if not text:
         return
     try:
         from server.research.service import get_active_topic
 
+        # Priority 1: route to active research topic
         topic = await get_active_topic(ctx.chat_id)
-        if topic is None:
+        if topic is not None:
+            _spawn_background_task(
+                _run_topic_message_job(ctx.chat_id, text, adapter, ctx.reply_to_message_id),
+                "topic message",
+            )
             return
-        await adapter.send_message(ctx.chat_id, "收到，正在让研究 Agent 继续分析。")
-        _spawn_background_task(
-            _run_topic_message_job(ctx.chat_id, text, adapter),
-            "topic message",
-        )
+
+        # Priority 2: classify intent with LLM
+        from server.llm.client import get_llm_client
+
+        llm = get_llm_client()
+        if not llm:
+            return
+
+        intent = await llm.classify_intent(text)
+        intent_type = intent.get("intent", "chat")
+        ticker = intent.get("ticker")
+        query = intent.get("query") or text
+
+        if intent_type == "research":
+            if ticker:
+                await _start_ticker_research(ctx, adapter, ticker.upper(), query)
+            else:
+                await _start_freeform_research(ctx, adapter, query)
+
+        elif intent_type == "question":
+            await adapter.send_message(ctx.chat_id, "🤔 正在查询...")
+            _spawn_background_task(
+                _run_quick_question_job(ctx.chat_id, query, adapter),
+                "quick question",
+            )
+
+        elif intent_type == "trade":
+            await adapter.send_message(
+                ctx.chat_id,
+                "交易记录请使用命令格式:\n/log buy TICKER PRICE QTY\n/log sell TICKER PRICE",
+            )
+
+        elif intent_type == "status":
+            await cmd_status(ctx, adapter)
+
+        else:
+            _spawn_background_task(
+                _run_chat_reply_job(ctx.chat_id, text, adapter),
+                "chat reply",
+            )
+
     except Exception as e:
-        logger.exception(f"Topic message handling failed: {e}")
-        await adapter.send_message(ctx.chat_id, "❌ 当前研究线程处理失败。")
+        logger.exception(f"Message handling failed: {e}")
+        await adapter.send_message(ctx.chat_id, "❌ 消息处理失败。")
 
 
 def _spawn_background_task(coro, label: str) -> None:
@@ -414,65 +505,191 @@ def _spawn_background_task(coro, label: str) -> None:
     task.add_done_callback(_log_result)
 
 
-async def _run_deep_research_job(chat_id: str, post_ref: str, focus: str, adapter) -> None:
+async def _run_deep_research_job(
+    chat_id: str, post_ref: str, focus: str, adapter, reply_to: str = ""
+) -> None:
+    from server.research.progress import ResearchProgressReporter
+
+    reporter = ResearchProgressReporter(adapter, chat_id, reply_to)
     try:
         from server.research.service import run_deep_research
 
-        run = await run_deep_research(chat_id, post_ref, focus)
+        await reporter.start("开始深度研究...")
+        run = await run_deep_research(chat_id, post_ref, focus, on_progress=reporter.on_progress)
+        post_label = f" · 推文 #{run.post.id}" if run.post else ""
+        post_id = run.post.id if run.post else run.session_id
         text = (
-            f"*研究线程 #{run.session_id} · 推文 #{run.post.id}*\n\n"
+            f"*研究线程 #{run.session_id}{post_label}*\n\n"
             f"{run.answer}\n\n"
             "继续追问可以直接发普通消息，或使用:\n"
-            f"/ask {run.post.id} 你的问题\n"
+            f"/ask {post_id} 你的问题\n"
             "/topic summary\n"
             "/topic stop"
         )
-        await adapter.send_message(chat_id, text)
+        await reporter.finish(text)
     except ResearchError as e:
-        await adapter.send_message(chat_id, f"❌ {e}")
+        await reporter.error(str(e))
     except Exception as e:
         logger.exception(f"Deep research failed: {e}")
-        await adapter.send_message(chat_id, "❌ 深挖失败，请稍后重试。")
+        await reporter.error("深挖失败，请稍后重试。")
 
 
-async def _run_research_ask_job(chat_id: str, post_ref: str, question: str, adapter) -> None:
+async def _run_research_ask_job(
+    chat_id: str, post_ref: str, question: str, adapter, reply_to: str = ""
+) -> None:
+    from server.research.progress import ResearchProgressReporter
+
+    reporter = ResearchProgressReporter(adapter, chat_id, reply_to)
     try:
         from server.research.service import ask_about_post
 
-        answer = await ask_about_post(chat_id, post_ref, question)
-        await adapter.send_message(chat_id, answer)
+        await reporter.start("正在分析问题...")
+        answer = await ask_about_post(chat_id, post_ref, question, on_progress=reporter.on_progress)
+        await reporter.finish(answer)
     except ResearchError as e:
-        await adapter.send_message(chat_id, f"❌ {e}")
+        await reporter.error(str(e))
     except Exception as e:
         logger.exception(f"Research ask failed: {e}")
-        await adapter.send_message(chat_id, "❌ 回答失败，请稍后重试。")
+        await reporter.error("回答失败，请稍后重试。")
 
 
-async def _run_topic_summary_job(chat_id: str, adapter) -> None:
+async def _run_topic_summary_job(chat_id: str, adapter, reply_to: str = "") -> None:
+    from server.research.progress import ResearchProgressReporter
+
+    reporter = ResearchProgressReporter(adapter, chat_id, reply_to)
     try:
         from server.research.service import summarize_topic
 
-        summary = await summarize_topic(chat_id)
-        await adapter.send_message(chat_id, summary)
+        await reporter.start("正在总结研究线程...")
+        summary = await summarize_topic(chat_id, on_progress=reporter.on_progress)
+        await reporter.finish(summary)
     except ResearchError as e:
-        await adapter.send_message(chat_id, f"❌ {e}")
+        await reporter.error(str(e))
     except Exception as e:
         logger.exception(f"Topic summary failed: {e}")
-        await adapter.send_message(chat_id, "❌ 研究线程总结失败，请稍后重试。")
+        await reporter.error("研究线程总结失败，请稍后重试。")
 
 
-async def _run_topic_message_job(chat_id: str, text: str, adapter) -> None:
+async def _run_topic_message_job(chat_id: str, text: str, adapter, reply_to: str = "") -> None:
+    from server.research.progress import ResearchProgressReporter
+
+    reporter = ResearchProgressReporter(adapter, chat_id, reply_to)
     try:
         from server.research.service import handle_topic_message
 
-        answer = await handle_topic_message(chat_id, text)
+        await reporter.start("研究 Agent 分析中...")
+        answer = await handle_topic_message(chat_id, text, on_progress=reporter.on_progress)
         if answer:
-            await adapter.send_message(chat_id, answer)
+            await reporter.finish(answer)
     except ResearchError as e:
-        await adapter.send_message(chat_id, f"❌ {e}")
+        await reporter.error(str(e))
     except Exception as e:
         logger.exception(f"Topic message handling failed: {e}")
-        await adapter.send_message(chat_id, "❌ 当前研究线程处理失败。")
+        await reporter.error("当前研究线程处理失败。")
+
+
+async def _run_quick_question_job(chat_id: str, query: str, adapter) -> None:
+    try:
+        from server.llm.client import get_llm_client
+        from server.research.context import build_portfolio_context
+
+        context = await build_portfolio_context()
+        llm = get_llm_client()
+        if not llm:
+            await adapter.send_message(chat_id, "❌ LLM 未配置。")
+            return
+        answer = await llm.chat(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        f"你是 Reveal 美股交易助手。简洁回答用户问题。\n\n用户当前持仓:\n{context}"
+                    ),
+                },
+                {"role": "user", "content": query},
+            ],
+            temperature=0.3,
+        )
+        await adapter.send_message(chat_id, answer)
+    except Exception as e:
+        logger.exception(f"Quick question failed: {e}")
+        await adapter.send_message(chat_id, "❌ 回答失败，请稍后重试。")
+
+
+async def _run_chat_reply_job(chat_id: str, text: str, adapter) -> None:
+    try:
+        from server.llm.client import get_llm_client
+
+        llm = get_llm_client()
+        if not llm:
+            return
+        answer = await llm.chat(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "你是 Reveal 美股交易助手。简短友好地回复用户。"
+                        "如果用户的问题涉及股票或投资，建议他们使用 /research 命令进行深度研究。"
+                    ),
+                },
+                {"role": "user", "content": text},
+            ],
+            temperature=0.5,
+            max_tokens=500,
+        )
+        await adapter.send_message(chat_id, answer)
+    except Exception as e:
+        logger.debug(f"Chat reply failed: {e}")
+
+
+async def _run_ticker_research_job(
+    chat_id: str, ticker: str, focus: str, adapter, reply_to: str = ""
+) -> None:
+    from server.research.progress import ResearchProgressReporter
+
+    reporter = ResearchProgressReporter(adapter, chat_id, reply_to)
+    try:
+        from server.research.service import research_ticker
+
+        await reporter.start(f"正在研究 {ticker}...")
+        run = await research_ticker(chat_id, ticker, focus, on_progress=reporter.on_progress)
+        text = (
+            f"*研究: {ticker} · 线程 #{run.session_id}*\n\n"
+            f"{run.answer}\n\n"
+            "继续追问可以直接发普通消息，或使用:\n"
+            "/topic summary — 汇总\n"
+            "/topic stop — 结束"
+        )
+        await reporter.finish(text)
+    except ResearchError as e:
+        await reporter.error(str(e))
+    except Exception as e:
+        logger.exception(f"Ticker research failed: {e}")
+        await reporter.error("研究失败，请稍后重试。")
+
+
+async def _run_freeform_research_job(chat_id: str, query: str, adapter, reply_to: str = "") -> None:
+    from server.research.progress import ResearchProgressReporter
+
+    reporter = ResearchProgressReporter(adapter, chat_id, reply_to)
+    try:
+        from server.research.service import start_freeform_research
+
+        await reporter.start("正在自由研究...")
+        run = await start_freeform_research(chat_id, query, on_progress=reporter.on_progress)
+        text = (
+            f"*自由研究 · 线程 #{run.session_id}*\n\n"
+            f"{run.answer}\n\n"
+            "继续追问可以直接发普通消息，或使用:\n"
+            "/topic summary — 汇总\n"
+            "/topic stop — 结束"
+        )
+        await reporter.finish(text)
+    except ResearchError as e:
+        await reporter.error(str(e))
+    except Exception as e:
+        logger.exception(f"Freeform research failed: {e}")
+        await reporter.error("研究失败，请稍后重试。")
 
 
 async def _run_twitter_check_job(

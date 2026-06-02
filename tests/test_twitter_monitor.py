@@ -10,6 +10,7 @@ from server.db import engine as db_engine
 from server.db.engine import get_session_factory
 from server.db.models import SocialPost, TwitterState
 from server.social.monitor import check_and_notify
+from server.social.processor import TweetAnalysis
 
 
 class DummyAdapter(BotAdapter):
@@ -34,6 +35,18 @@ class DummyAdapter(BotAdapter):
 class DummyProcessor:
     def __init__(self):
         self.summary_input = ""
+
+    async def analyze(self, context: str, author: str = "") -> TweetAnalysis:
+        self.summary_input = context
+        return TweetAnalysis(
+            summary="测试摘要",
+            translation=f"译文: {context}",
+            mentioned_tickers=["NVDA"],
+            topics=["AI基建"],
+            sentiment="neutral",
+            urgency="medium",
+            urgency_reason="测试",
+        )
 
     async def translate(self, text: str) -> str:
         return f"译文: {text}"

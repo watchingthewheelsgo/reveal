@@ -64,6 +64,19 @@ class TelegramBot(BotAdapter):
         text = self._format_card(card)
         await self.send_message(chat_id, text, parse_mode="Markdown")
 
+    async def send_message_returning_id(self, chat_id: str, text: str) -> str | None:
+        msg = await self.app.bot.send_message(chat_id=chat_id, text=text)
+        return str(msg.message_id)
+
+    async def edit_message(self, chat_id: str, message_id: str, text: str) -> None:
+        await self.app.bot.edit_message_text(chat_id=chat_id, message_id=int(message_id), text=text)
+
+    async def reply_in_thread(self, chat_id: str, message_id: str, text: str) -> str | None:
+        msg = await self.app.bot.send_message(
+            chat_id=chat_id, text=text, reply_to_message_id=int(message_id)
+        )
+        return str(msg.message_id)
+
     async def push_to_admin(self, text: str) -> None:
         for chat_id in self.admin_chat_ids:
             await self.send_message(chat_id, text)

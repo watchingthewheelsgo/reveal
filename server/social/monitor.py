@@ -194,15 +194,24 @@ async def check_and_notify(
             references = await _hydrate_references(_referenced_tweets(display_username, tweet))
             links = _tweet_links(tweet, tweet_url, media, references)
 
-            # Run LLM processing
+            # Run LLM structured analysis
             translated = None
             summary = None
+            post_tickers: list[str] | None = None
+            post_topics: list[str] | None = None
+            post_sentiment: str | None = None
+            post_urgency: str | None = None
             llm_context = _llm_context(content, tweet_url, links, references)
             if llm_processor and llm_context and not first_check:
                 try:
-                    if content:
-                        translated = await llm_processor.translate(content)
-                    summary = await llm_processor.summarize(llm_context)
+                    analysis = await llm_processor.analyze(llm_context, display_username)
+                    if analysis:
+                        summary = analysis.summary
+                        translated = analysis.translation
+                        post_tickers = analysis.mentioned_tickers or None
+                        post_topics = analysis.topics or None
+                        post_sentiment = analysis.sentiment
+                        post_urgency = analysis.urgency
                 except Exception as e:
                     logger.warning(f"LLM processing failed for @{account_key}: {e}")
 
@@ -220,6 +229,10 @@ async def check_and_notify(
                 is_reply=bool(tweet.get("is_reply")),
                 is_repost=bool(tweet.get("is_repost")),
                 is_quote=bool(tweet.get("is_quote")),
+                mentioned_tickers=post_tickers,
+                topics=post_topics,
+                sentiment=post_sentiment,
+                urgency=post_urgency,
                 posted_at=datetime.fromtimestamp(tweet_epoch, tz=UTC),
                 is_pushed=False,
             )
@@ -284,20 +297,24 @@ async def push_tweet_digest(
     if not posts:
         return
 
+    cross_ref = await _cross_reference_posts(posts) if not is_backfill else {}
     ordered_posts = sorted(posts, key=lambda post: post.posted_at)
     latest_posts = list(reversed(ordered_posts))[:DIGEST_PREVIEW_LIMIT]
     username = ordered_posts[-1].username
+
+    has_high = any(post.urgency == "high" for post in latest_posts)
+    icon = "🔴" if has_high else "🐦"
     title = (
         f"🐦 @{username} 已缓存最近 {len(posts)} 条更新"
         if is_backfill
-        else f"🐦 @{username} 有 {len(posts)} 条新更新"
+        else f"{icon} @{username} 有 {len(posts)} 条新更新"
     )
     sections: list[str] = []
     if len(posts) > DIGEST_PREVIEW_LIMIT:
         sections.append(f"显示最近 {DIGEST_PREVIEW_LIMIT} 条，其余已入库。")
 
     for index, post in enumerate(latest_posts, start=1):
-        sections.append(_format_digest_section(index, post))
+        sections.append(_format_digest_section(index, post, cross_ref.get(post.id)))
 
     footer = "完整正文、引用、外链和媒体已缓存到 Reveal；飞书消息就是即时研究入口。"
     card = _build_research_card(title=title, sections=sections, footer=footer)
@@ -606,6 +623,73 @@ def _format_action_lines(post_id: int) -> list[str]:
     ]
 
 
+async def _cross_reference_posts(posts: list[SocialPost]) -> dict[int, dict]:
+    """Cross-reference tweet tickers with user's portfolio and watchlist."""
+    all_tickers: set[str] = set()
+    for post in posts:
+        if post.mentioned_tickers:
+            all_tickers.update(str(t) for t in post.mentioned_tickers)
+    if not all_tickers:
+        return {}
+
+    held_tickers: set[str] = set()
+    position_info: dict[str, str] = {}
+    try:
+        from server.journal.service import get_trades_for_period
+
+        trades = await get_trades_for_period("all")
+        for trade in trades:
+            if trade.exit_price is None:
+                held_tickers.add(trade.ticker)
+                unrealized = (0.0 - trade.entry_price) * trade.quantity
+                try:
+                    from server.stock.data import get_current_price
+
+                    price = await get_current_price(trade.ticker)
+                    if price:
+                        unrealized = (price - trade.entry_price) * trade.quantity
+                        if trade.direction == "short":
+                            unrealized = -unrealized
+                except Exception:
+                    pass
+                position_info[trade.ticker] = (
+                    f"{trade.ticker} (持有 {trade.quantity} 股, 浮盈 ${unrealized:+,.0f})"
+                )
+    except Exception:
+        pass
+
+    tracked_tickers: set[str] = set()
+    try:
+        from server.stock.tracker import get_active_tickers
+
+        tracked_tickers = set(await get_active_tickers())
+    except Exception:
+        pass
+
+    from server.stock.scanner import DEFAULT_WATCHLIST
+
+    watchlist = set(DEFAULT_WATCHLIST)
+    user_tickers = held_tickers | tracked_tickers | watchlist
+
+    result: dict[int, dict] = {}
+    for post in posts:
+        if not post.mentioned_tickers or not post.id:
+            continue
+        overlap = {str(t) for t in post.mentioned_tickers} & user_tickers
+        if not overlap:
+            continue
+        parts = []
+        for ticker in sorted(overlap):
+            if ticker in position_info:
+                parts.append(position_info[ticker])
+            elif ticker in tracked_tickers:
+                parts.append(f"{ticker} (追踪中)")
+            else:
+                parts.append(f"{ticker} (关注列表)")
+        result[post.id] = {"matches": ", ".join(parts[:5])}
+    return result
+
+
 async def _push_card_to_admin(adapter: BotAdapter, card: dict) -> None:
     try:
         chat_ids = _admin_chat_ids(adapter)
@@ -647,10 +731,29 @@ def _compact_metadata(post: SocialPost) -> str:
     return " / ".join(parts)
 
 
-def _format_digest_section(index: int, post: SocialPost) -> str:
+def _format_digest_section(index: int, post: SocialPost, cross_ref: dict | None = None) -> str:
     flags = _post_type_label(post)
-    preview = _compact_text(post.summary or post.content or "（无正文）", 180)
-    lines = [f"{index}. #{post.id} {_time_ago(post.posted_at)}{flags}", preview]
+    urgency_icon = {"high": "🔴", "medium": "🟡"}.get(post.urgency or "", "")
+    header = f"{index}. {urgency_icon}#{post.id} {_time_ago(post.posted_at)}{flags}"
+
+    preview = _compact_text(post.summary or post.content or "（无正文）", 220)
+    lines = [header, preview]
+
+    if post.topics:
+        lines.append("🏷 " + " · ".join(str(t) for t in post.topics[:5]))
+
+    sentiment_label = {"bullish": "📈 看多", "bearish": "📉 看空", "mixed": "⚖️ 分歧"}.get(
+        post.sentiment or ""
+    )
+    if sentiment_label:
+        lines.append(sentiment_label)
+
+    if post.mentioned_tickers:
+        lines.append("📊 提及: " + ", ".join(str(t) for t in post.mentioned_tickers[:8]))
+
+    if cross_ref and cross_ref.get("matches"):
+        lines.append("⚠️ 关联持仓: " + cross_ref["matches"])
+
     metadata = _compact_metadata(post)
     if metadata:
         lines.append(metadata)

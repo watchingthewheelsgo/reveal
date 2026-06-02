@@ -13,6 +13,10 @@ from lark_oapi.api.im.v1 import (
     CreateMessageRequest,
     CreateMessageRequestBody,
     P2ImMessageReceiveV1,
+    PatchMessageRequest,
+    PatchMessageRequestBody,
+    ReplyMessageRequest,
+    ReplyMessageRequestBody,
 )
 from loguru import logger
 
@@ -115,11 +119,13 @@ class FeishuBot(BotAdapter):
 
         text = self._extract_text(content_str)
         sender_id = sender.get("sender_id", {})
+        root_id = message.get("root_id") or ""
         ctx = self._make_context(
             chat_id=chat_id,
             user_id=sender_id.get("open_id", ""),
             text=text,
             raw_data={"event": event_data, "body": body},
+            reply_to_message_id=root_id,
         )
         if self._router:
             if text.startswith("/"):
@@ -138,6 +144,18 @@ class FeishuBot(BotAdapter):
     async def send_card(self, chat_id: str, card: dict) -> None:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._send_card_sync, chat_id, card)
+
+    async def send_message_returning_id(self, chat_id: str, text: str) -> str | None:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._send_text_returning_id_sync, chat_id, text)
+
+    async def edit_message(self, chat_id: str, message_id: str, text: str) -> None:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._patch_message_sync, message_id, text)
+
+    async def reply_in_thread(self, chat_id: str, message_id: str, text: str) -> str | None:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._reply_in_thread_sync, message_id, text)
 
     async def push_to_admin(self, text: str) -> None:
         for chat_id in self.admin_chat_ids:
@@ -176,11 +194,13 @@ class FeishuBot(BotAdapter):
             text = parts[1] if len(parts) > 1 else ""
 
         sender_id = data.event.sender.sender_id.open_id if data.event.sender else ""
+        root_id = getattr(message, "root_id", None) or ""
         ctx = self._make_context(
             chat_id=chat_id,
             user_id=sender_id or "",
             text=text,
             raw_data={"event": data},
+            reply_to_message_id=root_id,
         )
         if self._router and self._event_loop and not self._event_loop.is_closed():
             coro = (
@@ -194,7 +214,14 @@ class FeishuBot(BotAdapter):
             except Exception as e:
                 logger.error(f"Feishu command handling failed: {e}")
 
-    def _make_context(self, chat_id: str, user_id: str, text: str, raw_data: dict) -> BotContext:
+    def _make_context(
+        self,
+        chat_id: str,
+        user_id: str,
+        text: str,
+        raw_data: dict,
+        reply_to_message_id: str = "",
+    ) -> BotContext:
         parts = text.strip().split()
         return BotContext(
             chat_id=chat_id,
@@ -203,6 +230,7 @@ class FeishuBot(BotAdapter):
             command=parts[0][1:] if parts and parts[0].startswith("/") else "",
             args=parts[1:] if len(parts) > 1 else [],
             raw_data=raw_data,
+            reply_to_message_id=reply_to_message_id,
         )
 
     def _extract_text(self, content_str: str) -> str:
@@ -246,6 +274,59 @@ class FeishuBot(BotAdapter):
         response = self.client.im.v1.message.create(request)
         if not response.success():
             raise RuntimeError(f"Feishu card send failed: {response.code} - {response.msg}")
+
+    def _send_text_returning_id_sync(self, chat_id: str, text: str) -> str | None:
+        request = (
+            CreateMessageRequest.builder()
+            .receive_id_type("chat_id")
+            .request_body(
+                CreateMessageRequestBody.builder()
+                .receive_id(chat_id)
+                .msg_type("text")
+                .content(json.dumps({"text": text}))
+                .build()
+            )
+            .build()
+        )
+        response = self.client.im.v1.message.create(request)
+        if not response.success():
+            raise RuntimeError(f"Feishu send failed: {response.code} - {response.msg}")
+        if response.data and response.data.message_id:
+            return response.data.message_id
+        return None
+
+    def _patch_message_sync(self, message_id: str, text: str) -> None:
+        request = (
+            PatchMessageRequest.builder()
+            .message_id(message_id)
+            .request_body(
+                PatchMessageRequestBody.builder().content(json.dumps({"text": text})).build()
+            )
+            .build()
+        )
+        response = self.client.im.v1.message.patch(request)
+        if not response.success():
+            logger.warning(f"Feishu patch failed: {response.code} - {response.msg}")
+
+    def _reply_in_thread_sync(self, message_id: str, text: str) -> str | None:
+        request = (
+            ReplyMessageRequest.builder()
+            .message_id(message_id)
+            .request_body(
+                ReplyMessageRequestBody.builder()
+                .msg_type("text")
+                .content(json.dumps({"text": text}))
+                .reply_in_thread(True)
+                .build()
+            )
+            .build()
+        )
+        response = self.client.im.v1.message.reply(request)
+        if not response.success():
+            raise RuntimeError(f"Feishu reply failed: {response.code} - {response.msg}")
+        if response.data and response.data.message_id:
+            return response.data.message_id
+        return None
 
     def _format_feishu_card(self, card: dict) -> dict:
         if card.get("elements") or card.get("header"):

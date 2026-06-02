@@ -3,10 +3,29 @@ Multi-provider LLM client compatible with OpenAI SDK format.
 Supports DeepSeek, Qwen, OpenAI, and any OpenAI-compatible endpoint.
 """
 
+import json
+
+from loguru import logger
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessageParam
 
 from config.settings import get_settings
+
+_INTENT_SYSTEM_PROMPT = """判断用户消息的意图。返回严格的 JSON（不要 markdown 代码块）:
+{
+  "intent": "research" 或 "trade" 或 "question" 或 "status" 或 "chat",
+  "ticker": "NVDA" 或 null,
+  "query": "用户实际想问或研究的问题"
+}
+
+意图判定规则:
+- research: 需要深度分析、搜索外部信息的问题（如"帮我分析NVDA"、"美联储加息影响"）
+- trade: 用户想记录交易（如"买入AAPL 180 100股"、"卖出TSLA"）
+- question: 可以用已有数据快速回答的问题（如"NVDA现在多少钱"、"我的持仓"、"今天行情怎么样"）
+- status: 查看系统状态
+- chat: 日常对话、感谢、问候等
+
+如果消息提到具体股票 ticker 或公司名，在 ticker 字段填入对应 ticker。"""
 
 
 class LLMClient:
@@ -30,10 +49,27 @@ class LLMClient:
         response = await self.client.chat.completions.create(
             model=model or self.model,
             messages=messages,
-            temperature=temperature or self.temperature,
+            temperature=temperature if temperature is not None else self.temperature,
             max_tokens=max_tokens or self.max_tokens,
         )
         return response.choices[0].message.content or ""
+
+    async def classify_intent(self, message: str) -> dict:
+        messages: list[ChatCompletionMessageParam] = [
+            {"role": "system", "content": _INTENT_SYSTEM_PROMPT},
+            {"role": "user", "content": message},
+        ]
+        raw = await self.chat(messages, temperature=0, max_tokens=200)
+        try:
+            cleaned = raw.strip()
+            if cleaned.startswith("```"):
+                lines = cleaned.split("\n")
+                lines = [line for line in lines if not line.strip().startswith("```")]
+                cleaned = "\n".join(lines)
+            return json.loads(cleaned)
+        except (json.JSONDecodeError, KeyError):
+            logger.debug(f"Intent classification parse error: {raw[:200]}")
+            return {"intent": "chat", "ticker": None, "query": message}
 
     async def translate(self, text: str, target_lang: str = "zh") -> str:
         messages: list[ChatCompletionMessageParam] = [

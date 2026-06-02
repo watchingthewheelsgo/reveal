@@ -78,6 +78,10 @@ async def _migrate_sqlite_social_posts(conn) -> None:
         "is_reply": "BOOLEAN NOT NULL DEFAULT 0",
         "is_repost": "BOOLEAN NOT NULL DEFAULT 0",
         "is_quote": "BOOLEAN NOT NULL DEFAULT 0",
+        "mentioned_tickers": "JSON",
+        "topics": "JSON",
+        "sentiment": "VARCHAR(20)",
+        "urgency": "VARCHAR(20)",
     }
     for column, column_type in columns.items():
         if column not in existing_columns:
@@ -93,6 +97,8 @@ async def _migrate_sqlite_research_sessions(conn) -> None:
     columns = {
         "agent_runtime": "VARCHAR(50) NOT NULL DEFAULT 'claude_sdk'",
         "agent_session_id": "VARCHAR(100)",
+        "source_query": "TEXT",
+        "mentioned_tickers": "JSON",
     }
     for column, column_type in columns.items():
         if column not in existing_columns:

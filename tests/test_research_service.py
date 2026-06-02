@@ -63,14 +63,19 @@ class ResearchServiceTest(unittest.IsolatedAsyncioTestCase):
         post_id = await self.create_post()
         calls: list[tuple[str, str | None]] = []
 
-        async def fake_run_agent(prompt: str, resume: str | None = None) -> AgentRunResult:
+        async def fake_run_agent(
+            prompt: str,
+            resume: str | None = None,
+            on_progress=None,
+        ) -> AgentRunResult:
             calls.append((prompt, resume))
             return AgentRunResult("agent answer", "agent-session-1")
 
         with patch("server.research.service.run_agent", new=fake_run_agent):
             run = await run_deep_research("chat-1", "latest", "AI infra")
 
-        self.assertEqual(run.post.id, post_id)
+        self.assertIsNotNone(run.post)
+        self.assertEqual(run.post.id, post_id)  # type: ignore[union-attr]
         self.assertEqual(run.answer, "agent answer")
         self.assertEqual(len(calls), 1)
         self.assertIsNone(calls[0][1])
@@ -94,7 +99,11 @@ class ResearchServiceTest(unittest.IsolatedAsyncioTestCase):
         topic = await start_topic("chat-1", str(post_id), "AI infra")
         calls: list[tuple[str, str | None]] = []
 
-        async def fake_run_agent(prompt: str, resume: str | None = None) -> AgentRunResult:
+        async def fake_run_agent(
+            prompt: str,
+            resume: str | None = None,
+            on_progress=None,
+        ) -> AgentRunResult:
             calls.append((prompt, resume))
             return AgentRunResult("LLM answer", "agent-session-2")
 
@@ -132,7 +141,11 @@ class ResearchServiceTest(unittest.IsolatedAsyncioTestCase):
         post_id = await self.create_post()
         topic = await start_topic("chat-1", str(post_id), "AI infra")
 
-        async def fake_run_agent(prompt: str, resume: str | None = None) -> AgentRunResult:
+        async def fake_run_agent(
+            prompt: str,
+            resume: str | None = None,
+            on_progress=None,
+        ) -> AgentRunResult:
             raise AgentRuntimeError("authentication failed", "研究 Agent 认证失败")
 
         with patch("server.research.service.run_agent", new=fake_run_agent):
@@ -161,7 +174,11 @@ class ResearchServiceTest(unittest.IsolatedAsyncioTestCase):
         await self.set_agent_session_id(topic.id, "stale-session")
         calls: list[tuple[str, str | None]] = []
 
-        async def fake_run_agent(prompt: str, resume: str | None = None) -> AgentRunResult:
+        async def fake_run_agent(
+            prompt: str,
+            resume: str | None = None,
+            on_progress=None,
+        ) -> AgentRunResult:
             calls.append((prompt, resume))
             if resume == "stale-session":
                 raise AgentRuntimeError(

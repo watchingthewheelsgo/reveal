@@ -20,6 +20,7 @@ class BotContext:
     command: str = ""
     args: list[str] = field(default_factory=list)
     raw_data: dict = field(default_factory=dict)
+    reply_to_message_id: str = ""
 
 
 class BotAdapter(ABC):
@@ -39,6 +40,19 @@ class BotAdapter(ABC):
 
     @abstractmethod
     async def push_to_admin(self, text: str) -> None: ...
+
+    async def send_message_returning_id(self, chat_id: str, text: str) -> str | None:
+        """Send a message and return its ID for later editing."""
+        await self.send_message(chat_id, text)
+        return None
+
+    async def edit_message(self, chat_id: str, message_id: str, text: str) -> None:
+        """Edit a previously sent message in-place."""
+
+    async def reply_in_thread(self, chat_id: str, message_id: str, text: str) -> str | None:
+        """Reply inside a thread anchored to message_id."""
+        await self.send_message(chat_id, text)
+        return None
 
     def is_authorized(self, ctx: BotContext) -> bool:
         return True

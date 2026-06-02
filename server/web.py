@@ -122,7 +122,7 @@ async def deep_research(post_id: int, payload: ResearchRequest):
         raise HTTPException(status_code=500, detail="Research agent failed") from exc
     return {
         "session_id": result.session_id,
-        "post_id": result.post.id,
+        "post_id": result.post.id if result.post else post_id,
         "answer": result.answer,
     }
 
