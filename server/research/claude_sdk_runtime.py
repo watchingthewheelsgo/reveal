@@ -69,8 +69,8 @@ async def run_agent(
     token = settings.get_agent_auth_token()
     if not token:
         raise AgentConfigurationError(
-            "Claude Agent SDK runtime requires ANTHROPIC_AUTH_TOKEN, or OPENAI_API_KEY.",
-            "研究 Agent 未配置 DeepSeek API Key。请设置 ANTHROPIC_AUTH_TOKEN 或 OPENAI_API_KEY。",
+            "Claude Agent SDK runtime requires ANTHROPIC_AUTH_TOKEN or DEEPSEEK_API_KEY.",
+            "研究 Agent 未配置 DeepSeek API Key。请设置 ANTHROPIC_AUTH_TOKEN 或 DEEPSEEK_API_KEY。",
         )
 
     base_url = settings.get_agent_base_url()

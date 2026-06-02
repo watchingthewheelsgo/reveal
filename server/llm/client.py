@@ -4,9 +4,10 @@ Supports DeepSeek, Qwen, OpenAI, and any OpenAI-compatible endpoint.
 """
 
 import json
+import re
 
 from loguru import logger
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, AuthenticationError
 from openai.types.chat import ChatCompletionMessageParam
 
 from config.settings import get_settings
@@ -32,12 +33,13 @@ class LLMClient:
     def __init__(self):
         settings = get_settings()
         self.client = AsyncOpenAI(
-            api_key=settings.openai_api_key,
-            base_url=settings.openai_base_url,
+            api_key=settings.get_llm_auth_token(),
+            base_url=settings.get_llm_base_url(),
         )
-        self.model = settings.openai_model
+        self.model = settings.get_llm_model()
         self.max_tokens = settings.max_tokens
         self.temperature = settings.temperature
+        self.auth_failed = False
 
     async def chat(
         self,
@@ -46,12 +48,20 @@ class LLMClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> str:
-        response = await self.client.chat.completions.create(
-            model=model or self.model,
-            messages=messages,
-            temperature=temperature if temperature is not None else self.temperature,
-            max_tokens=max_tokens or self.max_tokens,
-        )
+        if self.auth_failed:
+            raise LLMAuthenticationError("LLM authentication is disabled after a previous failure.")
+        try:
+            response = await self.client.chat.completions.create(
+                model=model or self.model,
+                messages=messages,
+                temperature=temperature if temperature is not None else self.temperature,
+                max_tokens=max_tokens or self.max_tokens,
+            )
+        except AuthenticationError as exc:
+            self.auth_failed = True
+            raise LLMAuthenticationError(
+                "DeepSeek authentication failed. Check DEEPSEEK_API_KEY or ANTHROPIC_AUTH_TOKEN."
+            ) from exc
         return response.choices[0].message.content or ""
 
     async def classify_intent(self, message: str) -> dict:
@@ -59,8 +69,9 @@ class LLMClient:
             {"role": "system", "content": _INTENT_SYSTEM_PROMPT},
             {"role": "user", "content": message},
         ]
-        raw = await self.chat(messages, temperature=0, max_tokens=200)
+        raw = ""
         try:
+            raw = await self.chat(messages, temperature=0, max_tokens=200)
             cleaned = raw.strip()
             if cleaned.startswith("```"):
                 lines = cleaned.split("\n")
@@ -69,7 +80,14 @@ class LLMClient:
             return json.loads(cleaned)
         except (json.JSONDecodeError, KeyError):
             logger.debug(f"Intent classification parse error: {raw[:200]}")
-            return {"intent": "chat", "ticker": None, "query": message}
+            return classify_intent_locally(message)
+        except LLMAuthenticationError as e:
+            logger.warning(
+                "Intent classification disabled: LLM authentication failed. "
+                "Check DEEPSEEK_API_KEY or ANTHROPIC_AUTH_TOKEN."
+            )
+            logger.debug(f"Intent classification auth error: {e}")
+            return classify_intent_locally(message)
 
     async def translate(self, text: str, target_lang: str = "zh") -> str:
         messages: list[ChatCompletionMessageParam] = [
@@ -110,6 +128,63 @@ class LLMClient:
 
 
 _llm_client: LLMClient | None = None
+
+
+class LLMAuthenticationError(RuntimeError):
+    """Raised after the configured OpenAI-compatible key has failed authentication."""
+
+
+def classify_intent_locally(message: str) -> dict:
+    """Small deterministic fallback used when the lightweight LLM classifier is unavailable."""
+    text = message.strip()
+    lowered = text.lower()
+    ticker = _extract_ticker(text)
+
+    if any(keyword in lowered for keyword in {"status", "状态", "系统"}):
+        return {"intent": "status", "ticker": ticker, "query": text}
+
+    trade_keywords = {"买入", "卖出", "做空", "平仓", "trade", "buy", "sell"}
+    if any(keyword in lowered for keyword in trade_keywords):
+        return {"intent": "trade", "ticker": ticker, "query": text}
+
+    if ticker:
+        quick_keywords = {"价格", "多少钱", "现价", "当前", "quote", "price"}
+        if any(keyword in lowered for keyword in quick_keywords):
+            return {"intent": "question", "ticker": ticker, "query": text}
+        return {"intent": "research", "ticker": ticker, "query": text}
+
+    research_keywords = {
+        "分析",
+        "研究",
+        "深挖",
+        "怎么看",
+        "为什么",
+        "影响",
+        "财报",
+        "新闻",
+        "search",
+        "research",
+    }
+    if any(keyword in lowered for keyword in research_keywords):
+        return {"intent": "research", "ticker": None, "query": text}
+
+    question_keywords = {"持仓", "portfolio", "行情", "今天", "收益", "pnl", "盈亏"}
+    if any(keyword in lowered for keyword in question_keywords):
+        return {"intent": "question", "ticker": None, "query": text}
+
+    return {"intent": "chat", "ticker": None, "query": text}
+
+
+def _extract_ticker(message: str) -> str | None:
+    cashtag = re.search(r"\$([A-Za-z]{1,6})(?=\b)", message)
+    if cashtag:
+        return cashtag.group(1).upper()
+
+    for match in re.finditer(r"(?<![A-Za-z])([A-Z]{1,6})(?![A-Za-z])", message):
+        value = match.group(1).upper()
+        if value not in {"AI", "CEO", "CFO", "ETF", "IPO", "USD", "API", "LLM"}:
+            return value
+    return None
 
 
 def get_llm_client() -> LLMClient | None:

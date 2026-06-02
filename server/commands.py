@@ -455,13 +455,10 @@ async def handle_plain_message(ctx: BotContext, adapter):
             return
 
         # Priority 3: classify intent with LLM
-        from server.llm.client import get_llm_client
+        from server.llm.client import classify_intent_locally, get_llm_client
 
         llm = get_llm_client()
-        if not llm:
-            return
-
-        intent = await llm.classify_intent(text)
+        intent = await llm.classify_intent(text) if llm else classify_intent_locally(text)
         intent_type = intent.get("intent", "chat")
         ticker = intent.get("ticker")
         query = intent.get("query") or text

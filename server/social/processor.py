@@ -73,7 +73,8 @@ class TweetProcessor:
                 self._auth_failed = True
                 logger.warning(
                     "Tweet analysis disabled: LLM authentication failed. "
-                    "Check OPENAI_API_KEY / OPENAI_BASE_URL for the lightweight tweet analyzer."
+                    "Check DEEPSEEK_API_KEY or ANTHROPIC_AUTH_TOKEN for the lightweight "
+                    "tweet analyzer."
                 )
             else:
                 logger.warning(f"Tweet analysis failed: {e}")

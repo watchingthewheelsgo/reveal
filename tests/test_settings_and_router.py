@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from config.settings import Settings
 from server.bot.base import BotAdapter, BotContext, CommandRouter
 from server.commands import cmd_research
+from server.llm.client import classify_intent_locally
 
 
 class SettingsTest(unittest.TestCase):
@@ -67,6 +68,54 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(settings.get_agent_sonnet_model(), "native-sonnet")
         self.assertEqual(settings.get_agent_haiku_model(), "native-haiku")
 
+    def test_deepseek_key_configures_lightweight_llm(self):
+        with patch.dict(
+            os.environ,
+            {
+                "DEEPSEEK_API_KEY": "deepseek-key",
+                "DEEPSEEK_BASE_URL": "https://example.com/v1",
+                "DEEPSEEK_MODEL": "deepseek-chat-test",
+                "ANTHROPIC_AUTH_TOKEN": "anthropic-key",
+                "OPENAI_API_KEY": "legacy-key",
+            },
+            clear=False,
+        ):
+            settings = self.build_settings()
+
+        self.assertEqual(settings.get_llm_auth_token(), "deepseek-key")
+        self.assertEqual(settings.get_llm_base_url(), "https://example.com/v1")
+        self.assertEqual(settings.get_llm_model(), "deepseek-chat-test")
+
+    def test_anthropic_token_beats_legacy_openai_key_for_lightweight_llm(self):
+        with patch.dict(
+            os.environ,
+            {
+                "DEEPSEEK_API_KEY": "",
+                "ANTHROPIC_AUTH_TOKEN": "anthropic-key",
+                "OPENAI_API_KEY": "legacy-key",
+            },
+            clear=False,
+        ):
+            settings = self.build_settings()
+
+        self.assertEqual(settings.get_llm_auth_token(), "anthropic-key")
+
+    def test_legacy_openai_compatible_base_url_still_works(self):
+        with patch.dict(
+            os.environ,
+            {
+                "DEEPSEEK_BASE_URL": "",
+                "DEEPSEEK_MODEL": "",
+                "OPENAI_BASE_URL": "https://legacy.example.com/v1",
+                "OPENAI_MODEL": "legacy-model",
+            },
+            clear=False,
+        ):
+            settings = self.build_settings()
+
+        self.assertEqual(settings.get_llm_base_url(), "https://legacy.example.com/v1")
+        self.assertEqual(settings.get_llm_model(), "legacy-model")
+
     def test_unknown_agent_runtime_is_rejected(self):
         with patch.dict(os.environ, {"AGENT_RUNTIME": "custom"}, clear=False):
             with self.assertRaises(ValidationError):
@@ -121,6 +170,14 @@ class CommandRouterTest(unittest.TestCase):
 
         self.assertFalse(called)
         self.assertEqual(adapter.messages, [("chat-1", "未授权访问。")])
+
+
+class IntentFallbackTest(unittest.TestCase):
+    def test_stock_message_routes_to_research(self):
+        intent = classify_intent_locally("看看今天MRVL 股票")
+
+        self.assertEqual(intent["intent"], "research")
+        self.assertEqual(intent["ticker"], "MRVL")
 
 
 class ResearchCommandTest(unittest.TestCase):

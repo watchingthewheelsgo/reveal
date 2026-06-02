@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     database_echo: bool = Field(default=False, alias="DATABASE_ECHO")
 
     # LLM
+    deepseek_api_key: str = Field(default="", alias="DEEPSEEK_API_KEY")
+    deepseek_base_url: str = Field(default="", alias="DEEPSEEK_BASE_URL")
+    deepseek_model: str = Field(default="", alias="DEEPSEEK_MODEL")
+    # Backward-compatible names for older OpenAI-compatible DeepSeek config.
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
     openai_base_url: str = Field(default="https://api.deepseek.com/v1", alias="OPENAI_BASE_URL")
     openai_model: str = Field(default="deepseek-chat", alias="OPENAI_MODEL")
@@ -55,7 +59,16 @@ class Settings(BaseSettings):
     temperature: float = Field(default=0.7, alias="TEMPERATURE")
 
     def is_llm_configured(self) -> bool:
-        return bool(self.openai_api_key)
+        return bool(self.get_llm_auth_token())
+
+    def get_llm_auth_token(self) -> str:
+        return self.deepseek_api_key or self.anthropic_auth_token or self.openai_api_key
+
+    def get_llm_base_url(self) -> str:
+        return self.deepseek_base_url or self.openai_base_url or "https://api.deepseek.com/v1"
+
+    def get_llm_model(self) -> str:
+        return self.deepseek_model or self.openai_model or "deepseek-chat"
 
     # Finnhub
     finnhub_api_key: str = Field(default="", alias="FINNHUB_API_KEY")
@@ -112,7 +125,7 @@ class Settings(BaseSettings):
         return self.anthropic_base_url
 
     def get_agent_auth_token(self) -> str:
-        return self.anthropic_auth_token or self.openai_api_key
+        return self.anthropic_auth_token or self.deepseek_api_key or self.openai_api_key
 
     def get_agent_model(self) -> str:
         return self.anthropic_model
