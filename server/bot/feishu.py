@@ -13,6 +13,8 @@ from lark_oapi.api.im.v1 import (
     CreateMessageRequest,
     CreateMessageRequestBody,
     P2ImMessageReceiveV1,
+    PatchMessageRequest,
+    PatchMessageRequestBody,
     ReplyMessageRequest,
     ReplyMessageRequestBody,
 )
@@ -33,8 +35,6 @@ from server.bot.base import (
 
 
 class FeishuBot(BotAdapter):
-    supports_message_edit = False
-
     def __init__(self):
         settings = get_settings()
         self.app_id = settings.feishu_app_id
@@ -160,6 +160,10 @@ class FeishuBot(BotAdapter):
     async def reply_in_thread(self, chat_id: str, message_id: str, text: str) -> str | None:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._reply_in_thread_sync, message_id, text)
+
+    async def reply_card_in_thread(self, chat_id: str, message_id: str, card: dict) -> str | None:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._reply_card_in_thread_sync, message_id, card)
 
     async def push_to_admin(self, text: str) -> None:
         for chat_id in self.admin_chat_ids:
@@ -306,9 +310,16 @@ class FeishuBot(BotAdapter):
         return None
 
     def _patch_message_sync(self, message_id: str, text: str) -> None:
-        # Feishu message.patch only supports interactive card messages. Progress
-        # messages are text replies, so text editing is intentionally disabled.
-        return None
+        payload = self._format_progress_card(text)
+        request = (
+            PatchMessageRequest.builder()
+            .message_id(message_id)
+            .request_body(PatchMessageRequestBody.builder().content(json.dumps(payload)).build())
+            .build()
+        )
+        response = self.client.im.v1.message.patch(request)
+        if not response.success():
+            logger.warning(f"Feishu patch failed: {response.code} - {response.msg}")
 
     def _reply_in_thread_sync(self, message_id: str, text: str) -> str | None:
         request = (
@@ -326,6 +337,27 @@ class FeishuBot(BotAdapter):
         response = self.client.im.v1.message.reply(request)
         if not response.success():
             raise RuntimeError(f"Feishu reply failed: {response.code} - {response.msg}")
+        if response.data and response.data.message_id:
+            return response.data.message_id
+        return None
+
+    def _reply_card_in_thread_sync(self, message_id: str, card: dict) -> str | None:
+        payload = self._format_feishu_card(card)
+        request = (
+            ReplyMessageRequest.builder()
+            .message_id(message_id)
+            .request_body(
+                ReplyMessageRequestBody.builder()
+                .msg_type("interactive")
+                .content(json.dumps(payload))
+                .reply_in_thread(True)
+                .build()
+            )
+            .build()
+        )
+        response = self.client.im.v1.message.reply(request)
+        if not response.success():
+            raise RuntimeError(f"Feishu card reply failed: {response.code} - {response.msg}")
         if response.data and response.data.message_id:
             return response.data.message_id
         return None
@@ -360,4 +392,21 @@ class FeishuBot(BotAdapter):
                 "title": {"tag": "plain_text", "content": title},
             },
             "elements": elements,
+        }
+
+    def _format_progress_card(self, text: str) -> dict:
+        template = "green" if text.startswith("✅") else "red" if text.startswith("❌") else "blue"
+        title = "Reveal Research"
+        return {
+            "config": {"wide_screen_mode": True, "update_multi": True},
+            "header": {
+                "template": template,
+                "title": {"tag": "plain_text", "content": title},
+            },
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {"tag": "lark_md", "content": text},
+                }
+            ],
         }

@@ -53,6 +53,11 @@ class BotAdapter(ABC):
         await self.send_card(chat_id, card)
         return None
 
+    async def reply_card_in_thread(self, chat_id: str, message_id: str, card: dict) -> str | None:
+        """Reply with a card inside a thread anchored to message_id."""
+        await self.send_card(chat_id, card)
+        return None
+
     async def edit_message(self, chat_id: str, message_id: str, text: str) -> None:
         """Edit a previously sent message in-place."""
 

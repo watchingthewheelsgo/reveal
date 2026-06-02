@@ -18,6 +18,7 @@ from claude_agent_sdk import (
     query,
 )
 from claude_agent_sdk.types import McpServerConfig, McpStdioServerConfig
+from loguru import logger
 
 from config.settings import get_settings
 
@@ -131,6 +132,13 @@ async def run_agent(
     agent_session_id = resume
     result_answer: str | None = None
     result_error: str | None = None
+    logger.info(
+        "Research agent run start: resume={} model={} max_turns={} tools={}",
+        bool(resume),
+        model,
+        settings.agent_max_turns,
+        AGENT_ALLOWED_TOOLS,
+    )
 
     try:
         async for message in query(prompt=prompt, options=options):
@@ -138,11 +146,14 @@ async def run_agent(
                 session_id = message.data.get("session_id")
                 if session_id:
                     agent_session_id = str(session_id)
+                    logger.info("Research agent session initialized: {}", agent_session_id)
             elif isinstance(message, AssistantMessage):
                 for block in message.content:
-                    if isinstance(block, ToolUseBlock) and on_progress:
+                    if isinstance(block, ToolUseBlock):
                         detail = _format_tool_progress(block)
-                        await on_progress("tool_use", detail)
+                        logger.info("Research agent tool use: {}", detail)
+                        if on_progress:
+                            await on_progress("tool_use", detail)
                     text = getattr(block, "text", None)
                     if text:
                         answer_parts.append(str(text))
@@ -164,6 +175,7 @@ async def run_agent(
         raise AgentRuntimeError(str(exc), _user_message_for_exception(exc)) from exc
 
     if result_error:
+        logger.info("Research agent result error: {}", result_error)
         raise AgentRuntimeError(result_error, _user_message_for_text(result_error))
 
     answer = result_answer or "\n".join(answer_parts).strip()
@@ -173,6 +185,9 @@ async def run_agent(
             "研究 Agent 没有返回内容，请稍后重试。",
         )
     if _looks_like_pseudo_tool_call_answer(answer):
+        logger.info(
+            "Research agent returned pseudo tool calls; retrying={}", _retrying_pseudo_tools
+        )
         if not _retrying_pseudo_tools:
             retry_prompt = (
                 f"{prompt}\n\n"
@@ -190,6 +205,11 @@ async def run_agent(
             "Agent returned pseudo tool-call JSON instead of executing tools.",
             "研究 Agent 没有真正执行工具调用，请稍后重试或换用更强模型。",
         )
+    logger.info(
+        "Research agent run complete: session_id={} answer_chars={}",
+        agent_session_id or "-",
+        len(answer),
+    )
     return AgentRunResult(answer=answer, agent_session_id=agent_session_id)
 
 
