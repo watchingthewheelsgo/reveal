@@ -33,6 +33,7 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         if db_url.startswith("sqlite"):
+            await _migrate_sqlite_twitter_state(conn)
             await _migrate_sqlite_social_posts(conn)
             await _migrate_sqlite_research_sessions(conn)
 
@@ -63,6 +64,21 @@ def get_session_factory():
     if AsyncSessionLocal is None:
         raise RuntimeError("Database not initialized.")
     return AsyncSessionLocal
+
+
+async def _migrate_sqlite_twitter_state(conn) -> None:
+    """Add columns for Twitter account state created before cursor tracking existed."""
+    result = await conn.execute(text("PRAGMA table_info(twitter_state)"))
+    existing_columns = {row[1] for row in result.fetchall()}
+    if not existing_columns:
+        return
+    columns = {
+        "newest_tweet_id": "VARCHAR(50)",
+        "history_cursor": "TEXT",
+    }
+    for column, column_type in columns.items():
+        if column not in existing_columns:
+            await conn.execute(text(f"ALTER TABLE twitter_state ADD COLUMN {column} {column_type}"))
 
 
 async def _migrate_sqlite_social_posts(conn) -> None:

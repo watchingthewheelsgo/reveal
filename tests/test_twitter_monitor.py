@@ -1,7 +1,8 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from sqlalchemy import func, select
 
@@ -9,7 +10,7 @@ from server.bot.base import BotAdapter
 from server.db import engine as db_engine
 from server.db.engine import get_session_factory
 from server.db.models import SocialPost, TwitterState
-from server.social.monitor import check_and_notify
+from server.social.monitor import check_and_notify, fetch_user_tweets
 from server.social.processor import TweetAnalysis
 
 
@@ -78,10 +79,46 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
         await db_engine.close_db()
         self.tmpdir.cleanup()
 
+    async def test_fetch_user_tweets_prefers_graphql_when_auth_token_is_configured(self):
+        graphql = AsyncMock(
+            return_value={
+                "screen_name": "alice",
+                "history_cursor": "cursor-bottom",
+                "latest_tweets": [
+                    {"tweetID": "2", "date_epoch": 2, "text": "newer"},
+                    {"tweetID": "1", "date_epoch": 1, "text": "older"},
+                ],
+            }
+        )
+
+        with (
+            patch(
+                "server.social.monitor.get_settings",
+                return_value=SimpleNamespace(twitter_auth_tokens=["token-a"]),
+            ),
+            patch("server.social.monitor.fetch_user_tweets_graphql", new=graphql),
+        ):
+            data = await fetch_user_tweets("alice", count=10, cursor="cursor-old")
+
+        graphql.assert_awaited_once_with(
+            "alice",
+            ["token-a"],
+            count=10,
+            cursor="cursor-old",
+        )
+        assert data is not None
+        self.assertEqual(data["history_cursor"], "cursor-bottom")
+        self.assertEqual([tweet["tweetID"] for tweet in data["latest_tweets"]], ["1", "2"])
+        self.assertEqual(data["latest_tweets"][0]["tweetURL"], "https://x.com/alice/status/1")
+
     async def test_first_check_backfills_latest_ten_tweets(self):
-        async def fake_fetch_user_tweets(username: str):
+        requested_counts = []
+
+        async def fake_fetch_user_tweets(username: str, count: int = 20, cursor: str | None = None):
+            requested_counts.append((count, cursor))
             return {
                 "screen_name": username,
+                "history_cursor": "cursor-old-page",
                 "latest_tweets": [
                     {"tweetID": str(tweet_id), "date_epoch": tweet_id, "text": f"tweet {tweet_id}"}
                     for tweet_id in range(101, 113)
@@ -93,6 +130,7 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
             posts = await check_and_notify("alice", adapter)
 
         self.assertEqual(len(posts), 10)
+        self.assertEqual(requested_counts, [(10, None)])
         self.assertEqual(len(adapter.cards), 10)
         self.assertEqual(adapter.cards[0][0], "admin")
         pushed = "\n".join(
@@ -113,14 +151,16 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
             post_count = await session.scalar(select(func.count()).select_from(SocialPost))
             old_post = (
                 await session.execute(select(SocialPost).where(SocialPost.tweet_id == "101"))
-            ).scalar_one_or_none()
+            ).scalar_one()
             latest_post = (
                 await session.execute(select(SocialPost).where(SocialPost.tweet_id == "112"))
             ).scalar_one()
 
         self.assertEqual(state.last_tweet_epoch, 112)
-        self.assertEqual(post_count, 10)
-        self.assertIsNone(old_post)
+        self.assertEqual(state.newest_tweet_id, "112")
+        self.assertEqual(state.history_cursor, "cursor-old-page")
+        self.assertEqual(post_count, 12)
+        self.assertFalse(old_post.is_pushed)
         self.assertTrue(latest_post.is_pushed)
 
     async def test_new_tweet_stores_and_pushes_rich_metadata(self):
@@ -129,7 +169,7 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
             session.add(TwitterState(username="alice", last_tweet_epoch=100))
             await session.commit()
 
-        async def fake_fetch_user_tweets(username: str):
+        async def fake_fetch_user_tweets(username: str, count: int = 20, cursor: str | None = None):
             return {
                 "screen_name": username,
                 "latest_tweets": [
@@ -187,6 +227,9 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
             post = (
                 await session.execute(select(SocialPost).where(SocialPost.tweet_id == "101"))
             ).scalar_one()
+            quoted_post = (
+                await session.execute(select(SocialPost).where(SocialPost.tweet_id == "88"))
+            ).scalar_one()
 
         self.assertTrue(post.is_quote)
         self.assertEqual(post.tweet_url, "https://x.com/alice/status/101")
@@ -197,6 +240,9 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(media[0]["alt_text"], "chart")
         self.assertEqual(post.links, ["https://example.com/report"])
         self.assertEqual(references[0]["text"], "quoted context")
+        self.assertEqual(quoted_post.username, "bob")
+        self.assertEqual(quoted_post.content, "quoted context")
+        self.assertFalse(quoted_post.is_pushed)
         self.assertTrue(post.is_pushed)
 
 

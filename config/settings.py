@@ -96,6 +96,9 @@ class Settings(BaseSettings):
     twitter_accounts: Annotated[list[str], NoDecode] = Field(
         default_factory=list, alias="TWITTER_ACCOUNTS"
     )
+    twitter_auth_tokens: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, alias="TWITTER_AUTH_TOKENS"
+    )
 
     # Claude Agent SDK runtime backed by DeepSeek's Anthropic-compatible API.
     agent_runtime: str = Field(default="claude_sdk", alias="AGENT_RUNTIME")
@@ -142,29 +145,40 @@ class Settings(BaseSettings):
     @field_validator("twitter_accounts", mode="before")
     @classmethod
     def parse_twitter_accounts(cls, value) -> list[str]:
+        return cls._parse_string_list(value, "TWITTER_ACCOUNTS")
+
+    @field_validator("twitter_auth_tokens", mode="before")
+    @classmethod
+    def parse_twitter_auth_tokens(cls, value) -> list[str]:
+        return cls._parse_string_list(value, "TWITTER_AUTH_TOKENS")
+
+    @classmethod
+    def _parse_string_list(cls, value, field_name: str) -> list[str]:
         if value is None or value == "":
             return []
         if isinstance(value, list):
-            raw_accounts = value
+            raw_items = value
         elif isinstance(value, str):
             stripped = value.strip()
             if not stripped:
                 return []
             if stripped.startswith("["):
-                raw_accounts = json.loads(stripped)
+                raw_items = json.loads(stripped)
             else:
-                raw_accounts = stripped.split(",")
+                raw_items = stripped.split(",")
         else:
-            raise ValueError("TWITTER_ACCOUNTS must be a comma-separated string or JSON list")
+            raise ValueError(f"{field_name} must be a comma-separated string or JSON list")
 
-        accounts: list[str] = []
+        items: list[str] = []
         seen: set[str] = set()
-        for item in raw_accounts:
-            username = str(item).strip().lstrip("@")
-            if username and username not in seen:
-                accounts.append(username)
-                seen.add(username)
-        return accounts
+        for item in raw_items:
+            normalized = str(item).strip()
+            if field_name == "TWITTER_ACCOUNTS":
+                normalized = normalized.lstrip("@")
+            if normalized and normalized not in seen:
+                items.append(normalized)
+                seen.add(normalized)
+        return items
 
     @field_validator("daily_pick_time", "daily_briefing_time")
     @classmethod

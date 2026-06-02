@@ -73,6 +73,7 @@ Bot 命令默认只允许配置的管理员 chat 使用。至少配置一个：
 ## Twitter/X Monitor
 
 `TWITTER_ACCOUNTS` 支持逗号分隔或 JSON 数组，例如 `elonmusk,naval`。
+配置 `TWITTER_AUTH_TOKENS` 后，Reveal 会优先使用 X GraphQL 拉取列表页并保存历史分页 cursor；没有 token 时才退回 vxTwitter。
 
 也可以在 bot 里动态管理：
 
@@ -83,7 +84,7 @@ Bot 命令默认只允许配置的管理员 chat 使用。至少配置一个：
 /twatch check
 ```
 
-首次添加账号后会立即检查一次，最多回拉最近 10 条推文并缓存。之后按 `TWITTER_MONITOR_INTERVAL` 增量检查新推文，默认每 3600 秒一次。飞书/Telegram 是主交互入口：系统会推送可操作研究卡片，完整正文、外链、媒体和引用信息保存在 Reveal 数据库中。
+首次添加账号后会立即检查一次，最多推送最近 10 条推文；列表接口已经返回的内容都会缓存。之后按 `TWITTER_MONITOR_INTERVAL` 增量检查新推文，默认每 3600 秒一次。飞书/Telegram 是主交互入口：系统会推送可操作研究卡片，完整正文、外链、媒体和引用信息保存在 Reveal 数据库中。
 
 收到提醒后，优先在 IM 里继续操作：
 

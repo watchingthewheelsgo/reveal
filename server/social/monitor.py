@@ -7,10 +7,13 @@ from typing import Any
 
 import httpx
 from loguru import logger
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from config.settings import get_settings
 from server.bot.base import BotAdapter
 from server.db.engine import get_session_factory
 from server.db.models import SocialPost, TwitterState
+from server.social.twitter_graphql import fetch_user_tweets_graphql
 
 TWITTER_STATUS_URL_RE = re.compile(r"https?://(?:www\.)?(?:twitter|x)\.com/([^/\s]+)/status/(\d+)")
 URL_RE = re.compile(r"https?://[^\s<>)\]]+")
@@ -67,8 +70,24 @@ async def set_twitter_account_active(username: str, is_active: bool) -> None:
         await session.commit()
 
 
-async def fetch_user_tweets(username: str) -> dict | None:
-    """Fetch latest tweets for a user via vxTwitter API."""
+async def fetch_user_tweets(
+    username: str,
+    count: int = 20,
+    cursor: str | None = None,
+) -> dict | None:
+    """Fetch a user timeline page, preferring direct X GraphQL when configured."""
+    settings = get_settings()
+    if settings.twitter_auth_tokens:
+        data = await fetch_user_tweets_graphql(
+            username,
+            settings.twitter_auth_tokens,
+            count=count,
+            cursor=cursor,
+        )
+        if data is not None and "latest_tweets" in data:
+            return _normalize_timeline_data(data, username)
+        logger.debug(f"X GraphQL timeline fetch failed for @{username}; falling back to vxTwitter")
+
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.get(
@@ -87,13 +106,8 @@ async def fetch_user_tweets(username: str) -> dict | None:
                 logger.warning(f"vxTwitter returned invalid data for @{username}")
                 return None
 
-            # Sort by time
-            data["latest_tweets"] = sorted(
-                data["latest_tweets"], key=lambda t: t.get("date_epoch", 0)
-            )
-            screen_name = data.get("screen_name") or username
-            for tweet in data["latest_tweets"]:
-                _enrich_tweet(tweet, screen_name, data)
+            data["source"] = "vxtwitter"
+            data = _normalize_timeline_data(data, username)
 
             if cache_control := resp.headers.get("cache-control"):
                 if max_age := _parse_cache_max_age(cache_control):
@@ -126,119 +140,173 @@ async def fetch_tweet(username: str, tweet_id: str) -> dict | None:
     return data
 
 
+async def _upsert_social_post(
+    session: AsyncSession,
+    display_username: str,
+    tweet: dict[str, Any],
+    user_data: dict[str, Any],
+    llm_processor=None,
+    should_analyze: bool = False,
+    hydrate_references: bool = True,
+) -> SocialPost | None:
+    from sqlalchemy import select
+
+    _enrich_tweet(tweet, display_username, user_data)
+    tweet_id = _tweet_id(tweet)
+    tweet_epoch = _tweet_epoch(tweet)
+    if not tweet_id or tweet_epoch <= 0:
+        logger.warning(f"@{display_username}: skipped tweet with incomplete cache key: {tweet}")
+        return None
+
+    existing = await session.execute(select(SocialPost).where(SocialPost.tweet_id == tweet_id))
+    post = existing.scalar_one_or_none()
+
+    content = tweet.get("text") or ""
+    tweet_url = _tweet_url(display_username, tweet)
+    media = _tweet_media(tweet)
+    references = _referenced_tweets(display_username, tweet)
+    if hydrate_references:
+        references = await _hydrate_references(session, references)
+    links = _tweet_links(tweet, tweet_url, media, references)
+
+    translated = post.translated_content if post else None
+    summary = post.summary if post else None
+    post_tickers = post.mentioned_tickers if post else None
+    post_topics = post.topics if post else None
+    post_sentiment = post.sentiment if post else None
+    post_urgency = post.urgency if post else None
+
+    llm_context = _llm_context(content, tweet_url, links, references)
+    if should_analyze and llm_processor and llm_context and not summary:
+        try:
+            analysis = await llm_processor.analyze(llm_context, display_username)
+            if analysis:
+                summary = analysis.summary
+                translated = analysis.translation
+                post_tickers = analysis.mentioned_tickers or None
+                post_topics = analysis.topics or None
+                post_sentiment = analysis.sentiment
+                post_urgency = analysis.urgency
+        except Exception as e:
+            logger.warning(f"LLM processing failed for @{display_username}: {e}")
+
+    fields = {
+        "username": display_username,
+        "tweet_url": tweet_url,
+        "content": content,
+        "translated_content": translated,
+        "summary": summary,
+        "media": media,
+        "links": links,
+        "referenced_tweets": references,
+        "raw_json": tweet,
+        "is_reply": bool(tweet.get("is_reply")),
+        "is_repost": bool(tweet.get("is_repost")),
+        "is_quote": bool(tweet.get("is_quote")),
+        "mentioned_tickers": post_tickers,
+        "topics": post_topics,
+        "sentiment": post_sentiment,
+        "urgency": post_urgency,
+        "posted_at": datetime.fromtimestamp(tweet_epoch, tz=UTC),
+    }
+
+    if post:
+        for key, value in fields.items():
+            setattr(post, key, value)
+        return post
+
+    post = SocialPost(
+        tweet_id=tweet_id,
+        is_pushed=False,
+        **fields,
+    )
+    session.add(post)
+    return post
+
+
 async def check_and_notify(
     username: str,
     adapter: BotAdapter | None = None,
     llm_processor=None,
 ):
     """Check for new tweets from a user and push notifications."""
-    data = await fetch_user_tweets(username)
-    if data is None:
-        return []
-
-    tweets = data.get("latest_tweets", [])
-    if not tweets:
-        return []
-
     account_key = username.strip().lstrip("@")
-    display_username = data.get("screen_name") or account_key
     session_factory = get_session_factory()
-    posts_to_push = []
-    max_seen_epoch = 0
     last_epoch = 0
     first_check = False
 
     async with session_factory() as session:
         from sqlalchemy import select
 
-        # Get last seen epoch
         result = await session.execute(
             select(TwitterState).where(TwitterState.username == account_key)
         )
         state = result.scalar_one_or_none()
-
         last_epoch = state.last_tweet_epoch if state else 0
-        max_seen_epoch = last_epoch
-        if last_epoch <= 0:
-            first_check = True
-            tweets = tweets[-INITIAL_WATCH_BACKFILL_LIMIT:]
+        first_check = last_epoch <= 0
+
+    fetch_count = INITIAL_WATCH_BACKFILL_LIMIT if first_check else 20
+    data = await fetch_user_tweets(username, count=fetch_count)
+    if data is None:
+        return []
+
+    tweets = data.get("latest_tweets", [])
+    display_username = data.get("screen_name") or account_key
+    posts_to_push: list[SocialPost] = []
+    max_cached_epoch = last_epoch
+    newest_cached_tweet_id: str | None = None
+
+    async with session_factory() as session:
+        from sqlalchemy import select
+
+        result = await session.execute(
+            select(TwitterState).where(TwitterState.username == account_key)
+        )
+        state = result.scalar_one_or_none()
+        if state is None:
+            state = TwitterState(username=account_key)
+            session.add(state)
+
+        if first_check:
             logger.info(
                 f"@{account_key}: first watch check; backfilling up to "
                 f"{INITIAL_WATCH_BACKFILL_LIMIT} tweets"
             )
 
         for tweet in tweets:
-            _enrich_tweet(tweet, display_username, data)
-            tweet_epoch = tweet.get("date_epoch", 0)
             tweet_id = _tweet_id(tweet)
             if not tweet_id:
                 logger.warning(f"@{account_key}: skipped tweet with missing id: {tweet}")
                 continue
 
-            if tweet_epoch <= last_epoch:
-                continue
-            max_seen_epoch = max(max_seen_epoch, tweet_epoch)
+            tweet_epoch = _tweet_epoch(tweet)
+            if tweet_epoch > max_cached_epoch:
+                max_cached_epoch = tweet_epoch
+                newest_cached_tweet_id = tweet_id
 
-            # Check if already seen (cross-check by tweet_id)
-            existing = await session.execute(
-                select(SocialPost).where(SocialPost.tweet_id == tweet_id)
+            should_analyze = bool(tweet_epoch > last_epoch and llm_processor and not first_check)
+            post = await _upsert_social_post(
+                session,
+                display_username,
+                tweet,
+                data,
+                llm_processor=llm_processor,
+                should_analyze=should_analyze,
             )
-            existing_post = existing.scalar_one_or_none()
-            if existing_post:
-                if not existing_post.is_pushed:
-                    posts_to_push.append(existing_post)
+            if post is None:
                 continue
 
-            content = tweet.get("text") or ""
-            tweet_url = _tweet_url(display_username, tweet)
-            media = _tweet_media(tweet)
-            references = await _hydrate_references(_referenced_tweets(display_username, tweet))
-            links = _tweet_links(tweet, tweet_url, media, references)
+            if tweet_epoch > last_epoch and not post.is_pushed:
+                posts_to_push.append(post)
 
-            # Run LLM structured analysis
-            translated = None
-            summary = None
-            post_tickers: list[str] | None = None
-            post_topics: list[str] | None = None
-            post_sentiment: str | None = None
-            post_urgency: str | None = None
-            llm_context = _llm_context(content, tweet_url, links, references)
-            if llm_processor and llm_context and not first_check:
-                try:
-                    analysis = await llm_processor.analyze(llm_context, display_username)
-                    if analysis:
-                        summary = analysis.summary
-                        translated = analysis.translation
-                        post_tickers = analysis.mentioned_tickers or None
-                        post_topics = analysis.topics or None
-                        post_sentiment = analysis.sentiment
-                        post_urgency = analysis.urgency
-                except Exception as e:
-                    logger.warning(f"LLM processing failed for @{account_key}: {e}")
+        if first_check and len(posts_to_push) > INITIAL_WATCH_BACKFILL_LIMIT:
+            posts_to_push = posts_to_push[-INITIAL_WATCH_BACKFILL_LIMIT:]
 
-            post = SocialPost(
-                username=display_username,
-                tweet_id=tweet_id,
-                tweet_url=tweet_url,
-                content=content,
-                translated_content=translated,
-                summary=summary,
-                media=media,
-                links=links,
-                referenced_tweets=references,
-                raw_json=tweet,
-                is_reply=bool(tweet.get("is_reply")),
-                is_repost=bool(tweet.get("is_repost")),
-                is_quote=bool(tweet.get("is_quote")),
-                mentioned_tickers=post_tickers,
-                topics=post_topics,
-                sentiment=post_sentiment,
-                urgency=post_urgency,
-                posted_at=datetime.fromtimestamp(tweet_epoch, tz=UTC),
-                is_pushed=False,
-            )
-            session.add(post)
-            posts_to_push.append(post)
+        if newest_cached_tweet_id:
+            state.newest_tweet_id = newest_cached_tweet_id
+        if history_cursor := data.get("history_cursor"):
+            state.history_cursor = str(history_cursor)
+        state.last_check_at = datetime.now(UTC)
 
         await session.commit()
 
@@ -270,15 +338,18 @@ async def check_and_notify(
             select(TwitterState).where(TwitterState.username == account_key)
         )
         state = result.scalar_one_or_none()
-        next_epoch = last_epoch if push_failed else max_seen_epoch
+        next_epoch = last_epoch if push_failed else max_cached_epoch
         if state:
             state.last_tweet_epoch = max(state.last_tweet_epoch, next_epoch)
             state.last_check_at = datetime.now(UTC)
+            if newest_cached_tweet_id:
+                state.newest_tweet_id = newest_cached_tweet_id
         else:
             session.add(
                 TwitterState(
                     username=account_key,
                     last_tweet_epoch=next_epoch,
+                    newest_tweet_id=newest_cached_tweet_id,
                     last_check_at=datetime.now(UTC),
                 )
             )
@@ -378,6 +449,20 @@ def _time_ago(dt: datetime) -> str:
     return "刚刚"
 
 
+def _normalize_timeline_data(data: dict[str, Any], username: str) -> dict[str, Any]:
+    tweets = data.get("latest_tweets")
+    if not isinstance(tweets, list):
+        data["latest_tweets"] = []
+        return data
+
+    data["latest_tweets"] = sorted(tweets, key=_tweet_epoch)
+    screen_name = data.get("screen_name") or username
+    for tweet in data["latest_tweets"]:
+        if isinstance(tweet, dict):
+            _enrich_tweet(tweet, screen_name, data)
+    return data
+
+
 def _enrich_tweet(tweet: dict[str, Any], username: str, user_data: dict[str, Any]) -> None:
     tweet["user_bio"] = user_data.get("description")
     tweet["is_repost"] = bool(tweet.get("retweetURL") or tweet.get("retweet"))
@@ -396,6 +481,13 @@ def _tweet_id(tweet: dict[str, Any]) -> str:
         or tweet.get("conversationID")
     )
     return str(value) if value else ""
+
+
+def _tweet_epoch(tweet: dict[str, Any]) -> int:
+    try:
+        return int(tweet.get("date_epoch") or tweet.get("created_at_epoch") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _tweet_url(username: str, tweet: dict[str, Any]) -> str | None:
@@ -532,7 +624,10 @@ def _reference_from_url(reference_type: str, url: str) -> dict[str, Any]:
     }
 
 
-async def _hydrate_references(references: list[dict[str, Any]]) -> list[dict[str, Any]]:
+async def _hydrate_references(
+    session: AsyncSession,
+    references: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     for reference in references:
         username = reference.get("username")
         tweet_id = reference.get("tweet_id")
@@ -544,6 +639,13 @@ async def _hydrate_references(references: list[dict[str, Any]]) -> list[dict[str
         reference["text"] = data.get("text") or ""
         reference["media"] = _tweet_media(data)
         reference["url"] = _tweet_url(str(username), data) or reference.get("url")
+        await _upsert_social_post(
+            session,
+            data.get("screen_name") or str(username),
+            data,
+            data,
+            hydrate_references=False,
+        )
     return references
 
 

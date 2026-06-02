@@ -32,6 +32,16 @@ class SettingsTest(unittest.TestCase):
 
         self.assertEqual(settings.twitter_accounts, ["elonmusk", "naval"])
 
+    def test_twitter_auth_tokens_accept_comma_separated_values(self):
+        with patch.dict(
+            os.environ,
+            {"TWITTER_AUTH_TOKENS": " token-a,token-b,token-a "},
+            clear=False,
+        ):
+            settings = self.build_settings()
+
+        self.assertEqual(settings.twitter_auth_tokens, ["token-a", "token-b"])
+
     def test_invalid_schedule_time_fails_fast(self):
         with patch.dict(os.environ, {"DAILY_PICK_TIME": "8am"}, clear=False):
             with self.assertRaises(ValidationError):

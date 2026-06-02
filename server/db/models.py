@@ -82,6 +82,8 @@ class TwitterState(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     username: Mapped[str] = mapped_column(String(50), unique=True)
     last_tweet_epoch: Mapped[int] = mapped_column(Integer, default=0)
+    newest_tweet_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    history_cursor: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_check_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     is_active: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
