@@ -751,16 +751,6 @@ def _format_link_lines(links: list[str]) -> list[str]:
     return lines
 
 
-def _format_action_lines(post_id: int) -> list[str]:
-    return [
-        f"消息 ID: {post_id}",
-        "继续操作:",
-        f"- /research {post_id} 建立研究话题",
-        f"- /deep {post_id} 让 Agent 主动深挖",
-        f"- /ask {post_id} 你的问题",
-    ]
-
-
 async def _build_tweet_card(
     post: SocialPost,
     adapter: BotAdapter,
@@ -818,15 +808,12 @@ async def _build_tweet_card(
         elements.extend([{"tag": "hr"}, _md_div(match_text)])
         sections.append(match_text)
 
-    if post.tweet_url or post.id:
-        actions = _tweet_action_text(post)
-        elements.extend([{"tag": "hr"}, _md_div(actions)])
-        sections.append(actions)
+    elements.extend([{"tag": "hr"}, _note_text("回复这张卡片并 @Reveal，可基于这条更新继续研究。")])
 
-    return {
+    card: dict[str, Any] = {
         "title": title,
         "sections": sections,
-        "footer": "在这张卡片下 @Reveal 继续提问，会基于这条推文进入研究线程。",
+        "footer": "回复这张卡片并 @Reveal，可以基于这条更新继续研究。",
         "config": {"wide_screen_mode": True},
         "header": {
             "template": _tweet_card_template(post),
@@ -834,10 +821,18 @@ async def _build_tweet_card(
         },
         "elements": elements,
     }
+    if post.tweet_url:
+        card["card_link"] = {
+            "url": post.tweet_url,
+            "pc_url": post.tweet_url,
+            "ios_url": post.tweet_url,
+            "android_url": post.tweet_url,
+        }
+    return card
 
 
 def _tweet_card_title(post: SocialPost, is_backfill: bool = False) -> str:
-    prefix = "Twitter Backfill" if is_backfill else "Twitter Update"
+    prefix = "Twitter Backfill" if is_backfill else "New Twitter Update"
     flags = _post_type_label(post)
     summary = _trim_text(post.summary or post.content or "新推文", 52)
     return f"{prefix} · @{post.username}{flags} · {summary}"
@@ -846,9 +841,7 @@ def _tweet_card_title(post: SocialPost, is_backfill: bool = False) -> str:
 def _tweet_card_template(post: SocialPost) -> str:
     if post.urgency == "high":
         return "red"
-    if post.urgency == "medium":
-        return "orange"
-    return "blue"
+    return "orange"
 
 
 def _tweet_metadata_text(post: SocialPost) -> str:
@@ -859,6 +852,10 @@ def _tweet_metadata_text(post: SocialPost) -> str:
     ]
     if labels := _post_type_label(post):
         parts.append(f"**类型**: {labels.strip(' ()')}")
+    if post.id:
+        parts.append(f"**消息 ID**: #{post.id}")
+    if post.tweet_url:
+        parts.append(f"**原文**: [打开]({post.tweet_url})")
     if post.mentioned_tickers:
         parts.append("**Ticker**: " + ", ".join(str(t) for t in post.mentioned_tickers[:8]))
     if post.topics:
@@ -967,23 +964,12 @@ async def _upload_card_image(
         return None
 
 
-def _tweet_action_text(post: SocialPost) -> str:
-    lines = ["**操作**"]
-    if post.tweet_url:
-        lines.append(f"- [打开原文]({post.tweet_url})")
-    if post.id:
-        lines.extend(
-            [
-                f"- `/research {post.id}` 建立研究话题",
-                f"- `/deep {post.id}` 让 Agent 主动深挖",
-                f"- `/ask {post.id} 你的问题`",
-            ]
-        )
-    return "\n".join(lines)
-
-
 def _md_div(content: str) -> dict[str, Any]:
     return {"tag": "div", "text": {"tag": "lark_md", "content": content}}
+
+
+def _note_text(content: str) -> dict[str, Any]:
+    return {"tag": "note", "elements": [{"tag": "plain_text", "content": content}]}
 
 
 def _trim_text(text: str, limit: int) -> str:
@@ -1158,13 +1144,7 @@ def _format_digest_section(index: int, post: SocialPost, cross_ref: dict | None 
         lines.append(metadata)
     if post.tweet_url:
         lines.append(f"原文: {post.tweet_url}")
-    if post.id:
-        lines.append(_format_research_actions(post.id))
     return "\n".join(lines)
-
-
-def _format_research_actions(post_id: int) -> str:
-    return f"操作: /research {post_id} 建话题 | /deep {post_id} 深挖 | /ask {post_id} 你的问题"
 
 
 def _build_research_card(title: str, sections: list[str], footer: str) -> dict:

@@ -140,8 +140,9 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("tweet 112", pushed)
         self.assertIn("tweet 103", pushed)
         self.assertNotIn("tweet 102", pushed)
-        self.assertIn("/research", pushed)
-        self.assertIn("/deep", pushed)
+        self.assertNotIn("/research", pushed)
+        self.assertNotIn("/deep", pushed)
+        self.assertIn("回复这张卡片", adapter.cards[0][1]["footer"])
 
         session_factory = get_session_factory()
         async with session_factory() as session:
@@ -216,8 +217,11 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("图片", pushed)
         self.assertIn("引用", pushed)
         self.assertIn("引用链接 / 外部链接", pushed)
-        self.assertIn("/research", pushed)
-        self.assertIn("/deep", pushed)
+        self.assertIn("消息 ID", pushed)
+        self.assertNotIn("/research", pushed)
+        self.assertNotIn("/deep", pushed)
+        self.assertEqual(adapter.cards[0][1]["card_link"]["url"], "https://x.com/alice/status/101")
+        self.assertIn("回复这张卡片", adapter.cards[0][1]["footer"])
         self.assertIn("quoted context", processor.summary_input)
         elements = adapter.cards[0][1]["elements"]
         self.assertTrue(any(element.get("tag") == "img" for element in elements))
