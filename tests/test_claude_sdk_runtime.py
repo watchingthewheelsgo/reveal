@@ -62,8 +62,11 @@ class ClaudeSdkRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.answer, "agent answer")
         self.assertEqual(result.agent_session_id, "result-session")
         self.assertEqual(captured["prompt"], "research this")
-        self.assertEqual(options.tools, ["WebSearch", "WebFetch", "mcp__reveal"])
-        self.assertEqual(options.allowed_tools, ["WebSearch", "WebFetch", "mcp__reveal"])
+        self.assertEqual(options.tools, ["WebSearch", "WebFetch"])
+        self.assertIn("WebSearch", options.allowed_tools)
+        self.assertIn("WebFetch", options.allowed_tools)
+        self.assertIn("mcp__reveal__stock_quote", options.allowed_tools)
+        self.assertIn("mcp__reveal__technical_analysis", options.allowed_tools)
         self.assertEqual(
             options.disallowed_tools, ["Bash", "Read", "Write", "Edit", "Glob", "Grep"]
         )

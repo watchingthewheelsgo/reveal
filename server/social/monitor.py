@@ -318,7 +318,9 @@ async def push_tweet_digest(
 
     footer = "完整正文、引用、外链和媒体已缓存到 Reveal；飞书消息就是即时研究入口。"
     card = _build_research_card(title=title, sections=sections, footer=footer)
-    await _push_card_to_admin(adapter, card)
+    sent_messages = await _push_card_to_admin(adapter, card)
+    if len(posts) == 1:
+        await _bind_sent_messages(sent_messages, posts[0].id)
 
 
 async def push_tweet(post, adapter: BotAdapter):
@@ -353,7 +355,8 @@ async def push_tweet(post, adapter: BotAdapter):
 
     text = "\n".join(lines)
 
-    await _push_to_admin(adapter, text)
+    sent_messages = await _push_to_admin(adapter, text)
+    await _bind_sent_messages(sent_messages, post.id)
 
 
 async def run_twitter_monitor(
@@ -690,27 +693,42 @@ async def _cross_reference_posts(posts: list[SocialPost]) -> dict[int, dict]:
     return result
 
 
-async def _push_card_to_admin(adapter: BotAdapter, card: dict) -> None:
+async def _push_card_to_admin(adapter: BotAdapter, card: dict) -> list[tuple[str, str]]:
     try:
+        sent_messages: list[tuple[str, str]] = []
         chat_ids = _admin_chat_ids(adapter)
         if chat_ids:
             for chat_id in chat_ids:
-                await adapter.send_card(chat_id, card)
-            return
+                message_id = await adapter.send_card_returning_id(chat_id, card)
+                if message_id:
+                    sent_messages.append((chat_id, message_id))
+            return sent_messages
     except Exception as e:
         logger.warning(f"Card push failed, falling back to text: {e}")
-    await _push_to_admin(adapter, _card_to_text(card))
+    return await _push_to_admin(adapter, _card_to_text(card))
 
 
-async def _push_to_admin(adapter: BotAdapter, text: str) -> None:
+async def _push_to_admin(adapter: BotAdapter, text: str) -> list[tuple[str, str]]:
     try:
+        sent_messages: list[tuple[str, str]] = []
         admin_chat_id = getattr(adapter, "admin_chat_id", None)
         if admin_chat_id:
-            await adapter.send_message(admin_chat_id, text)
+            message_id = await adapter.send_message_returning_id(admin_chat_id, text)
+            if message_id:
+                sent_messages.append((str(admin_chat_id), message_id))
         else:
-            await adapter.push_to_admin(text)
+            chat_ids = _admin_chat_ids(adapter)
+            if chat_ids:
+                for chat_id in chat_ids:
+                    message_id = await adapter.send_message_returning_id(chat_id, text)
+                    if message_id:
+                        sent_messages.append((chat_id, message_id))
+            else:
+                await adapter.push_to_admin(text)
+        return sent_messages
     except Exception:
         await adapter.push_to_admin(text)
+        return []
 
 
 def _compact_text(text: str, limit: int) -> str:
@@ -810,6 +828,15 @@ def _admin_chat_ids(adapter: BotAdapter) -> list[str]:
     if admin_chat_id:
         chat_ids.append(str(admin_chat_id))
     return list(dict.fromkeys(chat_ids))
+
+
+async def _bind_sent_messages(sent_messages: list[tuple[str, str]], post_id: int | None) -> None:
+    if not sent_messages or post_id is None:
+        return
+    from server.bot.bindings import bind_message_to_source
+
+    for chat_id, message_id in sent_messages:
+        await bind_message_to_source(chat_id, message_id, "twitter", post_id)
 
 
 def _post_type_label(post) -> str:

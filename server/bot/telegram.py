@@ -64,6 +64,11 @@ class TelegramBot(BotAdapter):
         text = self._format_card(card)
         await self.send_message(chat_id, text, parse_mode="Markdown")
 
+    async def send_card_returning_id(self, chat_id: str, card: dict) -> str | None:
+        text = self._format_card(card)
+        msg = await self.app.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+        return str(msg.message_id)
+
     async def send_message_returning_id(self, chat_id: str, text: str) -> str | None:
         msg = await self.app.bot.send_message(chat_id=chat_id, text=text)
         return str(msg.message_id)

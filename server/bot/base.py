@@ -26,6 +26,8 @@ class BotContext:
 class BotAdapter(ABC):
     """Abstract bot adapter that both TelegramBot and FeishuBot implement."""
 
+    supports_message_edit: bool = True
+
     @abstractmethod
     async def send_message(self, chat_id: str, text: str, **kwargs) -> None: ...
 
@@ -44,6 +46,11 @@ class BotAdapter(ABC):
     async def send_message_returning_id(self, chat_id: str, text: str) -> str | None:
         """Send a message and return its ID for later editing."""
         await self.send_message(chat_id, text)
+        return None
+
+    async def send_card_returning_id(self, chat_id: str, card: dict) -> str | None:
+        """Send a card and return its ID for later editing/thread replies."""
+        await self.send_card(chat_id, card)
         return None
 
     async def edit_message(self, chat_id: str, message_id: str, text: str) -> None:

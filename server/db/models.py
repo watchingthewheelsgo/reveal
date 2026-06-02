@@ -141,6 +141,17 @@ class ConversationMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
 
 
+class BotMessageBinding(Base):
+    __tablename__ = "bot_message_bindings"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    chat_id: Mapped[str] = mapped_column(String(100), index=True)
+    message_id: Mapped[str] = mapped_column(String(100), index=True)
+    source_type: Mapped[str] = mapped_column(String(50), default="twitter")
+    source_id: Mapped[int] = mapped_column(Integer, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Scoring Weights (dynamic, updated by feedback)
 # ═══════════════════════════════════════════════════════════════════════════════

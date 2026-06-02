@@ -432,14 +432,20 @@ async def _start_research_topic(
 
 
 async def handle_plain_message(ctx: BotContext, adapter):
-    """Route plain text: active topic → intent classification → action."""
+    """Route plain text: bound IM thread → active topic → intent classification."""
     text = ctx.text.strip()
     if not text:
         return
     try:
         from server.research.service import get_active_topic
 
-        # Priority 1: route to active research topic
+        # Priority 1: a reply under a pushed alert/card is bound to that source.
+        if ctx.reply_to_message_id:
+            routed = await _route_bound_reply(ctx, adapter, text)
+            if routed:
+                return
+
+        # Priority 2: route to active research topic
         topic = await get_active_topic(ctx.chat_id)
         if topic is not None:
             _spawn_background_task(
@@ -448,7 +454,7 @@ async def handle_plain_message(ctx: BotContext, adapter):
             )
             return
 
-        # Priority 2: classify intent with LLM
+        # Priority 3: classify intent with LLM
         from server.llm.client import get_llm_client
 
         llm = get_llm_client()
@@ -491,6 +497,36 @@ async def handle_plain_message(ctx: BotContext, adapter):
     except Exception as e:
         logger.exception(f"Message handling failed: {e}")
         await adapter.send_message(ctx.chat_id, "❌ 消息处理失败。")
+
+
+async def _route_bound_reply(ctx: BotContext, adapter, text: str) -> bool:
+    from server.bot.bindings import resolve_message_binding
+
+    binding = await resolve_message_binding(ctx.chat_id, ctx.reply_to_message_id)
+    if binding is None:
+        return False
+    if binding.source_type != "twitter":
+        return False
+
+    try:
+        from server.research.service import get_active_topic, start_topic
+
+        topic = await get_active_topic(ctx.chat_id)
+        if not (
+            topic
+            and topic.source_type == "twitter"
+            and topic.source_id == binding.source_id
+            and topic.status == "active"
+        ):
+            await start_topic(ctx.chat_id, str(binding.source_id), "")
+        _spawn_background_task(
+            _run_topic_message_job(ctx.chat_id, text, adapter, ctx.reply_to_message_id),
+            "bound topic message",
+        )
+        return True
+    except ResearchError as e:
+        await adapter.send_message(ctx.chat_id, f"❌ {e}")
+        return True
 
 
 def _spawn_background_task(coro, label: str) -> None:

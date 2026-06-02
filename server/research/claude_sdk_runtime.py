@@ -21,7 +21,16 @@ from claude_agent_sdk.types import McpServerConfig, McpStdioServerConfig
 
 from config.settings import get_settings
 
-AGENT_TOOLS = ["WebSearch", "WebFetch", "mcp__reveal"]
+BUILTIN_AGENT_TOOLS = ["WebSearch", "WebFetch"]
+REVEAL_MCP_TOOLS = [
+    "mcp__reveal__stock_quote",
+    "mcp__reveal__technical_analysis",
+    "mcp__reveal__stock_news",
+    "mcp__reveal__portfolio",
+    "mcp__reveal__research_history",
+    "mcp__reveal__stock_score",
+]
+AGENT_ALLOWED_TOOLS = [*BUILTIN_AGENT_TOOLS, *REVEAL_MCP_TOOLS]
 DISALLOWED_LOCAL_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep"]
 MCP_SERVERS: dict[str, McpServerConfig] = {
     "reveal": McpStdioServerConfig(
@@ -53,6 +62,7 @@ async def run_agent(
     prompt: str,
     resume: str | None = None,
     on_progress: ProgressCallback | None = None,
+    _retrying_pseudo_tools: bool = False,
 ) -> AgentRunResult:
     settings = get_settings()
     token = settings.get_agent_auth_token()
@@ -81,8 +91,8 @@ async def run_agent(
     }
 
     options = ClaudeAgentOptions(
-        tools=AGENT_TOOLS,
-        allowed_tools=AGENT_TOOLS,
+        tools=BUILTIN_AGENT_TOOLS,
+        allowed_tools=AGENT_ALLOWED_TOOLS,
         disallowed_tools=DISALLOWED_LOCAL_TOOLS,
         strict_mcp_config=True,
         mcp_servers=MCP_SERVERS,
@@ -112,7 +122,8 @@ async def run_agent(
             "3. 结合用户持仓 (portfolio) 给出个性化建议\n"
             "4. 区分事实、推断和不确定性\n"
             "5. 输出中文，末尾列出来源 URL\n"
-            "6. 不要读取本地文件、运行命令或修改文件"
+            "6. 不要读取本地文件、运行命令或修改文件\n"
+            "7. 必须通过真实工具调用获取数据；不要在正文中输出 JSON 形式的 tool/arguments 伪调用。"
         ),
     )
 
@@ -161,6 +172,24 @@ async def run_agent(
             "Agent SDK returned no answer.",
             "研究 Agent 没有返回内容，请稍后重试。",
         )
+    if _looks_like_pseudo_tool_call_answer(answer):
+        if not _retrying_pseudo_tools:
+            retry_prompt = (
+                f"{prompt}\n\n"
+                "重要: 你上一次输出了 JSON 形式的 tool/arguments，这不是有效答案。"
+                "请通过 Claude Agent SDK 的真实工具调用执行这些工具，拿到结果后再给出中文研究结论。"
+                "最终答案不要包含伪工具调用 JSON。"
+            )
+            return await run_agent(
+                retry_prompt,
+                resume=resume,
+                on_progress=on_progress,
+                _retrying_pseudo_tools=True,
+            )
+        raise AgentRuntimeError(
+            "Agent returned pseudo tool-call JSON instead of executing tools.",
+            "研究 Agent 没有真正执行工具调用，请稍后重试或换用更强模型。",
+        )
     return AgentRunResult(answer=answer, agent_session_id=agent_session_id)
 
 
@@ -191,3 +220,19 @@ def _user_message_for_text(text: str) -> str:
     if "resume" in normalized or "session" in normalized:
         return "研究 Agent 会话恢复失败，请重新发起这次研究。"
     return "研究 Agent 执行失败，请稍后重试。"
+
+
+def _looks_like_pseudo_tool_call_answer(text: str) -> bool:
+    normalized = text.lower()
+    tool_markers = normalized.count('"tool"') + normalized.count("'tool'")
+    argument_markers = normalized.count('"arguments"') + normalized.count("'arguments'")
+    known_tools = [
+        "mcp__reveal__stock_quote",
+        "mcp__reveal__technical_analysis",
+        "mcp__reveal__stock_news",
+        "mcp__reveal__stock_score",
+        "websearch",
+        "webfetch",
+    ]
+    known_tool_mentions = sum(1 for tool in known_tools if tool in normalized)
+    return tool_markers >= 1 and argument_markers >= 1 and known_tool_mentions >= 1

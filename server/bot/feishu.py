@@ -13,8 +13,6 @@ from lark_oapi.api.im.v1 import (
     CreateMessageRequest,
     CreateMessageRequestBody,
     P2ImMessageReceiveV1,
-    PatchMessageRequest,
-    PatchMessageRequestBody,
     ReplyMessageRequest,
     ReplyMessageRequestBody,
 )
@@ -35,6 +33,8 @@ from server.bot.base import (
 
 
 class FeishuBot(BotAdapter):
+    supports_message_edit = False
+
     def __init__(self):
         settings = get_settings()
         self.app_id = settings.feishu_app_id
@@ -144,6 +144,10 @@ class FeishuBot(BotAdapter):
     async def send_card(self, chat_id: str, card: dict) -> None:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._send_card_sync, chat_id, card)
+
+    async def send_card_returning_id(self, chat_id: str, card: dict) -> str | None:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._send_card_returning_id_sync, chat_id, card)
 
     async def send_message_returning_id(self, chat_id: str, text: str) -> str | None:
         loop = asyncio.get_running_loop()
@@ -258,6 +262,9 @@ class FeishuBot(BotAdapter):
             raise RuntimeError(f"Feishu send failed: {response.code} - {response.msg}")
 
     def _send_card_sync(self, chat_id: str, card: dict) -> None:
+        self._send_card_returning_id_sync(chat_id, card)
+
+    def _send_card_returning_id_sync(self, chat_id: str, card: dict) -> str | None:
         payload = self._format_feishu_card(card)
         request = (
             CreateMessageRequest.builder()
@@ -274,6 +281,9 @@ class FeishuBot(BotAdapter):
         response = self.client.im.v1.message.create(request)
         if not response.success():
             raise RuntimeError(f"Feishu card send failed: {response.code} - {response.msg}")
+        if response.data and response.data.message_id:
+            return response.data.message_id
+        return None
 
     def _send_text_returning_id_sync(self, chat_id: str, text: str) -> str | None:
         request = (
@@ -296,17 +306,9 @@ class FeishuBot(BotAdapter):
         return None
 
     def _patch_message_sync(self, message_id: str, text: str) -> None:
-        request = (
-            PatchMessageRequest.builder()
-            .message_id(message_id)
-            .request_body(
-                PatchMessageRequestBody.builder().content(json.dumps({"text": text})).build()
-            )
-            .build()
-        )
-        response = self.client.im.v1.message.patch(request)
-        if not response.success():
-            logger.warning(f"Feishu patch failed: {response.code} - {response.msg}")
+        # Feishu message.patch only supports interactive card messages. Progress
+        # messages are text replies, so text editing is intentionally disabled.
+        return None
 
     def _reply_in_thread_sync(self, message_id: str, text: str) -> str | None:
         request = (

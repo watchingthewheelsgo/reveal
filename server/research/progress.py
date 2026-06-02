@@ -46,12 +46,12 @@ class ResearchProgressReporter:
             await self._update_status(status)
 
     async def finish(self, result_text: str) -> None:
-        if self.status_message_id:
+        if self.status_message_id and getattr(self.adapter, "supports_message_edit", True):
             await self._update_status(f"✅ 研究完成 ({self.step_count} 步)")
+        anchor_message_id = self.reply_to_message_id or self.status_message_id
+        if anchor_message_id:
             try:
-                await self.adapter.reply_in_thread(
-                    self.chat_id, self.status_message_id, result_text
-                )
+                await self.adapter.reply_in_thread(self.chat_id, anchor_message_id, result_text)
                 return
             except Exception as e:
                 logger.debug(f"Thread reply failed, sending as regular message: {e}")
@@ -65,6 +65,8 @@ class ResearchProgressReporter:
 
     async def _update_status(self, text: str) -> None:
         if not self.status_message_id:
+            return
+        if not getattr(self.adapter, "supports_message_edit", True):
             return
         try:
             await self.adapter.edit_message(self.chat_id, self.status_message_id, text)
