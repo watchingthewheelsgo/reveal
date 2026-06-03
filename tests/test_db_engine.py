@@ -35,12 +35,14 @@ class DatabaseEngineTest(unittest.TestCase):
 
     def test_supabase_transaction_pooler_disables_prepared_statement_cache(self):
         url = normalize_database_url(
-            "postgresql://postgres.example:secret@aws-0-us-east-1.pooler.supabase.com:6543/postgres"
+            "postgresql://postgres.example:secret@aws-0-us-east-1.pooler.supabase.com:6543"
+            "/postgres?pgbouncer=true"
         )
 
         self.assertEqual(url.drivername, "postgresql+asyncpg")
         self.assertEqual(url.query["ssl"], "require")
         self.assertEqual(url.query["prepared_statement_cache_size"], "0")
+        self.assertNotIn("pgbouncer", url.query)
 
     def test_render_supabase_direct_url_is_detected(self):
         url = normalize_database_url(

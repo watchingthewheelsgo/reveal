@@ -130,6 +130,8 @@ def _query_value_to_string(value: tuple[str, ...] | str) -> str:
 
 
 def _normalize_supabase_pooler(url: URL) -> URL:
+    if "pgbouncer" in url.query:
+        url = url.difference_update_query(["pgbouncer"])
     if (
         url.host
         and url.host.endswith(".pooler.supabase.com")
