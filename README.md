@@ -27,15 +27,35 @@ RELOAD=1 uv run start
 - `HOST`，默认 `0.0.0.0`
 - `PORT`，默认 `8000`
 
+## Database
+
+本地默认使用 SQLite：
+
+```env
+DATABASE_URL=sqlite+aiosqlite:///./data/reveal.db
+```
+
+线上建议使用 Postgres/Supabase。Reveal 可以直接接受 Supabase 提供的普通连接串，运行时会自动转换成 async SQLAlchemy 使用的 `postgresql+asyncpg://`，并在未显式配置 SSL 时默认要求 SSL：
+
+```env
+DATABASE_URL=postgresql://postgres:<password>@db.<project-ref>.supabase.co:5432/postgres
+```
+
+注意：Supabase direct connection `db.<project-ref>.supabase.co:5432` 默认是 IPv6-only。Render 等 IPv4-only 环境应使用 Supabase Dashboard → Connect 里的 Session Pooler URL：
+
+```env
+DATABASE_URL=postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres
+```
+
 ## Render
 
-Reveal 可以用仓库根目录的 `render.yaml` 作为 Render Blueprint 部署。当前配置使用 Docker runtime、`/health` 健康检查和 `/app/data` persistent disk。
+Reveal 可以用仓库根目录的 `render.yaml` 作为 Render Blueprint 部署。当前配置使用 Docker runtime 和 `/health` 健康检查。
 
 关键点：
 
 - 服务必须监听 `0.0.0.0:$PORT`；Docker 镜像默认 `PORT=10000`，Render 也会通过 `PORT` 注入实际端口。
-- Reveal 的 SQLite 数据库默认写入 `/app/data/reveal.db`，所以 Blueprint 使用 `starter` plan 并挂载 1GB persistent disk。
-- 不建议用 Free web service 跑 Reveal 主服务：Free 实例会空闲休眠，并且不能挂 persistent disk，本地 SQLite 缓存、watchlist 和研究线程会在重启或休眠后丢失。
+- 在 Render Environment 里设置 `DATABASE_URL`，不要把数据库密码写进 `render.yaml`；Supabase 上建议填 Session Pooler URL。
+- Blueprint 使用 `starter` plan，因为 Reveal 的 bot、Twitter monitor 和定时任务需要常驻；不建议用 Free web service 跑主服务，Free 实例会空闲休眠。
 
 部署后先检查：
 

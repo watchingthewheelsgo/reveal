@@ -23,6 +23,7 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "claude-agent-sdk>=0.2.87",
     "tzdata>=2026.2",
+    "asyncpg>=0.31.0",
 ]
 
 [project.scripts]

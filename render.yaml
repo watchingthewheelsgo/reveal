@@ -9,7 +9,9 @@ services:
         value: 10000
       - key: HOST
         value: 0.0.0.0
-      # Bot tokens — set these in Render's Environment tab, not here
+      # Secrets — set these in Render's Environment tab, not here
+      # - key: DATABASE_URL
+      #   sync: false
       # - key: TELEGRAM_BOT_TOKEN
       #   sync: false
       # - key: TELEGRAM_ADMIN_CHAT_ID
@@ -26,7 +28,3 @@ services:
       #   sync: false
       # - key: TWITTER_AUTH_TOKENS
       #   sync: false
-    disk:
-      name: data
-      mountPath: /app/data
-      sizeGB: 1
