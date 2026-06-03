@@ -1,8 +1,10 @@
 """Database engine and session management."""
 
+import os
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
+from loguru import logger
 from sqlalchemy import text
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -30,12 +32,41 @@ async def init_db() -> None:
         future=True,
     )
     AsyncSessionLocal = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        if db_url.get_backend_name() == "sqlite":
-            await _migrate_sqlite_twitter_state(conn)
-            await _migrate_sqlite_social_posts(conn)
-            await _migrate_sqlite_research_sessions(conn)
+    logger.info(
+        "Database configured: driver={} host={} database={}",
+        db_url.drivername,
+        db_url.host or "local",
+        db_url.database or "",
+    )
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            if db_url.get_backend_name() == "sqlite":
+                await _migrate_sqlite_twitter_state(conn)
+                await _migrate_sqlite_social_posts(conn)
+                await _migrate_sqlite_research_sessions(conn)
+    except OSError as exc:
+        if engine:
+            await engine.dispose()
+        engine = None
+        AsyncSessionLocal = None
+        if is_render_supabase_direct_url(db_url):
+            logger.error(
+                "Database connection failed before authentication. Render cannot reach the "
+                "Supabase direct database host over IPv6. Set DATABASE_URL to the Supabase "
+                "Session Pooler URL from Dashboard > Connect."
+            )
+            raise RuntimeError(
+                "Render cannot reach Supabase's direct db.<project-ref>.supabase.co host. "
+                "Use the Supabase Session Pooler connection string for DATABASE_URL."
+            ) from exc
+        raise
+    except Exception:
+        if engine:
+            await engine.dispose()
+        engine = None
+        AsyncSessionLocal = None
+        raise
 
 
 async def get_db_session() -> AsyncGenerator[AsyncSession]:
@@ -107,6 +138,16 @@ def _normalize_supabase_pooler(url: URL) -> URL:
     ):
         return url.update_query_dict({"prepared_statement_cache_size": "0"})
     return url
+
+
+def is_render_supabase_direct_url(url: URL) -> bool:
+    return bool(
+        os.getenv("RENDER")
+        and url.host
+        and url.host.startswith("db.")
+        and url.host.endswith(".supabase.co")
+        and url.port == 5432
+    )
 
 
 async def _migrate_sqlite_twitter_state(conn) -> None:

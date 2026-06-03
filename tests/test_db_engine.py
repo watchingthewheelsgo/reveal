@@ -1,6 +1,7 @@
 import unittest
+from unittest.mock import patch
 
-from server.db.engine import normalize_database_url
+from server.db.engine import is_render_supabase_direct_url, normalize_database_url
 
 
 class DatabaseEngineTest(unittest.TestCase):
@@ -40,6 +41,22 @@ class DatabaseEngineTest(unittest.TestCase):
         self.assertEqual(url.drivername, "postgresql+asyncpg")
         self.assertEqual(url.query["ssl"], "require")
         self.assertEqual(url.query["prepared_statement_cache_size"], "0")
+
+    def test_render_supabase_direct_url_is_detected(self):
+        url = normalize_database_url(
+            "postgresql://postgres:secret@db.example.supabase.co:5432/postgres"
+        )
+
+        with patch.dict("os.environ", {"RENDER": "true"}, clear=False):
+            self.assertTrue(is_render_supabase_direct_url(url))
+
+    def test_supabase_pooler_url_is_not_treated_as_direct(self):
+        url = normalize_database_url(
+            "postgresql://postgres.example:secret@aws-0-us-east-1.pooler.supabase.com:5432/postgres"
+        )
+
+        with patch.dict("os.environ", {"RENDER": "true"}, clear=False):
+            self.assertFalse(is_render_supabase_direct_url(url))
 
 
 if __name__ == "__main__":
