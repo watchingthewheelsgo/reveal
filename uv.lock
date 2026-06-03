@@ -1161,6 +1161,7 @@ dependencies = [
     { name = "python-telegram-bot" },
     { name = "pyyaml" },
     { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "tzdata" },
     { name = "uvicorn" },
     { name = "yfinance" },
 ]
@@ -1189,6 +1190,7 @@ requires-dist = [
     { name = "python-telegram-bot", specifier = ">=22.5" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.36" },
+    { name = "tzdata", specifier = ">=2026.2" },
     { name = "uvicorn", specifier = ">=0.34.0" },
     { name = "yfinance", specifier = ">=0.2.54" },
 ]

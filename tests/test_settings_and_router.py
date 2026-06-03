@@ -51,6 +51,12 @@ class SettingsTest(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 self.build_settings()
 
+    def test_legacy_us_timezone_alias_is_normalized(self):
+        with patch.dict(os.environ, {"SCHEDULER_TIMEZONE": "US/Eastern"}, clear=False):
+            settings = self.build_settings()
+
+        self.assertEqual(settings.scheduler_timezone, "America/New_York")
+
     def test_agent_runtime_defaults_to_claude_sdk(self):
         settings = self.build_settings()
 

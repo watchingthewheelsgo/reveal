@@ -10,6 +10,15 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 load_dotenv()
 
+_TIMEZONE_ALIASES = {
+    "US/Eastern": "America/New_York",
+    "US/Central": "America/Chicago",
+    "US/Mountain": "America/Denver",
+    "US/Pacific": "America/Los_Angeles",
+    "US/Alaska": "America/Anchorage",
+    "US/Hawaii": "Pacific/Honolulu",
+}
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -78,7 +87,7 @@ class Settings(BaseSettings):
         return bool(self.finnhub_api_key)
 
     # Scheduler
-    scheduler_timezone: str = Field(default="US/Eastern", alias="SCHEDULER_TIMEZONE")
+    scheduler_timezone: str = Field(default="America/New_York", alias="SCHEDULER_TIMEZONE")
     twitter_monitor_interval: int = Field(default=3600, alias="TWITTER_MONITOR_INTERVAL")
     daily_pick_time: str = Field(default="08:00", alias="DAILY_PICK_TIME")
     daily_briefing_time: str = Field(default="08:30", alias="DAILY_BRIEFING_TIME")
@@ -231,11 +240,12 @@ class Settings(BaseSettings):
     @field_validator("scheduler_timezone", "twitter_digest_timezone")
     @classmethod
     def validate_timezone(cls, value: str) -> str:
+        normalized = _TIMEZONE_ALIASES.get(value.strip(), value.strip())
         try:
-            ZoneInfo(value)
+            ZoneInfo(normalized)
         except ZoneInfoNotFoundError as exc:
             raise ValueError(f"unknown timezone: {value}") from exc
-        return value
+        return normalized
 
 
 global_settings = Settings()
