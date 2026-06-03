@@ -82,6 +82,9 @@ class Settings(BaseSettings):
     twitter_monitor_interval: int = Field(default=3600, alias="TWITTER_MONITOR_INTERVAL")
     daily_pick_time: str = Field(default="08:00", alias="DAILY_PICK_TIME")
     daily_briefing_time: str = Field(default="08:30", alias="DAILY_BRIEFING_TIME")
+    twitter_digest_enabled: bool = Field(default=True, alias="TWITTER_DIGEST_ENABLED")
+    twitter_digest_time: str = Field(default="17:00", alias="TWITTER_DIGEST_TIME")
+    twitter_digest_timezone: str = Field(default="Asia/Shanghai", alias="TWITTER_DIGEST_TIMEZONE")
 
     # Logging
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
@@ -180,7 +183,7 @@ class Settings(BaseSettings):
                 seen.add(normalized)
         return items
 
-    @field_validator("daily_pick_time", "daily_briefing_time")
+    @field_validator("daily_pick_time", "daily_briefing_time", "twitter_digest_time")
     @classmethod
     def validate_hhmm_time(cls, value: str) -> str:
         parts = value.split(":")
@@ -225,7 +228,7 @@ class Settings(BaseSettings):
             raise ValueError("AGENT_EFFORT must be one of: low, medium, high, xhigh, max")
         return normalized
 
-    @field_validator("scheduler_timezone")
+    @field_validator("scheduler_timezone", "twitter_digest_timezone")
     @classmethod
     def validate_timezone(cls, value: str) -> str:
         try:

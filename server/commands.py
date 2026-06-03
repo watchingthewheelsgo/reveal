@@ -37,6 +37,12 @@ async def cmd_help(ctx: BotContext, adapter):
 /journal week — 本周汇总
 /pnl — 盈亏汇总
 
+*Twitter 日报*
+/digest — 昨日关注账号总结日报
+/digest 3 — N 天前的日报
+/summary @user — 某账号昨日日报
+/summary @user 2025-06-01 — 指定日期
+
 *系统*
 /alert — 查看/配置告警阈值
 /alert check — 立即检查告警
@@ -558,6 +564,8 @@ async def _try_route_natural_command(ctx: BotContext, adapter, text: str) -> boo
         "pnl": cmd_pnl,
         "alert": cmd_alert,
         "briefing": cmd_briefing,
+        "digest": cmd_digest,
+        "summary": cmd_summary,
     }
     handler = handlers.get(command)
     if handler is None:
@@ -590,6 +598,21 @@ def _parse_general_natural_command(text: str) -> dict | None:
         return {"command": "status", "args": []}
     if "每日简报" in text or "市场简报" in text or lowered == "briefing":
         return {"command": "briefing", "args": []}
+    if "twitter 日报" in lowered or "推特日报" in text or lowered.startswith("digest"):
+        return {
+            "command": "digest",
+            "args": [_extract_days_ago(text)] if _extract_days_ago(text) else [],
+        }
+    if ("日报" in text or "总结" in text) and (
+        "推特" in text or "twitter" in lowered or "tweet" in lowered
+    ):
+        username = _extract_twitter_username(text)
+        if username:
+            args = [f"@{username}"]
+            if target_date := _extract_iso_date(text):
+                args.append(target_date)
+            return {"command": "summary", "args": args}
+        return {"command": "digest", "args": []}
     if "选股" in text or "推荐股票" in text or lowered in {"pick", "daily pick"}:
         return {"command": "pick", "args": []}
     if "盈亏" in text or "pnl" in lowered:
@@ -804,6 +827,18 @@ def _parse_cached_twitter_search_query(text: str) -> str | None:
         if query and query not in {"某个公司", "某某某"}:
             return query
     return None
+
+
+def _extract_days_ago(text: str) -> str | None:
+    match = re.search(r"(\d{1,2})\s*天前", text)
+    if not match:
+        return None
+    return match.group(1)
+
+
+def _extract_iso_date(text: str) -> str | None:
+    match = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", text)
+    return match.group(1) if match else None
 
 
 async def _run_twitter_latest_job(chat_id: str, username: str, limit: int, adapter) -> None:
@@ -1277,6 +1312,55 @@ async def cmd_briefing(ctx: BotContext, adapter):
     await adapter.send_message(ctx.chat_id, text)
 
 
+async def cmd_digest(ctx: BotContext, adapter):
+    """Twitter daily digest: /digest [days_ago]"""
+    days_ago = 1
+    if ctx.args and ctx.args[0].isdigit():
+        days_ago = max(1, min(30, int(ctx.args[0])))
+
+    label = "昨日" if days_ago == 1 else f"{days_ago} 天前"
+    await adapter.send_message(ctx.chat_id, f"📰 正在生成 {label} Twitter 关注日报...")
+    from server.social.digest import generate_twitter_digest
+
+    messages = await generate_twitter_digest(days_ago=days_ago)
+    if not messages:
+        await adapter.send_message(ctx.chat_id, f"❌ {label} 没有推文记录。")
+        return
+    for msg in messages:
+        await adapter.send_message(ctx.chat_id, msg)
+
+
+async def cmd_summary(ctx: BotContext, adapter):
+    """Per-account Twitter summary: /summary @username [YYYY-MM-DD]"""
+    if not ctx.args:
+        await adapter.send_message(
+            ctx.chat_id,
+            "用法:\n/summary @elonmusk — 查看昨日日报\n/summary @elonmusk 2025-06-01 — 指定日期",
+        )
+        return
+
+    username = ctx.args[0].lstrip("@")
+    target_date = None
+    if len(ctx.args) > 1:
+        try:
+            from datetime import date
+
+            target_date = date.fromisoformat(ctx.args[1])
+        except ValueError:
+            await adapter.send_message(ctx.chat_id, "❌ 日期格式错误，请使用 YYYY-MM-DD。")
+            return
+
+    date_label = str(target_date) if target_date else "昨日"
+    await adapter.send_message(ctx.chat_id, f"📰 正在生成 @{username} {date_label} 日报...")
+    from server.social.digest import generate_user_digest
+
+    text = await generate_user_digest(username, target_date)
+    if text is None:
+        await adapter.send_message(ctx.chat_id, f"❌ @{username} 在 {date_label} 没有推文记录。")
+        return
+    await adapter.send_message(ctx.chat_id, text)
+
+
 def register_all_commands(router, adapter):
     """Register all shared command handlers."""
     router.register_many(
@@ -1297,6 +1381,8 @@ def register_all_commands(router, adapter):
             "twatch": lambda ctx: cmd_twatch(ctx, adapter),
             "alert": lambda ctx: cmd_alert(ctx, adapter),
             "briefing": lambda ctx: cmd_briefing(ctx, adapter),
+            "digest": lambda ctx: cmd_digest(ctx, adapter),
+            "summary": lambda ctx: cmd_summary(ctx, adapter),
         }
     )
     router.register_message_handler(lambda ctx: handle_plain_message(ctx, adapter))

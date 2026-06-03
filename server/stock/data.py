@@ -1,6 +1,7 @@
-"""Stock data sources: yfinance (price) + Finnhub (news)."""
+"""Stock data sources: yfinance (price/technicals) + Finnhub (news + real-time quote)."""
 
 import asyncio
+import time
 from datetime import datetime, timedelta
 from typing import Any, cast
 
@@ -8,6 +9,61 @@ import yfinance as yf
 from loguru import logger
 
 from config.settings import get_settings
+
+# ---------------------------------------------------------------------------
+# Finnhub real-time quote with 2-second in-memory cache
+# ---------------------------------------------------------------------------
+
+_quote_cache: dict[str, tuple[float, dict]] = {}
+_QUOTE_CACHE_TTL = 2.0  # seconds
+
+
+async def fetch_quote_finnhub(ticker: str) -> dict | None:
+    """Fetch real-time quote from Finnhub /quote with a 2-second cache.
+
+    Returns keys: price, change, change_pct, high, low, open, prev_close.
+    Returns None if Finnhub is not configured or the ticker is unknown.
+    """
+    now = time.monotonic()
+    cached = _quote_cache.get(ticker)
+    if cached and now - cached[0] < _QUOTE_CACHE_TTL:
+        return cached[1]
+
+    settings = get_settings()
+    if not settings.is_finnhub_configured():
+        logger.debug("Finnhub not configured, skipping quote fetch")
+        return None
+
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"{settings.finnhub_base_url}/quote",
+                params={"symbol": ticker, "token": settings.finnhub_api_key},
+            )
+        if resp.status_code != 200:
+            logger.warning(f"Finnhub quote {ticker}: HTTP {resp.status_code}")
+            return None
+
+        raw = resp.json()
+        if not raw.get("c"):  # c==0 means ticker not found
+            return None
+
+        result: dict = {
+            "price": raw["c"],
+            "change": raw.get("d", 0.0),
+            "change_pct": raw.get("dp", 0.0),
+            "high": raw.get("h"),
+            "low": raw.get("l"),
+            "open": raw.get("o"),
+            "prev_close": raw.get("pc"),
+        }
+        _quote_cache[ticker] = (now, result)
+        return result
+    except Exception as e:
+        logger.warning(f"Finnhub quote error for {ticker}: {e}")
+        return None
 
 
 async def fetch_stock_data(ticker: str, period: str = "6mo") -> dict | None:

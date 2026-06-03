@@ -82,9 +82,13 @@ Bot 命令默认只允许配置的管理员 chat 使用。至少配置一个：
 /twatch add @elonmusk
 /twatch del @elonmusk
 /twatch check
+/digest
+/summary @elonmusk
 ```
 
 首次添加账号后会立即检查一次，最多推送最近 10 条推文；列表接口已经返回的内容都会缓存。之后按 `TWITTER_MONITOR_INTERVAL` 增量检查新推文，默认每 3600 秒一次。飞书/Telegram 是主交互入口：系统会推送可操作研究卡片，完整正文、外链、媒体和引用信息保存在 Reveal 数据库中。
+
+`TWITTER_DIGEST_ENABLED=true` 时，Reveal 会按 `TWITTER_DIGEST_TIME` 和 `TWITTER_DIGEST_TIMEZONE` 自动发送昨日 Twitter 关注日报。也可以手动用 `/digest` 生成关注账号日报，或用 `/summary @user [YYYY-MM-DD]` 查看单个账号日报。
 
 收到提醒后，优先直接回复那张推送卡片并 @Reveal 继续提问。Reveal 会根据被回复的卡片自动绑定这条 Twitter/X 更新并建立研究话题。
 

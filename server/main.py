@@ -130,6 +130,37 @@ async def lifespan(app: FastAPI):
     brief_hour, brief_minute = map(int, settings.daily_briefing_time.split(":"))
     scheduler.register_cron("daily_briefing", daily_briefing_job, brief_hour, brief_minute)
 
+    # Twitter daily digest
+    if settings.twitter_digest_enabled:
+
+        async def twitter_digest_job():
+            from server.social.digest import generate_twitter_digest
+
+            logger.info("Running Twitter daily digest...")
+            messages = await generate_twitter_digest()
+            if not messages:
+                logger.info("Twitter digest: no posts yesterday, skipping push")
+                return
+            for msg in messages:
+                if telegram_bot:
+                    await telegram_bot.push_to_admin(msg)
+                if feishu_bot:
+                    await feishu_bot.push_to_admin(msg)
+
+        digest_hour, digest_minute = map(int, settings.twitter_digest_time.split(":"))
+        scheduler.register_cron(
+            "twitter_digest",
+            twitter_digest_job,
+            digest_hour,
+            digest_minute,
+            timezone=settings.twitter_digest_timezone,
+        )
+        logger.info(
+            "Twitter digest scheduled at {} {}",
+            settings.twitter_digest_time,
+            settings.twitter_digest_timezone,
+        )
+
     # Twitter monitor
     async def twitter_monitor_job():
         from config.settings import get_settings

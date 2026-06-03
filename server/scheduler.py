@@ -17,10 +17,13 @@ class Scheduler:
         settings = get_settings()
         self._scheduler = AsyncIOScheduler(timezone=settings.scheduler_timezone)
 
-    def register_cron(self, name: str, func: JobFunc, hour: int, minute: int):
-        trigger = CronTrigger(hour=hour, minute=minute, timezone=get_settings().scheduler_timezone)
+    def register_cron(
+        self, name: str, func: JobFunc, hour: int, minute: int, timezone: str | None = None
+    ):
+        tz = timezone or get_settings().scheduler_timezone
+        trigger = CronTrigger(hour=hour, minute=minute, timezone=tz)
         self._scheduler.add_job(func, trigger, id=name, name=name)
-        logger.info(f"Cron job registered: {name} ({hour:02d}:{minute:02d})")
+        logger.info(f"Cron job registered: {name} ({hour:02d}:{minute:02d} {tz})")
 
     def register_interval(self, name: str, func: JobFunc, seconds: int):
         trigger = IntervalTrigger(seconds=seconds)
