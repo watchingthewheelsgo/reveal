@@ -27,6 +27,22 @@ RELOAD=1 uv run start
 - `HOST`，默认 `0.0.0.0`
 - `PORT`，默认 `8000`
 
+## Render
+
+Reveal 可以用仓库根目录的 `render.yaml` 作为 Render Blueprint 部署。当前配置使用 Docker runtime、`/health` 健康检查和 `/app/data` persistent disk。
+
+关键点：
+
+- 服务必须监听 `0.0.0.0:$PORT`；Docker 镜像默认 `PORT=10000`，Render 也会通过 `PORT` 注入实际端口。
+- Reveal 的 SQLite 数据库默认写入 `/app/data/reveal.db`，所以 Blueprint 使用 `starter` plan 并挂载 1GB persistent disk。
+- 不建议用 Free web service 跑 Reveal 主服务：Free 实例会空闲休眠，并且不能挂 persistent disk，本地 SQLite 缓存、watchlist 和研究线程会在重启或休眠后丢失。
+
+部署后先检查：
+
+```bash
+curl https://<your-service>.onrender.com/health
+```
+
 ## Feishu
 
 Reveal 支持两种飞书接入：

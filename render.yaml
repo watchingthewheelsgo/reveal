@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: reveal
+    runtime: docker
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: HOST
+        value: 0.0.0.0
+      # Bot tokens — set these in Render's Environment tab, not here
+      # - key: TELEGRAM_BOT_TOKEN
+      #   sync: false
+      # - key: TELEGRAM_ADMIN_CHAT_ID
+      #   sync: false
+      # - key: FEISHU_APP_ID
+      #   sync: false
+      # - key: FEISHU_APP_SECRET
+      #   sync: false
+      # - key: DEEPSEEK_API_KEY
+      #   sync: false
+      # - key: FINNHUB_API_KEY
+      #   sync: false
+      # - key: TWITTER_ACCOUNTS
+      #   sync: false
+      # - key: TWITTER_AUTH_TOKENS
+      #   sync: false
+    disk:
+      name: data
+      mountPath: /app/data
+      sizeGB: 1
