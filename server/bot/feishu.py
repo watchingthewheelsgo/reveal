@@ -50,6 +50,8 @@ class FeishuBot(BotAdapter):
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._ws_client: Any | None = None
         self._ws_loop: asyncio.AbstractEventLoop | None = None
+        self._ws_stop_future: asyncio.Future[None] | None = None
+        self._ws_stopping = False
         self._thread: threading.Thread | None = None
         self._processed_message_ids: set[str] = set()
         self._image_key_cache: dict[str, str] = {}
@@ -81,15 +83,64 @@ class FeishuBot(BotAdapter):
             asyncio.set_event_loop(loop)
             ws_mod.loop = loop
             self._ws_loop = loop
-            if self._ws_client:
-                self._ws_client.start()
+            self._ws_stopping = False
+            try:
+                loop.run_until_complete(self._run_ws_until_stopped())
+            except Exception as e:
+                if not self._ws_stopping:
+                    logger.exception(f"Feishu bot WebSocket failed: {e}")
+            finally:
+                self._cancel_remaining_ws_tasks(loop)
+                loop.close()
+                self._ws_loop = None
+                self._ws_stop_future = None
 
         self._thread = threading.Thread(target=_run, name="feishu-ws", daemon=True)
         self._thread.start()
 
     def stop(self):
+        self._ws_stopping = True
         if self._ws_loop and self._ws_loop.is_running():
-            self._ws_loop.call_soon_threadsafe(self._ws_loop.stop)
+            self._ws_loop.call_soon_threadsafe(self._signal_ws_stop)
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=5)
+            if self._thread.is_alive():
+                logger.warning("Feishu bot WebSocket thread did not stop within timeout")
+        self._thread = None
+
+    async def _run_ws_until_stopped(self) -> None:
+        if not self._ws_client:
+            return
+        loop = asyncio.get_running_loop()
+        self._ws_stop_future = loop.create_future()
+
+        await self._ws_client._connect()
+        loop.create_task(self._ws_client._ping_loop(), name="feishu-ws-ping")
+        try:
+            await self._ws_stop_future
+        finally:
+            self._ws_client._auto_reconnect = False
+            await self._cancel_active_ws_tasks()
+            await self._ws_client._disconnect()
+
+    def _signal_ws_stop(self) -> None:
+        if self._ws_stop_future and not self._ws_stop_future.done():
+            self._ws_stop_future.set_result(None)
+
+    async def _cancel_active_ws_tasks(self) -> None:
+        current = asyncio.current_task()
+        tasks = [task for task in asyncio.all_tasks() if task is not current and not task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _cancel_remaining_ws_tasks(self, loop: asyncio.AbstractEventLoop) -> None:
+        tasks = [task for task in asyncio.all_tasks(loop) if not task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
 
     def verify_signature(
         self,
