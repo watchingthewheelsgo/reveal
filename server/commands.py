@@ -3,13 +3,10 @@ Bot command handlers shared across Telegram and Feishu.
 """
 
 import asyncio
-import re
-from datetime import UTC, datetime, time, timedelta
 
 from loguru import logger
 
 from server.bot.base import BotContext
-from server.capabilities.planner import confirmation_plan, plan_from_command_route
 from server.research.service import ResearchError
 
 
@@ -490,7 +487,7 @@ async def _start_research_topic(
 
 
 async def handle_plain_message(ctx: BotContext, adapter):
-    """Route plain text: bound IM thread → active topic → intent classification."""
+    """Route plain text: bound IM thread → active topic → Agent."""
     text = ctx.text.strip()
     if not text:
         return
@@ -503,11 +500,7 @@ async def handle_plain_message(ctx: BotContext, adapter):
             if routed:
                 return
 
-        # Priority 2: high-confidence Twitter operations in natural language.
-        if await _try_route_natural_command(ctx, adapter, text):
-            return
-
-        # Priority 3: route to active research topic
+        # Priority 2: route to active research topic.
         topic = await get_active_topic(ctx.chat_id)
         if topic is not None:
             _spawn_background_task(
@@ -516,42 +509,11 @@ async def handle_plain_message(ctx: BotContext, adapter):
             )
             return
 
-        # Priority 4: classify intent with LLM
-        from server.llm.client import classify_intent_locally, get_llm_client
-
-        llm = get_llm_client()
-        intent = await llm.classify_intent(text) if llm else classify_intent_locally(text)
-        intent_type = intent.get("intent", "chat")
-        ticker = intent.get("ticker")
-        query = intent.get("query") or text
-
-        if intent_type == "research":
-            if ticker:
-                await _start_ticker_research(ctx, adapter, ticker.upper(), query)
-            else:
-                await _start_freeform_research(ctx, adapter, query)
-
-        elif intent_type == "question":
-            await adapter.send_message(ctx.chat_id, "🤔 正在查询...")
-            _spawn_background_task(
-                _run_quick_question_job(ctx.chat_id, query, adapter),
-                "quick question",
-            )
-
-        elif intent_type == "trade":
-            await adapter.send_message(
-                ctx.chat_id,
-                "交易记录请使用命令格式:\n/log buy TICKER PRICE QTY\n/log sell TICKER PRICE",
-            )
-
-        elif intent_type == "status":
-            await cmd_status(ctx, adapter)
-
-        else:
-            _spawn_background_task(
-                _run_chat_reply_job(ctx.chat_id, text, adapter),
-                "chat reply",
-            )
+        # Priority 3: for natural language, let the Agent choose tools from the MCP catalog.
+        _spawn_background_task(
+            _run_agent_message_job(ctx.chat_id, text, adapter, ctx.reply_to_message_id),
+            "agent message",
+        )
 
     except Exception as e:
         logger.exception(f"Message handling failed: {e}")
@@ -587,433 +549,6 @@ async def _route_bound_reply(ctx: BotContext, adapter, text: str) -> bool:
         return True
 
 
-async def _try_route_natural_command(ctx: BotContext, adapter, text: str) -> bool:
-    if await _try_route_twitter_natural_language(ctx, adapter, text):
-        return True
-
-    route = _parse_general_natural_command(text)
-    if route is None:
-        confirmation = _natural_command_confirmation_prompt(text)
-        if not confirmation:
-            return False
-        plan = confirmation_plan(confirmation, text)
-        logger.info(
-            "Natural language plan needs confirmation: confidence={} reason={}",
-            plan.confidence,
-            plan.reason,
-        )
-        await adapter.send_message(ctx.chat_id, confirmation)
-        return True
-
-    plan = plan_from_command_route(route, text)
-    if plan.needs_confirmation or not plan.command:
-        await adapter.send_message(ctx.chat_id, plan.confirmation_prompt or "请确认要执行的操作。")
-        return True
-
-    command = plan.command
-    args = plan.args
-    logger.info(
-        "Natural language plan: capability={} command={} args={} confidence={} reason={}",
-        plan.capability_id or "-",
-        command,
-        args,
-        plan.confidence,
-        plan.reason,
-    )
-    routed_ctx = _ctx_for_command(ctx, command, args)
-    handlers = {
-        "help": cmd_help,
-        "tools": cmd_tools,
-        "status": cmd_status,
-        "pick": cmd_pick,
-        "quote": cmd_quote,
-        "technical": cmd_technical,
-        "news": cmd_news,
-        "track": cmd_track,
-        "score": cmd_score,
-        "portfolio": cmd_portfolio,
-        "history": cmd_history,
-        "deep": cmd_deep,
-        "research": cmd_research,
-        "pnl": cmd_pnl,
-        "alert": cmd_alert,
-        "briefing": cmd_briefing,
-        "digest": cmd_digest,
-        "summary": cmd_summary,
-    }
-    handler = handlers.get(command)
-    if handler is None:
-        return False
-    await handler(routed_ctx, adapter)
-    return True
-
-
-def _ctx_for_command(ctx: BotContext, command: str, args: list[str]) -> BotContext:
-    return BotContext(
-        chat_id=ctx.chat_id,
-        user_id=ctx.user_id,
-        text=ctx.text,
-        command=command,
-        args=args,
-        raw_data=ctx.raw_data,
-        reply_to_message_id=ctx.reply_to_message_id,
-    )
-
-
-def _parse_general_natural_command(text: str) -> dict | None:
-    lowered = text.lower().strip()
-    ticker = _extract_ticker(text)
-
-    if lowered in {"help", "status", "pnl"}:
-        return {"command": lowered, "args": []}
-    if lowered in {"tools", "capabilities", "skills"}:
-        return {"command": "tools", "args": []}
-    if any(phrase in text for phrase in ("帮助", "怎么用", "有哪些命令")):
-        return {"command": "help", "args": []}
-    if any(
-        phrase in text
-        for phrase in ("有哪些工具", "有什么工具", "有哪些能力", "有哪些技能", "你能做什么")
-    ):
-        return {"command": "tools", "args": []}
-    if "系统状态" in text or text in {"状态", "服务状态"}:
-        return {"command": "status", "args": []}
-    if "每日简报" in text or "市场简报" in text or lowered == "briefing":
-        return {"command": "briefing", "args": []}
-    if "twitter 日报" in lowered or "推特日报" in text or lowered.startswith("digest"):
-        return {
-            "command": "digest",
-            "args": [_extract_days_ago(text)] if _extract_days_ago(text) else [],
-        }
-    if ("日报" in text or "总结" in text) and (
-        "推特" in text or "twitter" in lowered or "tweet" in lowered
-    ):
-        username = _extract_twitter_username(text)
-        if username:
-            args = [f"@{username}"]
-            if target_date := _extract_iso_date(text):
-                args.append(target_date)
-            return {"command": "summary", "args": args}
-        return {"command": "digest", "args": []}
-    if "选股" in text or "推荐股票" in text or lowered in {"pick", "daily pick"}:
-        return {"command": "pick", "args": []}
-    if any(word in text or word in lowered for word in ("持仓", "仓位", "portfolio")):
-        return {"command": "portfolio", "args": []}
-    if "盈亏" in text or "pnl" in lowered:
-        return {"command": "pnl", "args": []}
-    if "告警" in text or "alert" in lowered:
-        args = ["check"] if any(word in text for word in ("检查", "跑一下", "立即")) else []
-        return {"command": "alert", "args": args}
-    if ("新闻" in text or "news" in lowered) and ticker:
-        return {"command": "news", "args": [ticker]}
-    if (
-        any(word in text or word in lowered for word in ("技术指标", "technical", "rsi", "均线"))
-        and ticker
-    ):
-        return {"command": "technical", "args": [ticker]}
-    if (
-        any(
-            word in text or word in lowered for word in ("报价", "现价", "多少钱", "price", "quote")
-        )
-        and ticker
-    ):
-        return {"command": "quote", "args": [ticker]}
-    if any(word in text for word in ("历史研究", "之前研究", "过往研究")) and ticker:
-        return {"command": "history", "args": [ticker]}
-    if ("评分" in text or "打分" in text or "score" in lowered) and ticker:
-        return {"command": "score", "args": [ticker]}
-    if ("追踪" in text or "tracking" in lowered or "track" in lowered) and "推特" not in text:
-        return {"command": "track", "args": [ticker] if ticker else []}
-    if ("深挖" in text or "deep" in lowered) and ("最新" in text or "latest" in lowered):
-        focus = _remaining_focus(text, ("深挖", "最新", "推文", "twitter", "tweet", "latest"))
-        return {"command": "deep", "args": ["latest", *focus]}
-    if ("研究" in text or "research" in lowered) and ("最新" in text or "latest" in lowered):
-        focus = _remaining_focus(text, ("研究", "最新", "推文", "twitter", "tweet", "latest"))
-        return {"command": "research", "args": ["latest", *focus]}
-    return None
-
-
-def _natural_command_confirmation_prompt(text: str) -> str | None:
-    lowered = text.lower()
-    if any(word in lowered or word in text for word in ("watch", "关注列表", "监控")):
-        return (
-            "你是不是想执行 Twitter 关注列表操作？\n"
-            "可以直接说：把 @username 加到 watch list，或把 @username 从 watch list 移除。"
-        )
-    if any(word in text for word in ("评分", "打分")):
-        return "你是不是想执行股票评分？请带上 ticker，例如：给 MRVL 打分。"
-    if "告警" in text:
-        return "你是不是想查看或检查告警？可以说：查看告警配置，或立即检查告警。"
-    if "推特" in text or "twitter" in lowered or "tweet" in lowered:
-        return (
-            "你是不是想查询 Twitter 更新？\n"
-            "可以说：@username 最新 5 条推特、@username 昨天发了什么推特，"
-            "或 有没有关于 MRVL 的推特。"
-        )
-    return None
-
-
-def _extract_ticker(text: str) -> str | None:
-    cashtag = re.search(r"\$([A-Za-z]{1,5})\b", text)
-    if cashtag:
-        return cashtag.group(1).upper()
-    match = re.search(r"\b([A-Z]{1,5})\b", text)
-    if match:
-        return match.group(1).upper()
-    return None
-
-
-def _remaining_focus(text: str, stop_words: tuple[str, ...]) -> list[str]:
-    cleaned = text
-    for word in stop_words:
-        cleaned = re.sub(re.escape(word), " ", cleaned, flags=re.IGNORECASE)
-    return [part for part in re.split(r"\s+", cleaned.strip()) if part]
-
-
-async def _try_route_twitter_natural_language(ctx: BotContext, adapter, text: str) -> bool:
-    intent = _parse_twitter_natural_language(text)
-    if not intent:
-        return False
-
-    action = intent["action"]
-    if action in {"watch_add", "watch_remove"}:
-        username = intent["username"]
-        from server.capabilities.twitter import set_twitter_watch_account_payload
-
-        is_active = action == "watch_add"
-        await set_twitter_watch_account_payload(username, is_active)
-        if is_active:
-            await adapter.send_message(
-                ctx.chat_id,
-                f"✅ 已添加 @{username}\n正在获取最近最多 10 条推文；后续会按缓存增量检查。",
-            )
-            _spawn_background_task(
-                _run_twitter_check_job(
-                    [username],
-                    ctx.chat_id,
-                    adapter,
-                    "✅ 首次检查完成，没有获取到新推文。",
-                ),
-                "twitter natural watch add",
-            )
-        else:
-            await adapter.send_message(ctx.chat_id, f"✅ 已移除 @{username}")
-        return True
-
-    if action == "watch_list":
-        await cmd_twatch(_ctx_for_command(ctx, "x", ["list"]), adapter)
-        return True
-
-    if action == "latest":
-        username = intent["username"]
-        limit = intent["limit"]
-        await adapter.send_message(ctx.chat_id, f"🔎 正在获取 @{username} 最新 {limit} 条推文...")
-        _spawn_background_task(
-            _run_twitter_latest_job(ctx.chat_id, username, limit, adapter),
-            "twitter latest lookup",
-        )
-        return True
-
-    if action == "yesterday":
-        username = intent["username"]
-        await adapter.send_message(ctx.chat_id, f"🔎 正在查 @{username} 昨天的推文...")
-        _spawn_background_task(
-            _run_twitter_yesterday_job(ctx.chat_id, username, adapter),
-            "twitter yesterday lookup",
-        )
-        return True
-
-    if action == "search":
-        query = intent["query"]
-        from server.capabilities.twitter import (
-            format_twitter_posts_payload,
-            search_cached_twitter_posts_payload,
-        )
-
-        payload = await search_cached_twitter_posts_payload(query, limit=intent["limit"])
-        await adapter.send_message(
-            ctx.chat_id,
-            format_twitter_posts_payload(
-                f"本地缓存中关于「{query}」的 Twitter 更新",
-                payload["posts"],
-            ),
-        )
-        return True
-
-    return False
-
-
-def _parse_twitter_natural_language(text: str) -> dict | None:
-    lowered = text.lower()
-    has_twitter_keyword = any(
-        keyword in lowered or keyword in text
-        for keyword in ("推特", "twitter", "tweet", "tweets", "watch", "监控", "关注列表")
-    )
-    if not has_twitter_keyword:
-        return None
-
-    if username := _parse_watch_username(text, add=True):
-        return {"action": "watch_add", "username": username}
-    if username := _parse_watch_username(text, add=False):
-        return {"action": "watch_remove", "username": username}
-
-    if any(
-        phrase in text
-        for phrase in ("关注列表", "监控列表", "当前关注", "现在关注", "关注了谁", "监控了谁")
-    ) or any(
-        phrase in lowered
-        for phrase in ("watch list", "watched accounts", "twitter watches", "monitored accounts")
-    ):
-        return {"action": "watch_list"}
-
-    if ("最新" in text or "latest" in lowered) and (
-        "推特" in text or "twitter" in lowered or "tweet" in lowered
-    ):
-        username = _extract_twitter_username(text)
-        if username:
-            return {"action": "latest", "username": username, "limit": _extract_limit(text)}
-
-    if "昨天" in text and ("推特" in text or "twitter" in lowered or "tweet" in lowered):
-        username = _extract_twitter_username(text)
-        if username:
-            return {"action": "yesterday", "username": username}
-
-    query = _parse_cached_twitter_search_query(text)
-    if query:
-        return {"action": "search", "query": query, "limit": _extract_limit(text, default=8)}
-
-    return None
-
-
-def _parse_watch_username(text: str, add: bool) -> str | None:
-    lowered = text.lower()
-    if not any(keyword in lowered or keyword in text for keyword in ("watch", "关注", "监控")):
-        return None
-
-    action_words = (
-        ("加到", "加入", "添加", "关注", "add")
-        if add
-        else ("移除", "删除", "取消", "取关", "remove", "delete")
-    )
-    if not any(word in lowered or word in text for word in action_words):
-        return None
-    return _extract_twitter_username(text)
-
-
-def _extract_twitter_username(text: str) -> str | None:
-    url_match = re.search(r"(?:twitter|x)\.com/([A-Za-z0-9_]{1,20})(?:\b|/)", text)
-    if url_match:
-        return url_match.group(1)
-
-    at_match = re.search(r"@([A-Za-z0-9_]{1,20})", text)
-    if at_match:
-        return at_match.group(1)
-
-    patterns = [
-        r"(?:把|将)?\s*([A-Za-z][A-Za-z0-9_]{1,19})\s*(?:加到|加入|添加|移除|删除|取消|取关)",
-        r"([A-Za-z][A-Za-z0-9_]{1,19}).{0,8}(?:最新|昨天)",
-        r"([A-Za-z][A-Za-z0-9_]{1,19})\s*(?:最新|昨天)",
-        r"(?:最新|昨天)\s*([A-Za-z][A-Za-z0-9_]{1,19})",
-    ]
-    ignored = {"twitter", "tweet", "tweets", "watch", "list", "latest"}
-    for pattern in patterns:
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if match:
-            username = match.group(1)
-            if username.lower() not in ignored:
-                return username
-    return None
-
-
-def _extract_limit(text: str, default: int = 5, max_limit: int = 20) -> int:
-    match = re.search(r"(\d{1,2})\s*(?:条|篇|个|tweets?)?", text, flags=re.IGNORECASE)
-    if not match:
-        return default
-    try:
-        return max(1, min(max_limit, int(match.group(1))))
-    except ValueError:
-        return default
-
-
-def _parse_cached_twitter_search_query(text: str) -> str | None:
-    patterns = [
-        r"关于\s*([A-Za-z0-9.$_\-\s\u4e00-\u9fff]{1,40}?)\s*(?:的)?(?:推特|twitter|tweets?)",
-        r"有没有\s*([A-Za-z0-9.$_\-\s\u4e00-\u9fff]{1,40}?)\s*(?:相关)?(?:推特|twitter|tweets?)",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if not match:
-            continue
-        query = re.sub(r"\s+", " ", match.group(1)).strip(" ，,。.?？")
-        if query and query not in {"某个公司", "某某某"}:
-            return query
-    return None
-
-
-def _extract_days_ago(text: str) -> str | None:
-    match = re.search(r"(\d{1,2})\s*天前", text)
-    if not match:
-        return None
-    return match.group(1)
-
-
-def _extract_iso_date(text: str) -> str | None:
-    match = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", text)
-    return match.group(1) if match else None
-
-
-async def _run_twitter_latest_job(chat_id: str, username: str, limit: int, adapter) -> None:
-    try:
-        from server.capabilities.twitter import (
-            format_twitter_posts_payload,
-            get_twitter_latest_payload,
-        )
-
-        payload = await get_twitter_latest_payload(username, limit=limit)
-        await adapter.send_message(
-            chat_id,
-            format_twitter_posts_payload(f"@{username} 最新推文", payload["posts"]),
-        )
-    except Exception as e:
-        logger.exception(f"Twitter latest lookup failed: {e}")
-        await adapter.send_message(chat_id, "❌ 获取最新推文失败，请稍后重试。")
-
-
-async def _run_twitter_yesterday_job(chat_id: str, username: str, adapter) -> None:
-    try:
-        from server.social.monitor import cache_user_tweets
-
-        await cache_user_tweets(username, count=50)
-        start_utc, end_utc = _local_day_range_utc(days_ago=1)
-        from server.capabilities.twitter import (
-            format_twitter_posts_payload,
-            search_cached_twitter_posts_payload,
-        )
-
-        payload = await search_cached_twitter_posts_payload(
-            "",
-            limit=20,
-            username=username,
-            start_utc=start_utc,
-            end_utc=end_utc,
-        )
-        await adapter.send_message(
-            chat_id,
-            format_twitter_posts_payload(f"@{username} 昨天的推文", payload["posts"]),
-        )
-    except Exception as e:
-        logger.exception(f"Twitter yesterday lookup failed: {e}")
-        await adapter.send_message(chat_id, "❌ 查询昨天推文失败，请稍后重试。")
-
-
-def _local_day_range_utc(days_ago: int) -> tuple[datetime, datetime]:
-    local_tz = datetime.now().astimezone().tzinfo
-    now_local = datetime.now(local_tz)
-    target_date = (now_local - timedelta(days=days_ago)).date()
-    start_local = datetime.combine(target_date, time.min, tzinfo=local_tz)
-    end_local = start_local + timedelta(days=1)
-    return start_local.astimezone(UTC), end_local.astimezone(UTC)
-
-
 def _spawn_background_task(coro, label: str) -> None:
     task = asyncio.create_task(coro)
 
@@ -1024,6 +559,39 @@ def _spawn_background_task(coro, label: str) -> None:
             logger.exception(f"{label} background task failed: {e}")
 
     task.add_done_callback(_log_result)
+
+
+async def _run_agent_message_job(
+    chat_id: str,
+    text: str,
+    adapter,
+    reply_to: str = "",
+) -> None:
+    from server.research.claude_sdk_runtime import AgentRuntimeError, run_agent
+    from server.research.progress import ResearchProgressReporter
+
+    reporter = ResearchProgressReporter(adapter, chat_id, reply_to)
+    try:
+        await reporter.start("Agent 处理中...")
+        result = await run_agent(
+            (
+                "用户通过 IM 发送了一条自然语言请求。\n"
+                "请根据 Reveal capability catalog 判断用户想做什么，并调用真实工具完成。\n"
+                "如果用户是在执行系统操作，例如添加/移除 Twitter watch list、查看关注列表、"
+                "查询股票、查看持仓、查询交易日记或系统状态，直接调用对应 Reveal MCP 工具。\n"
+                "如果需要联网证据，再使用 WebSearch/WebFetch。\n"
+                "最终只返回用户可读的中文结果，不要输出伪 function_calls/XML/JSON "
+                "工具调用文本。\n\n"
+                f"用户消息:\n{text}"
+            ),
+            on_progress=reporter.on_progress,
+        )
+        await reporter.finish(result.answer)
+    except AgentRuntimeError as e:
+        await reporter.error(e.user_message)
+    except Exception as e:
+        logger.exception(f"Agent message failed: {e}")
+        await reporter.error("Agent 处理失败，请稍后重试。")
 
 
 async def _run_deep_research_job(
@@ -1118,60 +686,6 @@ async def _run_topic_message_job(
     except Exception as e:
         logger.exception(f"Topic message handling failed: {e}")
         await reporter.error("当前研究线程处理失败。")
-
-
-async def _run_quick_question_job(chat_id: str, query: str, adapter) -> None:
-    try:
-        from server.llm.client import get_llm_client
-        from server.research.context import build_portfolio_context
-
-        context = await build_portfolio_context()
-        llm = get_llm_client()
-        if not llm:
-            await adapter.send_message(chat_id, "❌ LLM 未配置。")
-            return
-        answer = await llm.chat(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        f"你是 Reveal 美股交易助手。简洁回答用户问题。\n\n用户当前持仓:\n{context}"
-                    ),
-                },
-                {"role": "user", "content": query},
-            ],
-            temperature=0.3,
-        )
-        await adapter.send_message(chat_id, answer)
-    except Exception as e:
-        logger.exception(f"Quick question failed: {e}")
-        await adapter.send_message(chat_id, "❌ 回答失败，请稍后重试。")
-
-
-async def _run_chat_reply_job(chat_id: str, text: str, adapter) -> None:
-    try:
-        from server.llm.client import get_llm_client
-
-        llm = get_llm_client()
-        if not llm:
-            return
-        answer = await llm.chat(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "你是 Reveal 美股交易助手。简短友好地回复用户。"
-                        "如果用户的问题涉及股票或投资，建议他们使用 /research 命令进行深度研究。"
-                    ),
-                },
-                {"role": "user", "content": text},
-            ],
-            temperature=0.5,
-            max_tokens=500,
-        )
-        await adapter.send_message(chat_id, answer)
-    except Exception as e:
-        logger.debug(f"Chat reply failed: {e}")
 
 
 async def _run_ticker_research_job(

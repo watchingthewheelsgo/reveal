@@ -236,13 +236,11 @@ def _looks_like_pseudo_tool_call_answer(text: str) -> bool:
     normalized = text.lower()
     tool_markers = normalized.count('"tool"') + normalized.count("'tool'")
     argument_markers = normalized.count('"arguments"') + normalized.count("'arguments'")
-    known_tools = [
-        "mcp__reveal__stock_quote",
-        "mcp__reveal__technical_analysis",
-        "mcp__reveal__stock_news",
-        "mcp__reveal__stock_score",
-        "websearch",
-        "webfetch",
-    ]
+    xml_tool_markers = (
+        "<function_calls" in normalized or "<invoke " in normalized or "<parameter " in normalized
+    )
+    known_tools = [*REVEAL_MCP_TOOLS, "websearch", "webfetch"]
     known_tool_mentions = sum(1 for tool in known_tools if tool in normalized)
-    return tool_markers >= 1 and argument_markers >= 1 and known_tool_mentions >= 1
+    return known_tool_mentions >= 1 and (
+        (tool_markers >= 1 and argument_markers >= 1) or xml_tool_markers
+    )

@@ -8,11 +8,7 @@ from pydantic import ValidationError
 
 from config.settings import Settings
 from server.bot.base import BotAdapter, BotContext, CommandRouter
-from server.commands import (
-    _parse_general_natural_command,
-    _parse_twitter_natural_language,
-    cmd_research,
-)
+from server.commands import cmd_research, handle_plain_message
 from server.llm.client import classify_intent_locally
 
 
@@ -200,64 +196,43 @@ class IntentFallbackTest(unittest.TestCase):
         self.assertEqual(intent["ticker"], "MRVL")
 
 
-class NaturalCommandParseTest(unittest.TestCase):
-    def test_natural_twitter_watch_add(self):
-        intent = _parse_twitter_natural_language("把 OwenCarter_k 加到 watch list")
+class AgentFirstRoutingTest(unittest.TestCase):
+    def test_plain_natural_language_routes_to_agent(self):
+        adapter = DummyAdapter(authorized=True)
+        ctx = BotContext(chat_id="chat-1", user_id="user-1", text="加上 @aleabitoreddit")
+        spawned: dict[str, str] = {}
 
-        self.assertEqual(intent, {"action": "watch_add", "username": "OwenCarter_k"})
+        def fake_spawn(coro, label: str) -> None:
+            spawned["label"] = label
+            coro.close()
 
-    def test_natural_twitter_watch_list(self):
-        intent = _parse_twitter_natural_language("现在关注了哪些推特账号")
+        with (
+            patch("server.research.service.get_active_topic", new=AsyncMock(return_value=None)),
+            patch("server.commands._spawn_background_task", new=fake_spawn),
+        ):
+            asyncio.run(handle_plain_message(ctx, adapter))
 
-        self.assertEqual(intent, {"action": "watch_list"})
+        self.assertEqual(spawned, {"label": "agent message"})
 
-    def test_natural_twitter_latest(self):
-        intent = _parse_twitter_natural_language("我想知道 OwenCarter_k 最新 7 条推特")
+    def test_active_topic_still_routes_to_topic_agent(self):
+        adapter = DummyAdapter(authorized=True)
+        ctx = BotContext(chat_id="chat-1", user_id="user-1", text="继续分析这个")
+        spawned: dict[str, str] = {}
 
-        self.assertEqual(intent, {"action": "latest", "username": "OwenCarter_k", "limit": 7})
+        def fake_spawn(coro, label: str) -> None:
+            spawned["label"] = label
+            coro.close()
 
-    def test_natural_twitter_yesterday(self):
-        intent = _parse_twitter_natural_language("我想知道 OwenCarter_k 在昨天发了什么推特")
+        with (
+            patch(
+                "server.research.service.get_active_topic",
+                new=AsyncMock(return_value=SimpleNamespace(id=1)),
+            ),
+            patch("server.commands._spawn_background_task", new=fake_spawn),
+        ):
+            asyncio.run(handle_plain_message(ctx, adapter))
 
-        self.assertEqual(intent, {"action": "yesterday", "username": "OwenCarter_k"})
-
-    def test_natural_cached_twitter_search(self):
-        intent = _parse_twitter_natural_language("有没有关于 MRVL 的推特")
-
-        self.assertEqual(intent, {"action": "search", "query": "MRVL", "limit": 8})
-
-    def test_general_natural_commands_reuse_command_handlers(self):
-        self.assertEqual(
-            _parse_general_natural_command("今日选股"), {"command": "pick", "args": []}
-        )
-        self.assertEqual(
-            _parse_general_natural_command("给 MRVL 打分"),
-            {"command": "score", "args": ["MRVL"]},
-        )
-        self.assertEqual(
-            _parse_general_natural_command("NVDA 现在多少钱"),
-            {"command": "quote", "args": ["NVDA"]},
-        )
-        self.assertEqual(
-            _parse_general_natural_command("查一下 MRVL 新闻"),
-            {"command": "news", "args": ["MRVL"]},
-        )
-        self.assertEqual(
-            _parse_general_natural_command("MRVL 技术指标"),
-            {"command": "technical", "args": ["MRVL"]},
-        )
-        self.assertEqual(
-            _parse_general_natural_command("查 NVDA 历史研究"),
-            {"command": "history", "args": ["NVDA"]},
-        )
-        self.assertEqual(
-            _parse_general_natural_command("我的持仓"),
-            {"command": "portfolio", "args": []},
-        )
-        self.assertEqual(
-            _parse_general_natural_command("有哪些工具"),
-            {"command": "tools", "args": []},
-        )
+        self.assertEqual(spawned, {"label": "topic message"})
 
 
 class ResearchCommandTest(unittest.TestCase):

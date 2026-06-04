@@ -7,6 +7,7 @@ from config import settings as settings_module
 from server.research.claude_sdk_runtime import (
     AgentConfigurationError,
     AgentRuntimeError,
+    _looks_like_pseudo_tool_call_answer,
     run_agent,
 )
 
@@ -135,6 +136,20 @@ class ClaudeSdkRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 await run_agent("research this")
 
         self.assertIn("认证失败", ctx.exception.user_message)
+
+
+class PseudoToolCallDetectionTest(unittest.TestCase):
+    def test_detects_xml_function_call_text(self):
+        answer = """
+好的，让我先加关注 @aleabitoreddit，然后拉取最近推文。
+<function_calls>
+<invoke name="mcp__reveal__twitter_watch_add">
+<parameter name="username">aleabitoreddit</parameter>
+</invoke>
+</function_calls>
+"""
+
+        self.assertTrue(_looks_like_pseudo_tool_call_answer(answer))
 
 
 if __name__ == "__main__":
