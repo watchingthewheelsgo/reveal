@@ -9,6 +9,22 @@ mcp = FastMCP("reveal")
 
 
 @mcp.tool()
+async def capability_catalog() -> str:
+    """查看 Reveal 全部系统能力、MCP 工具、slash command 和三方服务目录。"""
+    from server.capabilities.system import get_capability_catalog_payload
+
+    return json.dumps(get_capability_catalog_payload(), ensure_ascii=False)
+
+
+@mcp.tool()
+async def system_status() -> str:
+    """查看 Reveal 当前运行配置状态：bot、LLM、数据库、行情、Twitter、告警。"""
+    from server.capabilities.system import get_system_status_payload
+
+    return json.dumps(get_system_status_payload(), ensure_ascii=False)
+
+
+@mcp.tool()
 async def stock_quote(ticker: str) -> str:
     """获取股票实时报价：现价、涨跌幅、成交量。"""
     from server.capabilities.market import get_stock_quote_payload
@@ -74,6 +90,95 @@ async def stock_score(ticker: str) -> str:
     if not result:
         return f"{ticker}: 数据不可用，无法评分"
     return json.dumps(result, ensure_ascii=False)
+
+
+@mcp.tool()
+async def tracking_report(ticker: str | None = None) -> str:
+    """查看每日选股/追踪标的表现，可选指定 ticker。"""
+    from server.stock.tracker import get_tracking_report
+
+    return await get_tracking_report(ticker)
+
+
+@mcp.tool()
+async def twitter_watch_list() -> str:
+    """查看当前 Twitter/X watch list 和每个账号的缓存 cursor/check 状态。"""
+    from server.capabilities.twitter import get_twitter_watch_list_payload
+
+    return json.dumps(await get_twitter_watch_list_payload(), ensure_ascii=False)
+
+
+@mcp.tool()
+async def twitter_watch_add(username: str) -> str:
+    """把一个 Twitter/X 用户加入 watch list。"""
+    from server.capabilities.twitter import set_twitter_watch_account_payload
+
+    return json.dumps(
+        await set_twitter_watch_account_payload(username, is_active=True),
+        ensure_ascii=False,
+    )
+
+
+@mcp.tool()
+async def twitter_watch_remove(username: str) -> str:
+    """把一个 Twitter/X 用户移出 watch list。"""
+    from server.capabilities.twitter import set_twitter_watch_account_payload
+
+    return json.dumps(
+        await set_twitter_watch_account_payload(username, is_active=False),
+        ensure_ascii=False,
+    )
+
+
+@mcp.tool()
+async def twitter_latest(username: str, limit: int = 5) -> str:
+    """获取并缓存某个 Twitter/X 用户最新推文，返回正文、摘要、媒体、链接和引用。"""
+    from server.capabilities.twitter import get_twitter_latest_payload
+
+    return json.dumps(await get_twitter_latest_payload(username, limit=limit), ensure_ascii=False)
+
+
+@mcp.tool()
+async def twitter_search(query: str, limit: int = 8, username: str | None = None) -> str:
+    """搜索 Reveal 数据库中已缓存的 Twitter/X 推文，可按用户名过滤。"""
+    from server.capabilities.twitter import search_cached_twitter_posts_payload
+
+    return json.dumps(
+        await search_cached_twitter_posts_payload(query, limit=limit, username=username),
+        ensure_ascii=False,
+    )
+
+
+@mcp.tool()
+async def trading_journal(period: str = "today") -> str:
+    """查看交易日记。period: today/week/month/year/all。"""
+    from server.capabilities.journal import get_trading_journal_payload
+
+    return json.dumps(await get_trading_journal_payload(period), ensure_ascii=False)
+
+
+@mcp.tool()
+async def pnl_summary(period: str = "month") -> str:
+    """查看交易盈亏汇总。period: today/week/month/year/all。"""
+    from server.capabilities.journal import get_pnl_summary_payload
+
+    return json.dumps(await get_pnl_summary_payload(period), ensure_ascii=False)
+
+
+@mcp.tool()
+async def alert_status() -> str:
+    """查看告警配置和当前告警监控 ticker。"""
+    from server.capabilities.alerts import get_alert_status_payload
+
+    return json.dumps(await get_alert_status_payload(), ensure_ascii=False)
+
+
+@mcp.tool()
+async def daily_briefing() -> str:
+    """生成每日市场简报。"""
+    from server.briefing import generate_daily_briefing
+
+    return await generate_daily_briefing()
 
 
 def main():

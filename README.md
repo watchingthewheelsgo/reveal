@@ -84,27 +84,31 @@ curl http://127.0.0.1:8000/health
 
 ## Capability Architecture
 
-Reveal 的用户入口分为三层：
+Reveal 的系统能力分为四层，`CapabilitySpec` 是事实源：
 
-- **System command**：稳定、可审计的操作入口，例如 `/quote`、`/twatch`、`/research`。
-- **System tool**：确定性工具能力，例如报价、技术指标、新闻、持仓、历史研究。命令、自然语言和 Agent MCP 都复用同一批实现函数。
-- **Skill / workflow**：多步任务，例如 Twitter 研究线程、股票深度研究、选股、告警、日报。Skill 可以调用多个 tools，也可以交给 Claude Agent SDK 执行多轮工具循环。
+- **Capability**：产品能力定义，例如 `stock.quote`、`twitter.watch`、`journal.view`。每个能力声明标题、类型、参数、slash command、自然语言示例、Agent MCP 工具、依赖的三方服务和副作用。
+- **System tool / workflow / skill**：能力的实现层。确定性读工具复用 `server/capabilities/*` 的函数；多步任务通过 command handler 或 Claude Agent SDK 调度。
+- **Agent MCP tool**：Agent 可真实调用的执行入口，例如 `mcp__reveal__stock_quote`、`mcp__reveal__twitter_watch_list`、`mcp__reveal__pnl_summary`。这些工具全部由 `server/mcp.py` 包装同一批 capability 函数。
+- **Slash command**：常用能力的快捷入口，例如 `/quote`、`/x`、`/research`。slash command 不是另一套业务逻辑，只是 capability 的快速调用路径。
+- **External service API**：能力背后的服务，例如 Feishu、Telegram、DeepSeek、Finnhub、yfinance、X GraphQL、vxTwitter、Postgres/SQLite。
 
 代码层次：
 
-- `server/capabilities/registry.py` 是系统能力目录，定义每个 command/tool/skill 的名称、命令、自然语言示例和 Agent MCP 工具映射。
+- `server/capabilities/registry.py` 是系统能力目录，定义 capability、MCP tool、slash command 和 external service 的映射。
 - `server/capabilities/planner.py` 是自然语言规划层，把用户表达编译成结构化 `PlannedAction`，包含 capability、command、args、confidence 和 reason。
-- `server/capabilities/market.py` 放可复用的核心工具实现。
+- `server/capabilities/market.py`、`system.py`、`twitter.py`、`journal.py`、`alerts.py` 放可复用的核心能力实现。
 - `server/commands.py` 只负责 IM/slash command 和自然语言 planner。
 - `server/mcp.py` 把同一批核心工具暴露给 Claude Agent SDK。
-- `server/research/claude_sdk_runtime.py` 使用 Claude Agent SDK + DeepSeek，把 `WebSearch`、`WebFetch` 和 Reveal MCP 工具放进白名单，禁止本地文件/命令类工具。
+- `server/research/claude_sdk_runtime.py` 使用 Claude Agent SDK + DeepSeek，把 `WebSearch`、`WebFetch` 和 registry 中的 Reveal MCP tools 放进白名单，禁止本地文件/命令类工具。
 
 设计约束：
 
 - 每个对用户可见的 system command 必须先登记为 `CapabilitySpec`。
-- 如果一个 command 可以被 Agent 调用，应同时登记 `agent_tool`，并在 `server/mcp.py` 复用同一个核心实现函数。
+- 如果一个 capability 可以被 Agent 调用，应登记 `agent_tools`，并在 `server/mcp.py` 复用同一个核心实现函数。
+- Agent 的系统提示会包含完整 capability catalog；Agent 知道所有能力，但只能真实调用 registry 白名单中的 MCP/built-in tools。
 - 自然语言入口先生成 plan，再执行 command；低置信度或参数不完整时先向用户确认。
 - Claude Agent SDK 负责多轮工具循环和会话恢复；Reveal 只提供受控工具白名单、MCP server 和业务上下文，不手写 Agent runtime。
+- 有副作用的能力要在 registry 中声明。交易写入类能力保留 slash command，不默认暴露为 Agent 可执行工具；watch list add/remove 因为是明确的系统配置操作，暴露为 MCP tool。
 
 用户可以用 slash command 精确触发，也可以用自然语言触发同一能力，例如：
 
@@ -113,7 +117,31 @@ NVDA 现在多少钱
 查一下 MRVL 新闻
 我的持仓
 把 @OwenCarter_k 加到 watch list
+现在关注了哪些推特账号
 深度研究 MRVL
+```
+
+当前 Agent 可调用的 Reveal MCP tools：
+
+```text
+mcp__reveal__capability_catalog
+mcp__reveal__system_status
+mcp__reveal__stock_quote
+mcp__reveal__technical_analysis
+mcp__reveal__stock_news
+mcp__reveal__stock_score
+mcp__reveal__tracking_report
+mcp__reveal__portfolio
+mcp__reveal__research_history
+mcp__reveal__twitter_watch_list
+mcp__reveal__twitter_watch_add
+mcp__reveal__twitter_watch_remove
+mcp__reveal__twitter_latest
+mcp__reveal__twitter_search
+mcp__reveal__trading_journal
+mcp__reveal__pnl_summary
+mcp__reveal__alert_status
+mcp__reveal__daily_briefing
 ```
 
 如果只想使用 HTTP callback，不启动 WebSocket：
@@ -148,10 +176,10 @@ Bot 命令默认只允许配置的管理员 chat 使用。至少配置一个：
 也可以在 bot 里动态管理：
 
 ```text
-/twatch list
-/twatch add @elonmusk
-/twatch del @elonmusk
-/twatch check
+/x list
+/x add @elonmusk
+/x del @elonmusk
+/x check
 /digest
 /summary @elonmusk
 ```
@@ -217,4 +245,4 @@ AGENT_MAX_TURNS=8
 
 普通聊天、摘要和意图分类使用 DeepSeek OpenAI-compatible endpoint。深度研究使用 `ANTHROPIC_*` 这组 Claude Code / Agent SDK 原生变量名连接 DeepSeek Anthropic-compatible endpoint。`ANTHROPIC_AUTH_TOKEN` 为空时会复用 `DEEPSEEK_API_KEY`。`AGENT_EFFORT` 和 `AGENT_MAX_TURNS` 是 Reveal 对 Agent 循环强度和最大轮数的控制。
 
-Claude Agent SDK 运行时只开放 `WebSearch` 和 `WebFetch`，不会读取本地文件、运行命令或修改文件。
+Claude Agent SDK 运行时开放 `WebSearch`、`WebFetch` 和 Reveal MCP 工具；不会读取本地文件、运行命令或修改文件。

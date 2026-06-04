@@ -206,6 +206,11 @@ class NaturalCommandParseTest(unittest.TestCase):
 
         self.assertEqual(intent, {"action": "watch_add", "username": "OwenCarter_k"})
 
+    def test_natural_twitter_watch_list(self):
+        intent = _parse_twitter_natural_language("现在关注了哪些推特账号")
+
+        self.assertEqual(intent, {"action": "watch_list"})
+
     def test_natural_twitter_latest(self):
         intent = _parse_twitter_natural_language("我想知道 OwenCarter_k 最新 7 条推特")
 

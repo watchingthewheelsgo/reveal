@@ -26,22 +26,9 @@ async def cmd_tools(ctx: BotContext, adapter):
 
 
 async def cmd_status(ctx: BotContext, adapter):
-    from config.settings import get_settings
-    from server.db.engine import engine
+    from server.capabilities.system import format_system_status, get_system_status_payload
 
-    settings = get_settings()
-    lines = [
-        "*Reveal 系统状态*",
-        "",
-        f"Telegram Bot: {'✅' if settings.telegram_bot_token else '❌'}",
-        f"飞书 Bot: {'✅' if settings.is_feishu_configured() else '❌'}",
-        f"LLM: {'✅' if settings.is_llm_configured() else '❌'}",
-        f"Finnhub: {'✅' if settings.is_finnhub_configured() else '❌'}",
-        f"数据库: {'✅' if engine else '❌'}",
-        f"时区: {settings.scheduler_timezone}",
-        f"选股时间: {settings.daily_pick_time} (ET)",
-    ]
-    await adapter.send_message(ctx.chat_id, "\n".join(lines))
+    await adapter.send_message(ctx.chat_id, format_system_status(get_system_status_payload()))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -790,10 +777,10 @@ async def _try_route_twitter_natural_language(ctx: BotContext, adapter, text: st
     action = intent["action"]
     if action in {"watch_add", "watch_remove"}:
         username = intent["username"]
-        from server.social.monitor import set_twitter_account_active
+        from server.capabilities.twitter import set_twitter_watch_account_payload
 
         is_active = action == "watch_add"
-        await set_twitter_account_active(username, is_active)
+        await set_twitter_watch_account_payload(username, is_active)
         if is_active:
             await adapter.send_message(
                 ctx.chat_id,
@@ -810,6 +797,10 @@ async def _try_route_twitter_natural_language(ctx: BotContext, adapter, text: st
             )
         else:
             await adapter.send_message(ctx.chat_id, f"✅ 已移除 @{username}")
+        return True
+
+    if action == "watch_list":
+        await cmd_twatch(_ctx_for_command(ctx, "x", ["list"]), adapter)
         return True
 
     if action == "latest":
@@ -833,10 +824,18 @@ async def _try_route_twitter_natural_language(ctx: BotContext, adapter, text: st
 
     if action == "search":
         query = intent["query"]
-        posts = await _search_cached_twitter_posts(query, limit=intent["limit"])
+        from server.capabilities.twitter import (
+            format_twitter_posts_payload,
+            search_cached_twitter_posts_payload,
+        )
+
+        payload = await search_cached_twitter_posts_payload(query, limit=intent["limit"])
         await adapter.send_message(
             ctx.chat_id,
-            _format_twitter_posts(f"本地缓存中关于「{query}」的 Twitter 更新", posts),
+            format_twitter_posts_payload(
+                f"本地缓存中关于「{query}」的 Twitter 更新",
+                payload["posts"],
+            ),
         )
         return True
 
@@ -856,6 +855,15 @@ def _parse_twitter_natural_language(text: str) -> dict | None:
         return {"action": "watch_add", "username": username}
     if username := _parse_watch_username(text, add=False):
         return {"action": "watch_remove", "username": username}
+
+    if any(
+        phrase in text
+        for phrase in ("关注列表", "监控列表", "当前关注", "现在关注", "关注了谁", "监控了谁")
+    ) or any(
+        phrase in lowered
+        for phrase in ("watch list", "watched accounts", "twitter watches", "monitored accounts")
+    ):
+        return {"action": "watch_list"}
 
     if ("最新" in text or "latest" in lowered) and (
         "推特" in text or "twitter" in lowered or "tweet" in lowered
@@ -955,11 +963,16 @@ def _extract_iso_date(text: str) -> str | None:
 
 async def _run_twitter_latest_job(chat_id: str, username: str, limit: int, adapter) -> None:
     try:
-        from server.social.monitor import cache_user_tweets
+        from server.capabilities.twitter import (
+            format_twitter_posts_payload,
+            get_twitter_latest_payload,
+        )
 
-        posts = await cache_user_tweets(username, count=limit)
-        posts = sorted(posts, key=lambda post: post.posted_at, reverse=True)[:limit]
-        await adapter.send_message(chat_id, _format_twitter_posts(f"@{username} 最新推文", posts))
+        payload = await get_twitter_latest_payload(username, limit=limit)
+        await adapter.send_message(
+            chat_id,
+            format_twitter_posts_payload(f"@{username} 最新推文", payload["posts"]),
+        )
     except Exception as e:
         logger.exception(f"Twitter latest lookup failed: {e}")
         await adapter.send_message(chat_id, "❌ 获取最新推文失败，请稍后重试。")
@@ -971,91 +984,25 @@ async def _run_twitter_yesterday_job(chat_id: str, username: str, adapter) -> No
 
         await cache_user_tweets(username, count=50)
         start_utc, end_utc = _local_day_range_utc(days_ago=1)
-        posts = await _search_cached_twitter_posts(
+        from server.capabilities.twitter import (
+            format_twitter_posts_payload,
+            search_cached_twitter_posts_payload,
+        )
+
+        payload = await search_cached_twitter_posts_payload(
             "",
             limit=20,
             username=username,
             start_utc=start_utc,
             end_utc=end_utc,
         )
-        await adapter.send_message(chat_id, _format_twitter_posts(f"@{username} 昨天的推文", posts))
+        await adapter.send_message(
+            chat_id,
+            format_twitter_posts_payload(f"@{username} 昨天的推文", payload["posts"]),
+        )
     except Exception as e:
         logger.exception(f"Twitter yesterday lookup failed: {e}")
         await adapter.send_message(chat_id, "❌ 查询昨天推文失败，请稍后重试。")
-
-
-async def _search_cached_twitter_posts(
-    query: str,
-    limit: int = 8,
-    username: str | None = None,
-    start_utc: datetime | None = None,
-    end_utc: datetime | None = None,
-) -> list:
-    from sqlalchemy import desc, select
-
-    from server.db.engine import get_session_factory
-    from server.db.models import SocialPost
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        statement = select(SocialPost)
-        if username:
-            statement = statement.where(SocialPost.username == username.strip().lstrip("@"))
-        if start_utc:
-            statement = statement.where(SocialPost.posted_at >= start_utc)
-        if end_utc:
-            statement = statement.where(SocialPost.posted_at < end_utc)
-        result = await session.execute(
-            statement.order_by(desc(SocialPost.posted_at), desc(SocialPost.id)).limit(300)
-        )
-        posts = list(result.scalars().all())
-
-    if query:
-        posts = [post for post in posts if _post_matches_cached_query(post, query)]
-    return posts[:limit]
-
-
-def _post_matches_cached_query(post, query: str) -> bool:
-    needle = query.strip().lower()
-    ticker = query.strip().upper().lstrip("$")
-    haystack = " ".join(
-        str(value or "")
-        for value in (
-            post.username,
-            post.content,
-            post.summary,
-            post.translated_content,
-            " ".join(str(item) for item in post.topics or []),
-            " ".join(str(item) for item in post.links or []),
-        )
-    ).lower()
-    if needle and needle in haystack:
-        return True
-    return ticker in {str(item).upper().lstrip("$") for item in post.mentioned_tickers or []}
-
-
-def _format_twitter_posts(title: str, posts: list) -> str:
-    if not posts:
-        return f"{title}\n\n本地缓存里暂时没有匹配内容。"
-
-    lines = [f"*{title}*", ""]
-    for post in posts:
-        posted = post.posted_at.astimezone().strftime("%Y-%m-%d %H:%M")
-        preview = _compact_text(post.summary or post.content or "（无正文）", 180)
-        marker = "重点关注 · " if getattr(post, "is_noteworthy", False) else ""
-        lines.append(f"#{post.id} {marker}@{post.username} · {posted}")
-        lines.append(preview)
-        if post.tweet_url:
-            lines.append(post.tweet_url)
-        lines.append("")
-    return "\n".join(lines).strip()
-
-
-def _compact_text(text: str, limit: int) -> str:
-    clean = re.sub(r"\n{3,}", "\n\n", text).strip()
-    if len(clean) <= limit:
-        return clean
-    return clean[: limit - 1].rstrip() + "..."
 
 
 def _local_day_range_utc(days_ago: int) -> tuple[datetime, datetime]:
@@ -1302,25 +1249,25 @@ async def _run_twitter_check_job(
 
 
 async def cmd_twatch(ctx: BotContext, adapter):
-    """Twitter watch commands: /twatch [list|add @user|del @user]"""
+    """Twitter watch commands: /x [list|add @user|del @user]"""
     sub = ctx.args[0] if ctx.args else "list"
 
     if sub == "list":
-        from config.settings import get_settings
-        from server.social.monitor import list_active_twitter_accounts
+        from server.capabilities.twitter import (
+            format_twitter_watch_list,
+            get_twitter_watch_list_payload,
+        )
 
-        accounts = await list_active_twitter_accounts(get_settings().twitter_accounts)
-        if accounts:
-            text = "*🐦 Twitter 监控列表*\n\n" + "\n".join(f"  • @{a}" for a in accounts)
-        else:
-            text = "暂无监控账号。\n用 /twatch add @用户名 添加。"
-        await adapter.send_message(ctx.chat_id, text)
+        await adapter.send_message(
+            ctx.chat_id,
+            format_twitter_watch_list(await get_twitter_watch_list_payload()),
+        )
 
     elif sub == "add" and len(ctx.args) > 1:
         username = ctx.args[1].lstrip("@")
-        from server.social.monitor import set_twitter_account_active
+        from server.capabilities.twitter import set_twitter_watch_account_payload
 
-        await set_twitter_account_active(username, True)
+        await set_twitter_watch_account_payload(username, True)
         await adapter.send_message(
             ctx.chat_id,
             f"✅ 已添加 @{username}\n正在获取最近最多 10 条推文；后续会按缓存增量检查。",
@@ -1337,9 +1284,9 @@ async def cmd_twatch(ctx: BotContext, adapter):
 
     elif sub == "del" and len(ctx.args) > 1:
         username = ctx.args[1].lstrip("@")
-        from server.social.monitor import set_twitter_account_active
+        from server.capabilities.twitter import set_twitter_watch_account_payload
 
-        await set_twitter_account_active(username, False)
+        await set_twitter_watch_account_payload(username, False)
         await adapter.send_message(ctx.chat_id, f"✅ 已移除 @{username}")
 
     elif sub == "check":
@@ -1357,10 +1304,10 @@ async def cmd_twatch(ctx: BotContext, adapter):
         await adapter.send_message(
             ctx.chat_id,
             "用法:\n"
-            "/twatch list — 查看列表\n"
-            "/twatch add @user — 添加\n"
-            "/twatch del @user — 删除\n"
-            "/twatch check — 立即检查\n\n"
+            "/x list — 查看列表\n"
+            "/x add @user — 添加\n"
+            "/x del @user — 删除\n"
+            "/x check — 立即检查\n\n"
             "收到提醒后:\n"
             "/research latest [研究重点] — 建立研究话题\n"
             "/deep latest [研究重点] — 让 Agent 主动深挖\n"
@@ -1507,6 +1454,7 @@ def register_all_commands(router, adapter):
             "log": lambda ctx: cmd_log(ctx, adapter),
             "journal": lambda ctx: cmd_journal(ctx, adapter),
             "pnl": lambda ctx: cmd_pnl(ctx, adapter),
+            "x": lambda ctx: cmd_twatch(ctx, adapter),
             "twatch": lambda ctx: cmd_twatch(ctx, adapter),
             "alert": lambda ctx: cmd_alert(ctx, adapter),
             "briefing": lambda ctx: cmd_briefing(ctx, adapter),
