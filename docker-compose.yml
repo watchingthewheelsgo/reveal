@@ -1,8 +1,19 @@
 services:
   reveal:
+    container_name: reveal
     build: .
     env_file:
       - .env
+    environment:
+      HOST: ${HOST:-0.0.0.0}
+      PORT: ${PORT:-10000}
+    ports:
+      - "${REVEAL_BIND_ADDR:-127.0.0.1}:${REVEAL_HOST_PORT:-10000}:${PORT:-10000}"
     volumes:
       - ./data:/app/data
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"

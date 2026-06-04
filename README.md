@@ -27,6 +27,78 @@ RELOAD=1 uv run start
 - `HOST`，默认 `0.0.0.0`
 - `PORT`，默认 `8000`
 
+## Self-host Deploy
+
+自有服务器推荐用 Docker Compose 部署。服务器需要提前安装：
+
+- Docker Engine
+- Docker Compose plugin，即 `docker compose`
+- Git
+
+首次部署：
+
+```bash
+git clone https://github.com/watchingthewheelsgo/reveal.git
+cd reveal
+scripts/deploy-self-host.sh --init-only
+```
+
+编辑 `.env`，至少填好一个 IM 入口和必要 API key：
+
+```env
+FEISHU_APP_ID=
+FEISHU_APP_SECRET=
+FEISHU_ADMIN_CHAT_ID=
+DEEPSEEK_API_KEY=
+FINNHUB_API_KEY=
+```
+
+然后一键启动：
+
+```bash
+scripts/deploy-self-host.sh
+```
+
+脚本会执行：
+
+1. 创建 `data/` 持久化目录。
+2. 用 `docker-compose.yml` 构建镜像。
+3. `docker compose up -d` 后台启动。
+4. 等待 `http://127.0.0.1:10000/health` 健康检查。
+
+默认 Compose 只把 Reveal 绑定到宿主机本机地址：
+
+```env
+REVEAL_BIND_ADDR=127.0.0.1
+REVEAL_HOST_PORT=10000
+```
+
+这适合用 Nginx/Caddy 反向代理到域名，例如：
+
+```text
+https://reveal.example.com -> http://127.0.0.1:10000
+```
+
+如果你明确要直接公网访问，可以在 `.env` 里改：
+
+```env
+REVEAL_BIND_ADDR=0.0.0.0
+REVEAL_HOST_PORT=10000
+```
+
+更新部署：
+
+```bash
+scripts/deploy-self-host.sh --pull
+```
+
+查看状态和日志：
+
+```bash
+docker compose -p reveal ps
+docker compose -p reveal logs -f reveal
+```
+
 ## Database
 
 本地默认使用 SQLite：
