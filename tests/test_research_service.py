@@ -12,6 +12,7 @@ from server.db.models import ConversationMessage, ResearchSession, SocialPost
 from server.research.claude_sdk_runtime import AgentRunResult, AgentRuntimeError
 from server.research.service import (
     ResearchError,
+    get_or_start_topic_for_post,
     handle_topic_message,
     run_deep_research,
     start_topic,
@@ -32,14 +33,19 @@ class ResearchServiceTest(unittest.IsolatedAsyncioTestCase):
         await db_engine.close_db()
         self.tmpdir.cleanup()
 
-    async def create_post(self) -> int:
+    async def create_post(
+        self,
+        tweet_id: str = "101",
+        username: str = "alice",
+        content: str = "AI infra update https://example.com/report",
+    ) -> int:
         session_factory = get_session_factory()
         async with session_factory() as session:
             post = SocialPost(
-                username="alice",
-                tweet_id="101",
-                tweet_url="https://x.com/alice/status/101",
-                content="AI infra update https://example.com/report",
+                username=username,
+                tweet_id=tweet_id,
+                tweet_url=f"https://x.com/{username}/status/{tweet_id}",
+                content=content,
                 links=["https://example.com/report"],
                 referenced_tweets=[
                     {
@@ -204,6 +210,97 @@ class ResearchServiceTest(unittest.IsolatedAsyncioTestCase):
             ).scalar_one()
 
         self.assertEqual(research_session.agent_session_id, "fresh-session")
+
+    async def test_topic_message_can_target_source_bound_session(self):
+        first_post_id = await self.create_post(
+            tweet_id="101",
+            username="alice",
+            content="First thread about NVDA supply chain",
+        )
+        second_post_id = await self.create_post(
+            tweet_id="202",
+            username="bob",
+            content="Second thread about TSLA delivery data",
+        )
+        first_topic = await start_topic("chat-1", str(first_post_id), "first")
+        second_topic = await get_or_start_topic_for_post("chat-1", str(second_post_id), "second")
+        calls: list[tuple[str, str | None]] = []
+
+        async def fake_run_agent(
+            prompt: str,
+            resume: str | None = None,
+            on_progress=None,
+        ) -> AgentRunResult:
+            calls.append((prompt, resume))
+            return AgentRunResult("first topic answer", "agent-session-first")
+
+        with patch("server.research.service.run_agent", new=fake_run_agent):
+            answer = await handle_topic_message(
+                "chat-1",
+                "继续这个 thread",
+                session_id=first_topic.id,
+            )
+
+        self.assertEqual(answer, "first topic answer")
+        self.assertEqual(len(calls), 1)
+        self.assertIn("First thread about NVDA", calls[0][0])
+        self.assertNotIn("Second thread about TSLA", calls[0][0])
+
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            sessions = (
+                (
+                    await session.execute(
+                        select(ResearchSession).where(ResearchSession.chat_id == "chat-1")
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            messages = (
+                (
+                    await session.execute(
+                        select(ConversationMessage).where(
+                            ConversationMessage.session_id == first_topic.id
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+        self.assertEqual(first_topic.status, "active")
+        self.assertEqual(second_topic.status, "active")
+        self.assertEqual({item.status for item in sessions}, {"active"})
+        self.assertEqual(messages[-2].role, "user")
+        self.assertEqual(messages[-1].role, "assistant")
+
+    async def test_topic_message_rebuilds_context_on_generic_resume_runtime_failure(self):
+        post_id = await self.create_post()
+        topic = await start_topic("chat-1", str(post_id), "AI infra")
+        await self.set_agent_session_id(topic.id, "stale-session")
+        calls: list[tuple[str, str | None]] = []
+
+        async def fake_run_agent(
+            prompt: str,
+            resume: str | None = None,
+            on_progress=None,
+        ) -> AgentRunResult:
+            calls.append((prompt, resume))
+            if resume == "stale-session":
+                raise AgentRuntimeError(
+                    "Agent SDK execution failed.",
+                    "研究 Agent 执行失败，请稍后重试。",
+                )
+            return AgentRunResult("rebuilt after generic failure", "fresh-session")
+
+        with patch("server.research.service.run_agent", new=fake_run_agent):
+            answer = await handle_topic_message("chat-1", "继续分析")
+
+        self.assertEqual(answer, "rebuilt after generic failure")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][1], "stale-session")
+        self.assertIsNone(calls[1][1])
 
     async def set_agent_session_id(self, session_id: int, agent_session_id: str) -> None:
         session_factory = get_session_factory()

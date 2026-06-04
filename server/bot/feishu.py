@@ -175,7 +175,7 @@ class FeishuBot(BotAdapter):
 
         text = self._extract_text(content_str)
         sender_id = sender.get("sender_id", {})
-        root_id = message.get("root_id") or ""
+        root_id = message.get("root_id") or message.get("parent_id") or ""
         ctx = self._make_context(
             chat_id=chat_id,
             user_id=sender_id.get("open_id", ""),
@@ -262,7 +262,7 @@ class FeishuBot(BotAdapter):
             text = parts[1] if len(parts) > 1 else ""
 
         sender_id = data.event.sender.sender_id.open_id if data.event.sender else ""
-        root_id = getattr(message, "root_id", None) or ""
+        root_id = getattr(message, "root_id", None) or getattr(message, "parent_id", None) or ""
         ctx = self._make_context(
             chat_id=chat_id,
             user_id=sender_id or "",

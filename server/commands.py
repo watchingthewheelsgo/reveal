@@ -581,18 +581,17 @@ async def _route_bound_reply(ctx: BotContext, adapter, text: str) -> bool:
         return False
 
     try:
-        from server.research.service import get_active_topic, start_topic
+        from server.research.service import get_or_start_topic_for_post
 
-        topic = await get_active_topic(ctx.chat_id)
-        if not (
-            topic
-            and topic.source_type == "twitter"
-            and topic.source_id == binding.source_id
-            and topic.status == "active"
-        ):
-            await start_topic(ctx.chat_id, str(binding.source_id), "")
+        topic = await get_or_start_topic_for_post(ctx.chat_id, str(binding.source_id), "")
         _spawn_background_task(
-            _run_topic_message_job(ctx.chat_id, text, adapter, ctx.reply_to_message_id),
+            _run_topic_message_job(
+                ctx.chat_id,
+                text,
+                adapter,
+                ctx.reply_to_message_id,
+                topic.id,
+            ),
             "bound topic message",
         )
         return True
@@ -1145,7 +1144,13 @@ async def _run_topic_summary_job(chat_id: str, adapter, reply_to: str = "") -> N
         await reporter.error("研究线程总结失败，请稍后重试。")
 
 
-async def _run_topic_message_job(chat_id: str, text: str, adapter, reply_to: str = "") -> None:
+async def _run_topic_message_job(
+    chat_id: str,
+    text: str,
+    adapter,
+    reply_to: str = "",
+    session_id: int | None = None,
+) -> None:
     from server.research.progress import ResearchProgressReporter
 
     reporter = ResearchProgressReporter(adapter, chat_id, reply_to)
@@ -1153,7 +1158,12 @@ async def _run_topic_message_job(chat_id: str, text: str, adapter, reply_to: str
         from server.research.service import handle_topic_message
 
         await reporter.start("研究 Agent 分析中...")
-        answer = await handle_topic_message(chat_id, text, on_progress=reporter.on_progress)
+        answer = await handle_topic_message(
+            chat_id,
+            text,
+            session_id=session_id,
+            on_progress=reporter.on_progress,
+        )
         if answer:
             await reporter.finish(answer)
     except ResearchError as e:

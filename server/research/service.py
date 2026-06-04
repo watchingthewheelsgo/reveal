@@ -3,6 +3,7 @@
 import re
 from dataclasses import dataclass
 
+from loguru import logger
 from sqlalchemy import desc, select
 
 from server.db.engine import get_session_factory
@@ -127,8 +128,40 @@ async def ask_about_post(
 
 
 async def start_topic(chat_id: str, post_ref: str, focus: str = "") -> ResearchSession:
+    """Start a user-selected topic and close older active fallbacks in the same chat."""
+    return await _create_topic_for_post(chat_id, post_ref, focus, close_previous=True)
+
+
+async def get_or_start_topic_for_post(
+    chat_id: str,
+    post_ref: str,
+    focus: str = "",
+) -> ResearchSession:
+    """Return the active topic for a post, or create one without closing other topics.
+
+    This is the IM-thread anchored path. A reply under a pushed card should keep using
+    the source-bound topic even if the same group has other active research threads.
+    """
     post = await resolve_social_post(post_ref)
-    session_id = await _create_session(chat_id, post.id, focus or _default_topic(post))
+    existing = await _find_active_session_for_post(chat_id, post)
+    if existing is not None:
+        return existing
+    return await _create_topic_for_post(chat_id, post_ref, focus, close_previous=False)
+
+
+async def _create_topic_for_post(
+    chat_id: str,
+    post_ref: str,
+    focus: str = "",
+    close_previous: bool = True,
+) -> ResearchSession:
+    post = await resolve_social_post(post_ref)
+    session_id = await _create_session(
+        chat_id,
+        post.id,
+        focus or _default_topic(post),
+        close_previous=close_previous,
+    )
     session_factory = get_session_factory()
     async with session_factory() as session:
         result = await session.execute(
@@ -177,11 +210,16 @@ async def get_active_topic(chat_id: str) -> ResearchSession | None:
 async def handle_topic_message(
     chat_id: str,
     message: str,
+    session_id: int | None = None,
     on_progress: ProgressCallback | None = None,
 ) -> str | None:
     if not message.strip():
         return None
-    topic = await get_active_topic(chat_id)
+    topic = (
+        await _get_topic_by_id(chat_id, session_id)
+        if session_id
+        else await get_active_topic(chat_id)
+    )
     if topic is None:
         return None
 
@@ -240,17 +278,19 @@ async def _create_session(
     topic: str,
     source_type: str = "twitter",
     source_query: str | None = None,
+    close_previous: bool = True,
 ) -> int:
     session_factory = get_session_factory()
     async with session_factory() as session:
-        previous = await session.execute(
-            select(ResearchSession).where(
-                ResearchSession.chat_id == chat_id,
-                ResearchSession.status == "active",
+        if close_previous:
+            previous = await session.execute(
+                select(ResearchSession).where(
+                    ResearchSession.chat_id == chat_id,
+                    ResearchSession.status == "active",
+                )
             )
-        )
-        for item in previous.scalars().all():
-            item.status = "closed"
+            for item in previous.scalars().all():
+                item.status = "closed"
 
         research_session = ResearchSession(
             chat_id=chat_id,
@@ -282,6 +322,21 @@ async def _find_active_session_for_post(chat_id: str, post: SocialPost) -> Resea
         )
         existing = result.scalars().first()
         return existing
+
+
+async def _get_topic_by_id(chat_id: str, session_id: int | None) -> ResearchSession | None:
+    if session_id is None:
+        return None
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        result = await session.execute(
+            select(ResearchSession).where(
+                ResearchSession.id == session_id,
+                ResearchSession.chat_id == chat_id,
+                ResearchSession.status == "active",
+            )
+        )
+        return result.scalar_one_or_none()
 
 
 async def _load_history(session_id: int, limit: int) -> list[ConversationMessage]:
@@ -320,9 +375,14 @@ async def _run_agent_for_session(
             prompt, resume=research_session.agent_session_id, on_progress=on_progress
         )
     except AgentRuntimeError as exc:
-        if not _is_resume_error(exc):
+        if not _should_rebuild_after_resume_error(exc):
             raise ResearchError(exc.user_message) from exc
 
+    logger.info(
+        "Agent session resume failed; clearing stale agent_session_id and rebuilding context "
+        "for research_session={}",
+        research_session.id,
+    )
     await _set_agent_session_id(research_session.id, None)
     history = await _load_history(research_session.id, limit=20)
     if post:
@@ -351,6 +411,29 @@ def _is_resume_error(exc: AgentRuntimeError) -> bool:
     text = f"{exc} {exc.user_message}".lower()
     markers = ["resume", "session", "conversation", "not found", "does not exist", "invalid"]
     return any(marker in text for marker in markers)
+
+
+def _should_rebuild_after_resume_error(exc: AgentRuntimeError) -> bool:
+    if _is_resume_error(exc):
+        return True
+    text = f"{exc} {exc.user_message}".lower()
+    fatal_markers = [
+        "authentication",
+        "401",
+        "auth",
+        "rate limit",
+        "429",
+        "billing",
+        "payment",
+        "402",
+        "not configured",
+        "未配置",
+        "认证失败",
+        "限流",
+        "计费",
+        "未找到 claude code cli",
+    ]
+    return not any(marker in text for marker in fatal_markers)
 
 
 def _resume_rebuild_prompt(
