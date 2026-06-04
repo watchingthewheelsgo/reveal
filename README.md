@@ -82,6 +82,40 @@ https://<your-domain>/feishu/event
 curl http://127.0.0.1:8000/health
 ```
 
+## Capability Architecture
+
+Reveal 的用户入口分为三层：
+
+- **System command**：稳定、可审计的操作入口，例如 `/quote`、`/twatch`、`/research`。
+- **System tool**：确定性工具能力，例如报价、技术指标、新闻、持仓、历史研究。命令、自然语言和 Agent MCP 都复用同一批实现函数。
+- **Skill / workflow**：多步任务，例如 Twitter 研究线程、股票深度研究、选股、告警、日报。Skill 可以调用多个 tools，也可以交给 Claude Agent SDK 执行多轮工具循环。
+
+代码层次：
+
+- `server/capabilities/registry.py` 是系统能力目录，定义每个 command/tool/skill 的名称、命令、自然语言示例和 Agent MCP 工具映射。
+- `server/capabilities/planner.py` 是自然语言规划层，把用户表达编译成结构化 `PlannedAction`，包含 capability、command、args、confidence 和 reason。
+- `server/capabilities/market.py` 放可复用的核心工具实现。
+- `server/commands.py` 只负责 IM/slash command 和自然语言 planner。
+- `server/mcp.py` 把同一批核心工具暴露给 Claude Agent SDK。
+- `server/research/claude_sdk_runtime.py` 使用 Claude Agent SDK + DeepSeek，把 `WebSearch`、`WebFetch` 和 Reveal MCP 工具放进白名单，禁止本地文件/命令类工具。
+
+设计约束：
+
+- 每个对用户可见的 system command 必须先登记为 `CapabilitySpec`。
+- 如果一个 command 可以被 Agent 调用，应同时登记 `agent_tool`，并在 `server/mcp.py` 复用同一个核心实现函数。
+- 自然语言入口先生成 plan，再执行 command；低置信度或参数不完整时先向用户确认。
+- Claude Agent SDK 负责多轮工具循环和会话恢复；Reveal 只提供受控工具白名单、MCP server 和业务上下文，不手写 Agent runtime。
+
+用户可以用 slash command 精确触发，也可以用自然语言触发同一能力，例如：
+
+```text
+NVDA 现在多少钱
+查一下 MRVL 新闻
+我的持仓
+把 @OwenCarter_k 加到 watch list
+深度研究 MRVL
+```
+
 如果只想使用 HTTP callback，不启动 WebSocket：
 
 ```env

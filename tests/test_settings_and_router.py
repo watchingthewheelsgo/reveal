@@ -229,6 +229,30 @@ class NaturalCommandParseTest(unittest.TestCase):
             _parse_general_natural_command("给 MRVL 打分"),
             {"command": "score", "args": ["MRVL"]},
         )
+        self.assertEqual(
+            _parse_general_natural_command("NVDA 现在多少钱"),
+            {"command": "quote", "args": ["NVDA"]},
+        )
+        self.assertEqual(
+            _parse_general_natural_command("查一下 MRVL 新闻"),
+            {"command": "news", "args": ["MRVL"]},
+        )
+        self.assertEqual(
+            _parse_general_natural_command("MRVL 技术指标"),
+            {"command": "technical", "args": ["MRVL"]},
+        )
+        self.assertEqual(
+            _parse_general_natural_command("查 NVDA 历史研究"),
+            {"command": "history", "args": ["NVDA"]},
+        )
+        self.assertEqual(
+            _parse_general_natural_command("我的持仓"),
+            {"command": "portfolio", "args": []},
+        )
+        self.assertEqual(
+            _parse_general_natural_command("有哪些工具"),
+            {"command": "tools", "args": []},
+        )
 
 
 class ResearchCommandTest(unittest.TestCase):

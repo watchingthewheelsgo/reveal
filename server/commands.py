@@ -9,46 +9,20 @@ from datetime import UTC, datetime, time, timedelta
 from loguru import logger
 
 from server.bot.base import BotContext
+from server.capabilities.planner import confirmation_plan, plan_from_command_route
 from server.research.service import ResearchError
 
 
 async def cmd_help(ctx: BotContext, adapter):
-    text = """*Reveal — 美股交易助手*
+    from server.capabilities.registry import format_command_help
 
-*选股相关*
-/pick — 立即触发选股
-/track — 查看追踪中的标的
-/score TICKER — 查看标的评分明细
+    await adapter.send_message(ctx.chat_id, format_command_help())
 
-*Twitter 监控*
-/twatch list — 查看监控列表
-/twatch add @user — 添加监控
-/twatch del @user — 删除监控
-/deep latest — 深挖最近一条更新
-/ask latest 问题 — 基于更新追问
-/research latest — 建立研究话题
-/topic summary — 汇总当前研究话题
 
-*交易日记*
-/log buy TICKER PRICE QTY — 记录买入
-/log short TICKER PRICE QTY — 记录做空
-/log sell TICKER PRICE — 记录卖出
-/journal today — 今日日记
-/journal week — 本周汇总
-/pnl — 盈亏汇总
+async def cmd_tools(ctx: BotContext, adapter):
+    from server.capabilities.registry import format_capability_catalog
 
-*Twitter 日报*
-/digest — 昨日关注账号总结日报
-/digest 3 — N 天前的日报
-/summary @user — 某账号昨日日报
-/summary @user 2025-06-01 — 指定日期
-
-*系统*
-/alert — 查看/配置告警阈值
-/alert check — 立即检查告警
-/status — 系统状态
-/help — 帮助"""
-    await adapter.send_message(ctx.chat_id, text)
+    await adapter.send_message(ctx.chat_id, format_capability_catalog())
 
 
 async def cmd_status(ctx: BotContext, adapter):
@@ -127,6 +101,95 @@ async def cmd_score(ctx: BotContext, adapter):
     except Exception as e:
         logger.error(f"Score command error: {e}")
         await adapter.send_message(ctx.chat_id, "❌ 评分异常，请稍后重试。")
+
+
+async def cmd_quote(ctx: BotContext, adapter):
+    """Show real-time-ish quote for a ticker: /quote AAPL"""
+    if not ctx.args:
+        await adapter.send_message(ctx.chat_id, "用法: /quote AAPL")
+        return
+    ticker = ctx.args[0].upper()
+    try:
+        from server.capabilities.market import format_stock_quote, get_stock_quote_payload
+
+        await adapter.send_message(
+            ctx.chat_id,
+            format_stock_quote(await get_stock_quote_payload(ticker), ticker),
+        )
+    except Exception as e:
+        logger.exception(f"Quote command failed: {e}")
+        await adapter.send_message(ctx.chat_id, "❌ 报价查询失败，请稍后重试。")
+
+
+async def cmd_technical(ctx: BotContext, adapter):
+    """Show technical indicators for a ticker: /technical AAPL"""
+    if not ctx.args:
+        await adapter.send_message(ctx.chat_id, "用法: /technical AAPL")
+        return
+    ticker = ctx.args[0].upper()
+    try:
+        from server.capabilities.market import (
+            format_technical_analysis,
+            get_technical_analysis_payload,
+        )
+
+        await adapter.send_message(
+            ctx.chat_id,
+            format_technical_analysis(await get_technical_analysis_payload(ticker), ticker),
+        )
+    except Exception as e:
+        logger.exception(f"Technical command failed: {e}")
+        await adapter.send_message(ctx.chat_id, "❌ 技术指标查询失败，请稍后重试。")
+
+
+async def cmd_news(ctx: BotContext, adapter):
+    """Show recent company news: /news AAPL"""
+    if not ctx.args:
+        await adapter.send_message(ctx.chat_id, "用法: /news AAPL")
+        return
+    ticker = ctx.args[0].upper()
+    try:
+        from server.capabilities.market import format_stock_news, get_stock_news_payload
+
+        await adapter.send_message(
+            ctx.chat_id,
+            format_stock_news(await get_stock_news_payload(ticker, limit=8), ticker),
+        )
+    except Exception as e:
+        logger.exception(f"News command failed: {e}")
+        await adapter.send_message(ctx.chat_id, "❌ 新闻查询失败，请稍后重试。")
+
+
+async def cmd_portfolio(ctx: BotContext, adapter):
+    """Show current open portfolio positions."""
+    try:
+        from server.capabilities.market import format_portfolio, get_portfolio_payload
+
+        await adapter.send_message(ctx.chat_id, format_portfolio(await get_portfolio_payload()))
+    except Exception as e:
+        logger.exception(f"Portfolio command failed: {e}")
+        await adapter.send_message(ctx.chat_id, "❌ 持仓查询失败，请稍后重试。")
+
+
+async def cmd_history(ctx: BotContext, adapter):
+    """Show past research for a ticker: /history AAPL"""
+    if not ctx.args:
+        await adapter.send_message(ctx.chat_id, "用法: /history AAPL")
+        return
+    ticker = ctx.args[0].upper()
+    try:
+        from server.capabilities.market import (
+            format_research_history,
+            get_research_history_payload,
+        )
+
+        await adapter.send_message(
+            ctx.chat_id,
+            format_research_history(await get_research_history_payload(ticker, limit=5), ticker),
+        )
+    except Exception as e:
+        logger.exception(f"History command failed: {e}")
+        await adapter.send_message(ctx.chat_id, "❌ 历史研究查询失败，请稍后重试。")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -547,18 +610,43 @@ async def _try_route_natural_command(ctx: BotContext, adapter, text: str) -> boo
         confirmation = _natural_command_confirmation_prompt(text)
         if not confirmation:
             return False
+        plan = confirmation_plan(confirmation, text)
+        logger.info(
+            "Natural language plan needs confirmation: confidence={} reason={}",
+            plan.confidence,
+            plan.reason,
+        )
         await adapter.send_message(ctx.chat_id, confirmation)
         return True
 
-    command = route["command"]
-    args = route.get("args", [])
+    plan = plan_from_command_route(route, text)
+    if plan.needs_confirmation or not plan.command:
+        await adapter.send_message(ctx.chat_id, plan.confirmation_prompt or "请确认要执行的操作。")
+        return True
+
+    command = plan.command
+    args = plan.args
+    logger.info(
+        "Natural language plan: capability={} command={} args={} confidence={} reason={}",
+        plan.capability_id or "-",
+        command,
+        args,
+        plan.confidence,
+        plan.reason,
+    )
     routed_ctx = _ctx_for_command(ctx, command, args)
     handlers = {
         "help": cmd_help,
+        "tools": cmd_tools,
         "status": cmd_status,
         "pick": cmd_pick,
+        "quote": cmd_quote,
+        "technical": cmd_technical,
+        "news": cmd_news,
         "track": cmd_track,
         "score": cmd_score,
+        "portfolio": cmd_portfolio,
+        "history": cmd_history,
         "deep": cmd_deep,
         "research": cmd_research,
         "pnl": cmd_pnl,
@@ -592,8 +680,15 @@ def _parse_general_natural_command(text: str) -> dict | None:
 
     if lowered in {"help", "status", "pnl"}:
         return {"command": lowered, "args": []}
+    if lowered in {"tools", "capabilities", "skills"}:
+        return {"command": "tools", "args": []}
     if any(phrase in text for phrase in ("帮助", "怎么用", "有哪些命令")):
         return {"command": "help", "args": []}
+    if any(
+        phrase in text
+        for phrase in ("有哪些工具", "有什么工具", "有哪些能力", "有哪些技能", "你能做什么")
+    ):
+        return {"command": "tools", "args": []}
     if "系统状态" in text or text in {"状态", "服务状态"}:
         return {"command": "status", "args": []}
     if "每日简报" in text or "市场简报" in text or lowered == "briefing":
@@ -615,11 +710,29 @@ def _parse_general_natural_command(text: str) -> dict | None:
         return {"command": "digest", "args": []}
     if "选股" in text or "推荐股票" in text or lowered in {"pick", "daily pick"}:
         return {"command": "pick", "args": []}
+    if any(word in text or word in lowered for word in ("持仓", "仓位", "portfolio")):
+        return {"command": "portfolio", "args": []}
     if "盈亏" in text or "pnl" in lowered:
         return {"command": "pnl", "args": []}
     if "告警" in text or "alert" in lowered:
         args = ["check"] if any(word in text for word in ("检查", "跑一下", "立即")) else []
         return {"command": "alert", "args": args}
+    if ("新闻" in text or "news" in lowered) and ticker:
+        return {"command": "news", "args": [ticker]}
+    if (
+        any(word in text or word in lowered for word in ("技术指标", "technical", "rsi", "均线"))
+        and ticker
+    ):
+        return {"command": "technical", "args": [ticker]}
+    if (
+        any(
+            word in text or word in lowered for word in ("报价", "现价", "多少钱", "price", "quote")
+        )
+        and ticker
+    ):
+        return {"command": "quote", "args": [ticker]}
+    if any(word in text for word in ("历史研究", "之前研究", "过往研究")) and ticker:
+        return {"command": "history", "args": [ticker]}
     if ("评分" in text or "打分" in text or "score" in lowered) and ticker:
         return {"command": "score", "args": [ticker]}
     if ("追踪" in text or "tracking" in lowered or "track" in lowered) and "推特" not in text:
@@ -1366,10 +1479,16 @@ def register_all_commands(router, adapter):
     router.register_many(
         {
             "help": lambda ctx: cmd_help(ctx, adapter),
+            "tools": lambda ctx: cmd_tools(ctx, adapter),
             "status": lambda ctx: cmd_status(ctx, adapter),
             "pick": lambda ctx: cmd_pick(ctx, adapter),
+            "quote": lambda ctx: cmd_quote(ctx, adapter),
+            "technical": lambda ctx: cmd_technical(ctx, adapter),
+            "news": lambda ctx: cmd_news(ctx, adapter),
             "track": lambda ctx: cmd_track(ctx, adapter),
             "score": lambda ctx: cmd_score(ctx, adapter),
+            "portfolio": lambda ctx: cmd_portfolio(ctx, adapter),
+            "history": lambda ctx: cmd_history(ctx, adapter),
             "deep": lambda ctx: cmd_deep(ctx, adapter),
             "ask": lambda ctx: cmd_ask(ctx, adapter),
             "research": lambda ctx: cmd_research(ctx, adapter),

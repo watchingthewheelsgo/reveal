@@ -21,18 +21,16 @@ from claude_agent_sdk.types import McpServerConfig, McpStdioServerConfig
 from loguru import logger
 
 from config.settings import get_settings
+from server.capabilities.registry import (
+    BUILTIN_AGENT_TOOLS,
+    DISALLOWED_LOCAL_TOOLS,
+    agent_allowed_tools,
+    agent_mcp_tool_names,
+    format_agent_tool_catalog,
+)
 
-BUILTIN_AGENT_TOOLS = ["WebSearch", "WebFetch"]
-REVEAL_MCP_TOOLS = [
-    "mcp__reveal__stock_quote",
-    "mcp__reveal__technical_analysis",
-    "mcp__reveal__stock_news",
-    "mcp__reveal__portfolio",
-    "mcp__reveal__research_history",
-    "mcp__reveal__stock_score",
-]
-AGENT_ALLOWED_TOOLS = [*BUILTIN_AGENT_TOOLS, *REVEAL_MCP_TOOLS]
-DISALLOWED_LOCAL_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep"]
+REVEAL_MCP_TOOLS = agent_mcp_tool_names()
+AGENT_ALLOWED_TOOLS = agent_allowed_tools()
 MCP_SERVERS: dict[str, McpServerConfig] = {
     "reveal": McpStdioServerConfig(
         command="uv",
@@ -108,15 +106,7 @@ async def run_agent(
         extra_args={"bare": None},
         system_prompt=(
             "你是 Reveal 美股交易助手的研究代理。\n\n"
-            "你有以下工具可用:\n"
-            "- stock_quote: 查实时股价和涨跌幅\n"
-            "- technical_analysis: 查技术指标 (RSI, SMA, 量比, PE, PEG)\n"
-            "- stock_news: 查最近新闻\n"
-            "- portfolio: 查用户当前持仓和浮盈\n"
-            "- research_history: 查过去的研究结论\n"
-            "- stock_score: 多因子评分\n"
-            "- WebSearch: 搜索互联网\n"
-            "- WebFetch: 抓取网页内容\n\n"
+            f"{format_agent_tool_catalog()}\n\n"
             "工作原则:\n"
             "1. 先用内部工具 (stock_quote, technical_analysis 等) 获取精确数据\n"
             "2. 再用 WebSearch/WebFetch 补充最新信息和外部观点\n"
