@@ -65,7 +65,7 @@ class ResearchProgressReporter:
             status = f"🔎 研究中 (步骤 {self.step_count})...\n{detail}"
             await self._publish_status(status)
 
-    async def finish(self, result_text: str) -> None:
+    async def finish(self, result_text: str) -> str | None:
         await self._stop_heartbeat()
         logger.info(
             "Research progress finish: chat_id={} steps={} elapsed={:.1f}s",
@@ -78,11 +78,13 @@ class ResearchProgressReporter:
         anchor_message_id = self.reply_to_message_id or self.status_message_id
         if anchor_message_id:
             try:
-                await self.adapter.reply_in_thread(self.chat_id, anchor_message_id, result_text)
-                return
+                return await self.adapter.reply_in_thread(
+                    self.chat_id, anchor_message_id, result_text
+                )
             except Exception as e:
                 logger.debug(f"Thread reply failed, sending as regular message: {e}")
         await self.adapter.send_message(self.chat_id, result_text)
+        return None
 
     async def error(self, error_text: str) -> None:
         await self._stop_heartbeat()

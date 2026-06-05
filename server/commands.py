@@ -473,12 +473,14 @@ async def _start_research_topic(
         from server.research.service import start_topic
 
         topic = await start_topic(ctx.chat_id, post_ref, focus)
-        await adapter.send_message(
+        await _bind_research_session_message(ctx.chat_id, ctx.message_id, topic.id)
+        message_id = await adapter.send_message_returning_id(
             ctx.chat_id,
             f"✅ 已建立研究话题 #{topic.id}，绑定消息 #{topic.source_id}。\n"
-            "现在直接发送普通消息即可继续追问；需要 Agent 主动深挖时使用 "
+            "在这条消息下面回复即可继续追问；需要 Agent 主动深挖时使用 "
             f"/deep {topic.source_id}。",
         )
+        await _bind_research_session_message(ctx.chat_id, message_id, topic.id)
     except ResearchError as e:
         await adapter.send_message(ctx.chat_id, f"❌ {e}")
     except Exception as e:
@@ -487,31 +489,24 @@ async def _start_research_topic(
 
 
 async def handle_plain_message(ctx: BotContext, adapter):
-    """Route plain text: bound IM thread → active topic → Agent."""
+    """Route plain text: bound IM thread/quote → Agent session."""
     text = ctx.text.strip()
     if not text:
         return
     try:
-        from server.research.service import get_active_topic
-
-        # Priority 1: a reply under a pushed alert/card is bound to that source.
         if ctx.reply_to_message_id:
             routed = await _route_bound_reply(ctx, adapter, text)
             if routed:
                 return
 
-        # Priority 2: route to active research topic.
-        topic = await get_active_topic(ctx.chat_id)
-        if topic is not None:
-            _spawn_background_task(
-                _run_topic_message_job(ctx.chat_id, text, adapter, ctx.reply_to_message_id),
-                "topic message",
-            )
-            return
-
-        # Priority 3: for natural language, let the Agent choose tools from the MCP catalog.
         _spawn_background_task(
-            _run_agent_message_job(ctx.chat_id, text, adapter, ctx.reply_to_message_id),
+            _run_agent_message_job(
+                ctx.chat_id,
+                text,
+                adapter,
+                ctx.reply_to_message_id,
+                ctx.message_id,
+            ),
             "agent message",
         )
 
@@ -526,6 +521,18 @@ async def _route_bound_reply(ctx: BotContext, adapter, text: str) -> bool:
     binding = await resolve_message_binding(ctx.chat_id, ctx.reply_to_message_id)
     if binding is None:
         return False
+    if binding.source_type == "research_session":
+        _spawn_background_task(
+            _run_topic_message_job(
+                ctx.chat_id,
+                text,
+                adapter,
+                ctx.reply_to_message_id,
+                binding.source_id,
+            ),
+            "bound agent session message",
+        )
+        return True
     if binding.source_type != "twitter":
         return False
 
@@ -561,34 +568,78 @@ def _spawn_background_task(coro, label: str) -> None:
     task.add_done_callback(_log_result)
 
 
+async def _bind_research_session_message(
+    chat_id: str,
+    message_id: str | None,
+    session_id: int | None,
+) -> None:
+    if session_id is None:
+        return
+    try:
+        from server.bot.bindings import bind_message_to_source
+
+        await bind_message_to_source(chat_id, message_id, "research_session", session_id)
+    except Exception as e:
+        logger.warning(
+            "Research session message binding failed: "
+            "chat_id={} message_id={} session_id={} err={}",
+            chat_id,
+            message_id or "-",
+            session_id,
+            e,
+        )
+
+
+async def _bind_unbound_research_session_message(
+    chat_id: str,
+    message_id: str | None,
+    session_id: int | None,
+) -> None:
+    if not chat_id or not message_id or session_id is None:
+        return
+    try:
+        from server.bot.bindings import bind_message_to_source, resolve_message_binding
+
+        existing = await resolve_message_binding(chat_id, message_id)
+        if existing is None:
+            await bind_message_to_source(chat_id, message_id, "research_session", session_id)
+    except Exception as e:
+        logger.warning(
+            "Unbound research session message binding failed: "
+            "chat_id={} message_id={} session_id={} err={}",
+            chat_id,
+            message_id or "-",
+            session_id,
+            e,
+        )
+
+
 async def _run_agent_message_job(
     chat_id: str,
     text: str,
     adapter,
     reply_to: str = "",
+    source_message_id: str = "",
 ) -> None:
-    from server.research.claude_sdk_runtime import AgentRuntimeError, run_agent
     from server.research.progress import ResearchProgressReporter
+    from server.research.service import run_agent_session_message, start_agent_session
 
     reporter = ResearchProgressReporter(adapter, chat_id, reply_to)
     try:
+        session = await start_agent_session(chat_id, text)
+        await _bind_research_session_message(chat_id, source_message_id, session.id)
+        await _bind_unbound_research_session_message(chat_id, reply_to, session.id)
         await reporter.start("Agent 处理中...")
-        result = await run_agent(
-            (
-                "用户通过 IM 发送了一条自然语言请求。\n"
-                "请根据 Reveal capability catalog 判断用户想做什么，并调用真实工具完成。\n"
-                "如果用户是在执行系统操作，例如添加/移除 Twitter watch list、查看关注列表、"
-                "查询股票、查看持仓、查询交易日记或系统状态，直接调用对应 Reveal MCP 工具。\n"
-                "如果需要联网证据，再使用 WebSearch/WebFetch。\n"
-                "最终只返回用户可读的中文结果，不要输出伪 function_calls/XML/JSON "
-                "工具调用文本。\n\n"
-                f"用户消息:\n{text}"
-            ),
+        await _bind_research_session_message(chat_id, reporter.status_message_id, session.id)
+        answer = await run_agent_session_message(
+            session,
+            text,
             on_progress=reporter.on_progress,
         )
-        await reporter.finish(result.answer)
-    except AgentRuntimeError as e:
-        await reporter.error(e.user_message)
+        result_message_id = await reporter.finish(answer)
+        await _bind_research_session_message(chat_id, result_message_id, session.id)
+    except ResearchError as e:
+        await reporter.error(str(e))
     except Exception as e:
         logger.exception(f"Agent message failed: {e}")
         await reporter.error("Agent 处理失败，请稍后重试。")
@@ -610,12 +661,14 @@ async def _run_deep_research_job(
         text = (
             f"*研究线程 #{run.session_id}{post_label}*\n\n"
             f"{run.answer}\n\n"
-            "继续追问可以直接发普通消息，或使用:\n"
+            "继续追问请在这条结果下面回复，或使用:\n"
             f"/ask {post_id} 你的问题\n"
             "/topic summary\n"
             "/topic stop"
         )
-        await reporter.finish(text)
+        result_message_id = await reporter.finish(text)
+        await _bind_research_session_message(chat_id, reporter.status_message_id, run.session_id)
+        await _bind_research_session_message(chat_id, result_message_id, run.session_id)
     except ResearchError as e:
         await reporter.error(str(e))
     except Exception as e:
@@ -680,7 +733,12 @@ async def _run_topic_message_job(
             on_progress=reporter.on_progress,
         )
         if answer:
-            await reporter.finish(answer)
+            result_message_id = await reporter.finish(answer)
+            if session_id:
+                await _bind_research_session_message(
+                    chat_id, reporter.status_message_id, session_id
+                )
+                await _bind_research_session_message(chat_id, result_message_id, session_id)
     except ResearchError as e:
         await reporter.error(str(e))
     except Exception as e:
@@ -702,11 +760,13 @@ async def _run_ticker_research_job(
         text = (
             f"*研究: {ticker} · 线程 #{run.session_id}*\n\n"
             f"{run.answer}\n\n"
-            "继续追问可以直接发普通消息，或使用:\n"
+            "继续追问请在这条结果下面回复，或使用:\n"
             "/topic summary — 汇总\n"
             "/topic stop — 结束"
         )
-        await reporter.finish(text)
+        result_message_id = await reporter.finish(text)
+        await _bind_research_session_message(chat_id, reporter.status_message_id, run.session_id)
+        await _bind_research_session_message(chat_id, result_message_id, run.session_id)
     except ResearchError as e:
         await reporter.error(str(e))
     except Exception as e:
@@ -726,11 +786,13 @@ async def _run_freeform_research_job(chat_id: str, query: str, adapter, reply_to
         text = (
             f"*自由研究 · 线程 #{run.session_id}*\n\n"
             f"{run.answer}\n\n"
-            "继续追问可以直接发普通消息，或使用:\n"
+            "继续追问请在这条结果下面回复，或使用:\n"
             "/topic summary — 汇总\n"
             "/topic stop — 结束"
         )
-        await reporter.finish(text)
+        result_message_id = await reporter.finish(text)
+        await _bind_research_session_message(chat_id, reporter.status_message_id, run.session_id)
+        await _bind_research_session_message(chat_id, result_message_id, run.session_id)
     except ResearchError as e:
         await reporter.error(str(e))
     except Exception as e:

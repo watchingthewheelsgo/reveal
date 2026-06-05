@@ -57,8 +57,12 @@ async def get_twitter_watch_list_payload() -> dict[str, Any]:
     return {"accounts": accounts, "disabled_accounts": disabled, "count": len(accounts)}
 
 
-async def set_twitter_watch_account_payload(username: str, is_active: bool) -> dict[str, Any]:
-    """Add or remove an account from the watch list."""
+async def set_twitter_watch_account_payload(
+    username: str,
+    is_active: bool,
+    backfill_limit: int = 0,
+) -> dict[str, Any]:
+    """Add or remove an account from the watch list, optionally returning latest posts."""
     normalized = username.strip().lstrip("@")
     if not normalized:
         raise ValueError("username is required")
@@ -66,9 +70,18 @@ async def set_twitter_watch_account_payload(username: str, is_active: bool) -> d
     from server.social.monitor import set_twitter_account_active
 
     await set_twitter_account_active(normalized, is_active)
+    effective_backfill_limit = (
+        _clamp_limit(backfill_limit) if is_active and backfill_limit > 0 else 0
+    )
+    posts: list[dict[str, Any]] = []
+    if effective_backfill_limit:
+        payload = await get_twitter_latest_payload(normalized, limit=effective_backfill_limit)
+        posts = payload["posts"]
     return {
         "username": normalized,
         "active": is_active,
+        "backfill_limit": effective_backfill_limit,
+        "posts": posts,
         "message": f"@{normalized} 已{'加入' if is_active else '移出'} Twitter watch list",
     }
 

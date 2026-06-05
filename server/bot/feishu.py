@@ -180,6 +180,7 @@ class FeishuBot(BotAdapter):
             chat_id=chat_id,
             user_id=sender_id.get("open_id", ""),
             text=text,
+            message_id=message.get("message_id") or "",
             raw_data={"event": event_data, "body": body},
             reply_to_message_id=root_id,
         )
@@ -267,6 +268,7 @@ class FeishuBot(BotAdapter):
             chat_id=chat_id,
             user_id=sender_id or "",
             text=text,
+            message_id=msg_id or "",
             raw_data={"event": data},
             reply_to_message_id=root_id,
         )
@@ -288,6 +290,7 @@ class FeishuBot(BotAdapter):
         user_id: str,
         text: str,
         raw_data: dict,
+        message_id: str = "",
         reply_to_message_id: str = "",
     ) -> BotContext:
         parts = text.strip().split()
@@ -295,6 +298,7 @@ class FeishuBot(BotAdapter):
             chat_id=chat_id,
             user_id=user_id,
             text=text,
+            message_id=message_id,
             command=parts[0][1:] if parts and parts[0].startswith("/") else "",
             args=parts[1:] if len(parts) > 1 else [],
             raw_data=raw_data,

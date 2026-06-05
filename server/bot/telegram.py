@@ -110,9 +110,15 @@ class TelegramBot(BotAdapter):
                 chat_id=str(update.effective_chat.id),
                 user_id=str(update.effective_user.id if update.effective_user else ""),
                 text=text,
+                message_id=str(update.message.message_id),
                 command=command,
                 args=parts[1:] if len(parts) > 1 else [],
                 raw_data={"update": update, "context": context},
+                reply_to_message_id=(
+                    str(update.message.reply_to_message.message_id)
+                    if update.message.reply_to_message
+                    else ""
+                ),
             )
             await handler(ctx)
 
@@ -127,9 +133,15 @@ class TelegramBot(BotAdapter):
                 chat_id=str(update.effective_chat.id),
                 user_id=str(update.effective_user.id if update.effective_user else ""),
                 text=text,
+                message_id=str(update.message.message_id),
                 command="",
                 args=[],
                 raw_data={"update": update, "context": context},
+                reply_to_message_id=(
+                    str(update.message.reply_to_message.message_id)
+                    if update.message.reply_to_message
+                    else ""
+                ),
             )
             await handler(ctx)
 

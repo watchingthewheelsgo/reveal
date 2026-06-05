@@ -104,6 +104,47 @@ async def research_ticker(
     return ResearchRun(session_id=session_id, post=None, answer=result.answer)
 
 
+async def start_agent_session(chat_id: str, message: str) -> ResearchSession:
+    """Create a session for a top-level IM message.
+
+    Top-level natural language messages are intentionally isolated from any older
+    chat-level topic. Follow-ups only attach through explicit IM message bindings.
+    """
+    if not message.strip():
+        raise ResearchError("请提供问题。")
+    session_id = await _create_session(
+        chat_id,
+        None,
+        _agent_topic(message),
+        source_type="agent",
+        source_query=message,
+        close_previous=False,
+    )
+    session = await _get_topic_by_id(chat_id, session_id)
+    if session is None:
+        raise ResearchError("Agent 会话创建失败。")
+    return session
+
+
+async def run_agent_session_message(
+    research_session: ResearchSession,
+    message: str,
+    on_progress: ProgressCallback | None = None,
+) -> str:
+    """Run a message inside an IM-bound Agent session."""
+    if not message.strip():
+        raise ResearchError("请提供问题。")
+    result = await _run_agent_for_session(
+        research_session,
+        None,
+        _agent_message_prompt(research_session, message),
+        on_progress=on_progress,
+    )
+    await _append_message(research_session.id, "user", message)
+    await _append_message(research_session.id, "assistant", result.answer, result.agent_session_id)
+    return result.answer
+
+
 async def ask_about_post(
     chat_id: str,
     post_ref: str,
@@ -201,7 +242,11 @@ async def get_active_topic(chat_id: str) -> ResearchSession | None:
     async with session_factory() as session:
         result = await session.execute(
             select(ResearchSession)
-            .where(ResearchSession.chat_id == chat_id, ResearchSession.status == "active")
+            .where(
+                ResearchSession.chat_id == chat_id,
+                ResearchSession.status == "active",
+                ResearchSession.source_type != "agent",
+            )
             .order_by(desc(ResearchSession.updated_at), desc(ResearchSession.created_at))
         )
         return result.scalars().first()
@@ -603,12 +648,34 @@ def _ticker_prompt(ticker: str, focus: str) -> str:
 
 
 def _freeform_followup_prompt(topic: ResearchSession, message: str) -> str:
-    return f"""当前对话是一个自由研究线程。
+    label = "Agent 会话" if topic.source_type == "agent" else "自由研究线程"
+    return f"""当前对话是一个{label}。
 
 研究主题: {topic.topic or topic.source_query or ""}
 
 需要数据时请使用内部工具 (stock_quote, portfolio 等) 和 WebSearch。
 保持多轮研究上下文，不要把回答降级成简单摘要。
+
+用户消息:
+{message}
+"""
+
+
+def _agent_message_prompt(topic: ResearchSession, message: str) -> str:
+    return f"""用户正在 Reveal 的 IM Agent 会话里发送自然语言请求。
+
+Reveal 的能力以 MCP tools 暴露给你。请根据用户意图选择真实工具执行，而不是输出工具调用文本。
+
+原则:
+1. 如果用户要执行系统操作，例如添加/移除 Twitter watch list、查看关注列表、
+获取某用户最新推文、搜索本地推文、查询股票、查看持仓、查询交易日记或系统状态，
+直接调用对应 Reveal MCP 工具。
+2. 如果用户要研究、解释、比较、验证事实或需要最新外部证据，
+结合 Reveal MCP 工具和 WebSearch/WebFetch。
+3. 如果意图不明确，向用户追问一个具体澄清问题。
+4. 最终只返回用户可读的中文结果，不要输出伪 function_calls/XML/JSON 工具调用文本。
+
+会话主题: {topic.topic or topic.source_query or ""}
 
 用户消息:
 {message}
@@ -641,6 +708,11 @@ def _default_topic(post: SocialPost) -> str:
     if content:
         return content[:120]
     return f"@{post.username} update {post.tweet_id}"
+
+
+def _agent_topic(message: str) -> str:
+    cleaned = _strip_urls(message).strip()
+    return (cleaned or message.strip())[:120]
 
 
 _KNOWN_TICKERS = {

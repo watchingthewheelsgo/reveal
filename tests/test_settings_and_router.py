@@ -206,15 +206,12 @@ class AgentFirstRoutingTest(unittest.TestCase):
             spawned["label"] = label
             coro.close()
 
-        with (
-            patch("server.research.service.get_active_topic", new=AsyncMock(return_value=None)),
-            patch("server.commands._spawn_background_task", new=fake_spawn),
-        ):
+        with patch("server.commands._spawn_background_task", new=fake_spawn):
             asyncio.run(handle_plain_message(ctx, adapter))
 
         self.assertEqual(spawned, {"label": "agent message"})
 
-    def test_active_topic_still_routes_to_topic_agent(self):
+    def test_top_level_plain_message_starts_new_agent_even_with_active_topic(self):
         adapter = DummyAdapter(authorized=True)
         ctx = BotContext(chat_id="chat-1", user_id="user-1", text="继续分析这个")
         spawned: dict[str, str] = {}
@@ -232,7 +229,34 @@ class AgentFirstRoutingTest(unittest.TestCase):
         ):
             asyncio.run(handle_plain_message(ctx, adapter))
 
-        self.assertEqual(spawned, {"label": "topic message"})
+        self.assertEqual(spawned, {"label": "agent message"})
+
+    def test_reply_to_bound_research_session_routes_to_same_session(self):
+        adapter = DummyAdapter(authorized=True)
+        ctx = BotContext(
+            chat_id="chat-1",
+            user_id="user-1",
+            text="继续分析这个",
+            reply_to_message_id="msg-root",
+        )
+        spawned: dict[str, str] = {}
+
+        def fake_spawn(coro, label: str) -> None:
+            spawned["label"] = label
+            coro.close()
+
+        with (
+            patch(
+                "server.bot.bindings.resolve_message_binding",
+                new=AsyncMock(
+                    return_value=SimpleNamespace(source_type="research_session", source_id=77)
+                ),
+            ),
+            patch("server.commands._spawn_background_task", new=fake_spawn),
+        ):
+            asyncio.run(handle_plain_message(ctx, adapter))
+
+        self.assertEqual(spawned, {"label": "bound agent session message"})
 
 
 class ResearchCommandTest(unittest.TestCase):
@@ -255,6 +279,7 @@ class ResearchCommandTest(unittest.TestCase):
         mock.assert_awaited_once_with("chat-1", "42", "AI 基建")
         self.assertEqual(len(adapter.messages), 1)
         self.assertIn("已建立研究话题 #7", adapter.messages[0][1])
+        self.assertIn("在这条消息下面回复", adapter.messages[0][1])
         self.assertIn("/deep 42", adapter.messages[0][1])
 
 

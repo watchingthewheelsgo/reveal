@@ -17,6 +17,7 @@ class BotContext:
     chat_id: str
     user_id: str
     text: str
+    message_id: str = ""
     command: str = ""
     args: list[str] = field(default_factory=list)
     raw_data: dict = field(default_factory=dict)

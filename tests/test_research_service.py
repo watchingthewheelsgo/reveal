@@ -14,7 +14,9 @@ from server.research.service import (
     ResearchError,
     get_or_start_topic_for_post,
     handle_topic_message,
+    run_agent_session_message,
     run_deep_research,
+    start_agent_session,
     start_topic,
 )
 
@@ -142,6 +144,52 @@ class ResearchServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(messages[-2].role, "user")
         self.assertEqual(messages[-1].role, "assistant")
         self.assertEqual(research_session.agent_session_id, "agent-session-2")
+
+    async def test_top_level_agent_session_is_isolated_from_active_topic(self):
+        post_id = await self.create_post()
+        topic = await start_topic("chat-1", str(post_id), "AI infra")
+        agent_session = await start_agent_session("chat-1", "加上 @aleabitoreddit")
+        calls: list[tuple[str, str | None]] = []
+
+        async def fake_run_agent(
+            prompt: str,
+            resume: str | None = None,
+            on_progress=None,
+        ) -> AgentRunResult:
+            calls.append((prompt, resume))
+            return AgentRunResult("watch list updated", "agent-session-top")
+
+        with patch("server.research.service.run_agent", new=fake_run_agent):
+            answer = await run_agent_session_message(agent_session, "加上 @aleabitoreddit")
+
+        self.assertEqual(answer, "watch list updated")
+        self.assertEqual(len(calls), 1)
+        self.assertIn("Twitter watch list", calls[0][0])
+
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            sessions = (
+                (
+                    await session.execute(
+                        select(ResearchSession).where(ResearchSession.chat_id == "chat-1")
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            topic_after = (
+                await session.execute(select(ResearchSession).where(ResearchSession.id == topic.id))
+            ).scalar_one()
+            agent_after = (
+                await session.execute(
+                    select(ResearchSession).where(ResearchSession.id == agent_session.id)
+                )
+            ).scalar_one()
+
+        self.assertEqual({item.status for item in sessions}, {"active"})
+        self.assertEqual(topic_after.source_type, "twitter")
+        self.assertEqual(agent_after.source_type, "agent")
+        self.assertEqual(agent_after.agent_session_id, "agent-session-top")
 
     async def test_deep_research_failure_does_not_replace_active_topic(self):
         post_id = await self.create_post()

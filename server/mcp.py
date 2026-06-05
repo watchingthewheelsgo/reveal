@@ -109,12 +109,16 @@ async def twitter_watch_list() -> str:
 
 
 @mcp.tool()
-async def twitter_watch_add(username: str) -> str:
-    """把一个 Twitter/X 用户加入 watch list。"""
+async def twitter_watch_add(username: str, backfill_limit: int = 10) -> str:
+    """把一个 Twitter/X 用户加入 watch list，并返回最近最多 backfill_limit 条推文。"""
     from server.capabilities.twitter import set_twitter_watch_account_payload
 
     return json.dumps(
-        await set_twitter_watch_account_payload(username, is_active=True),
+        await set_twitter_watch_account_payload(
+            username,
+            is_active=True,
+            backfill_limit=backfill_limit,
+        ),
         ensure_ascii=False,
     )
 
