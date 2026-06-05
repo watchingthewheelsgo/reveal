@@ -10,7 +10,7 @@ from server.bot.base import BotAdapter
 from server.db import engine as db_engine
 from server.db.engine import get_session_factory
 from server.db.models import SocialPost, TwitterState
-from server.social.monitor import check_and_notify, fetch_user_tweets
+from server.social.monitor import check_and_notify, fetch_user_tweets, run_twitter_monitor
 from server.social.processor import TweetAnalysis, _parse_analysis
 
 
@@ -278,6 +278,54 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(quoted_post.content, "quoted context")
         self.assertFalse(quoted_post.is_pushed)
         self.assertTrue(post.is_pushed)
+
+    async def test_monitor_can_notify_admin_when_account_has_no_new_updates(self):
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            session.add(TwitterState(username="alice", last_tweet_epoch=200))
+            await session.commit()
+
+        async def fake_fetch_user_tweets(username: str, count: int = 20, cursor: str | None = None):
+            return {
+                "screen_name": username,
+                "latest_tweets": [
+                    {"tweetID": "101", "date_epoch": 101, "text": "old tweet"},
+                ],
+            }
+
+        adapter = DummyAdapter()
+        with patch("server.social.monitor.fetch_user_tweets", new=fake_fetch_user_tweets):
+            total = await run_twitter_monitor(
+                ["alice"],
+                adapter,
+                notify_no_updates=True,
+            )
+
+        self.assertEqual(total, 0)
+        self.assertEqual(adapter.messages, [("admin", "@alice 没有新的更新。")])
+        self.assertEqual(adapter.cards, [])
+
+    async def test_monitor_keeps_no_update_notifications_opt_in(self):
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            session.add(TwitterState(username="alice", last_tweet_epoch=200))
+            await session.commit()
+
+        async def fake_fetch_user_tweets(username: str, count: int = 20, cursor: str | None = None):
+            return {
+                "screen_name": username,
+                "latest_tweets": [
+                    {"tweetID": "101", "date_epoch": 101, "text": "old tweet"},
+                ],
+            }
+
+        adapter = DummyAdapter()
+        with patch("server.social.monitor.fetch_user_tweets", new=fake_fetch_user_tweets):
+            total = await run_twitter_monitor(["alice"], adapter)
+
+        self.assertEqual(total, 0)
+        self.assertEqual(adapter.messages, [])
+        self.assertEqual(adapter.cards, [])
 
 
 if __name__ == "__main__":

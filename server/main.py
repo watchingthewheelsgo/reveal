@@ -167,13 +167,15 @@ async def lifespan(app: FastAPI):
         from server.social.monitor import list_active_twitter_accounts, run_twitter_monitor
         from server.social.processor import TweetProcessor
 
+        tg = telegram_bot if telegram_bot else feishu_bot
         accounts = await list_active_twitter_accounts(get_settings().twitter_accounts)
         if not accounts:
             logger.info("Twitter monitor skipped: no active accounts")
+            if tg:
+                await tg.push_to_admin("当前没有 Twitter 关注列表。")
             return
         processor = TweetProcessor()
-        tg = telegram_bot if telegram_bot else feishu_bot
-        await run_twitter_monitor(accounts, tg, processor)
+        await run_twitter_monitor(accounts, tg, processor, notify_no_updates=True)
 
     scheduler.register_interval(
         "twitter_monitor",

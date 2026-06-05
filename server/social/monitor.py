@@ -234,6 +234,7 @@ async def check_and_notify(
     username: str,
     adapter: BotAdapter | None = None,
     llm_processor=None,
+    notify_no_updates: bool = False,
 ):
     """Check for new tweets from a user and push notifications."""
     account_key = username.strip().lstrip("@")
@@ -254,6 +255,8 @@ async def check_and_notify(
     fetch_count = INITIAL_WATCH_BACKFILL_LIMIT if first_check else 20
     data = await fetch_user_tweets(username, count=fetch_count)
     if data is None:
+        if adapter and notify_no_updates:
+            await adapter.push_to_admin(f"@{account_key} 检查失败，暂时无法获取更新。")
         return []
 
     tweets = data.get("latest_tweets", [])
@@ -368,6 +371,8 @@ async def check_and_notify(
 
     if posts_to_push:
         logger.info(f"@{account_key}: {len(successful_tweet_ids)} tweets notified")
+    elif adapter and notify_no_updates:
+        await adapter.push_to_admin(f"@{display_username} 没有新的更新。")
 
     return posts_to_push
 
@@ -486,6 +491,7 @@ async def run_twitter_monitor(
     usernames: list[str],
     adapter: BotAdapter | None = None,
     llm_processor=None,
+    notify_no_updates: bool = False,
 ) -> int:
     """Run one round of Twitter monitoring across all configured users."""
     if not usernames:
@@ -493,7 +499,10 @@ async def run_twitter_monitor(
         return 0
 
     logger.info(f"Checking {len(usernames)} Twitter accounts...")
-    tasks = [check_and_notify(u, adapter, llm_processor) for u in usernames]
+    tasks = [
+        check_and_notify(u, adapter, llm_processor, notify_no_updates=notify_no_updates)
+        for u in usernames
+    ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     total = 0
