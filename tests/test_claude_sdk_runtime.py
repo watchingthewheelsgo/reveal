@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from claude_agent_sdk import ResultMessage, SystemMessage
 
@@ -137,6 +137,34 @@ class ClaudeSdkRuntimeTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("认证失败", ctx.exception.user_message)
 
+    async def test_run_agent_executes_bracket_pseudo_reveal_tool_fallback(self):
+        async def fake_query(prompt, options):
+            yield ResultMessage(
+                subtype="success",
+                duration_ms=1,
+                duration_api_ms=1,
+                is_error=False,
+                num_turns=1,
+                session_id="result-session",
+                result=(
+                    "xbot让我帮你查看 Twitter 关注列表。\n[调用 mcp__reveal__twitter_watch_list] {}"
+                ),
+            )
+
+        watch_list_payload = (
+            '{"accounts":[{"username":"TradesMax","last_check_at":null,'
+            '"newest_tweet_id":null}],"disabled_accounts":[],"count":1}'
+        )
+        with (
+            patch("server.research.claude_sdk_runtime.query", new=fake_query),
+            patch("server.mcp.twitter_watch_list", new=AsyncMock(return_value=watch_list_payload)),
+        ):
+            result = await run_agent("我的关注列表里有谁")
+
+        self.assertIn("Twitter 监控列表", result.answer)
+        self.assertIn("@TradesMax", result.answer)
+        self.assertNotIn("[调用", result.answer)
+
 
 class PseudoToolCallDetectionTest(unittest.TestCase):
     def test_detects_xml_function_call_text(self):
@@ -148,6 +176,11 @@ class PseudoToolCallDetectionTest(unittest.TestCase):
 </invoke>
 </function_calls>
 """
+
+        self.assertTrue(_looks_like_pseudo_tool_call_answer(answer))
+
+    def test_detects_chinese_bracket_tool_call_text(self):
+        answer = "xbot让我帮你查看 Twitter 关注列表。\n[调用 mcp__reveal__twitter_watch_list] {}"
 
         self.assertTrue(_looks_like_pseudo_tool_call_answer(answer))
 
