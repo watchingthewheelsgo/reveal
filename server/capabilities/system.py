@@ -3,6 +3,7 @@
 from dataclasses import asdict
 from typing import Any
 
+from loguru import logger
 from sqlalchemy.exc import ArgumentError
 
 from config.settings import get_settings
@@ -39,6 +40,7 @@ def get_system_status_payload() -> dict[str, Any]:
         database_host = url.host or "local"
         database_name = url.database or ""
     except ArgumentError:
+        logger.exception("System status database URL parsing failed")
         database_driver = "invalid"
 
     return {

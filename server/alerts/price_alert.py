@@ -35,7 +35,7 @@ async def check_price_alerts(tickers: list[str], threshold_pct: float = 3.0) -> 
                         "detail": f"日内波动超过 {threshold_pct}% 阈值",
                     }
                 )
-        except Exception as e:
-            logger.debug(f"Price alert check failed for {ticker}: {e}")
+        except Exception:
+            logger.exception("Price alert check failed for {}", ticker)
 
     return alerts

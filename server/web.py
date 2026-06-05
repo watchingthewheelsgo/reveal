@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
+from loguru import logger
 from pydantic import BaseModel
 from sqlalchemy import desc, select
 
@@ -119,6 +120,7 @@ async def deep_research(post_id: int, payload: ResearchRequest):
     except ResearchError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
+        logger.exception("Web deep research failed for post_id={}", post_id)
         raise HTTPException(status_code=500, detail="Research agent failed") from exc
     return {
         "session_id": result.session_id,
@@ -136,6 +138,7 @@ async def ask_post(post_id: int, payload: AskRequest):
     except ResearchError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
+        logger.exception("Web ask research failed for post_id={}", post_id)
         raise HTTPException(status_code=500, detail="Research agent failed") from exc
     return {"post_id": post_id, "answer": answer}
 

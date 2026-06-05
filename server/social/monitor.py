@@ -103,7 +103,7 @@ async def fetch_user_tweets(
             data = resp.json()
 
             if not data or "latest_tweets" not in data:
-                logger.warning(f"vxTwitter returned invalid data for @{username}")
+                logger.error("vxTwitter returned invalid data for @{}", username)
                 return None
 
             data["source"] = "vxtwitter"
@@ -114,8 +114,8 @@ async def fetch_user_tweets(
                     data["max_age"] = max_age
 
             return data
-    except Exception as e:
-        logger.debug(f"vxTwitter fetch error for @{username}: {e}")
+    except Exception:
+        logger.exception("vxTwitter timeline fetch failed for @{}", username)
         return None
 
 
@@ -130,8 +130,8 @@ async def fetch_tweet(username: str, tweet_id: str) -> dict | None:
             )
             resp.raise_for_status()
             data = resp.json()
-    except Exception as e:
-        logger.debug(f"vxTwitter fetch error for @{username}/{tweet_id}: {e}")
+    except Exception:
+        logger.exception("vxTwitter tweet fetch failed for @{}/{}", username, tweet_id)
         return None
 
     if not data:
@@ -191,8 +191,8 @@ async def _upsert_social_post(
                 post_urgency = analysis.urgency
                 post_is_noteworthy = bool(analysis.is_noteworthy or analysis.urgency == "high")
                 post_attention_reason = analysis.attention_reason or analysis.urgency_reason or None
-        except Exception as e:
-            logger.warning(f"LLM processing failed for @{display_username}: {e}")
+        except Exception:
+            logger.exception("LLM processing failed for @{}", display_username)
 
     fields = {
         "username": display_username,
@@ -332,9 +332,9 @@ async def check_and_notify(
             pushed_posts = await push_tweet_cards(posts_to_push, adapter, is_backfill=first_check)
             successful_tweet_ids = [post.tweet_id for post in pushed_posts]
             push_failed = len(successful_tweet_ids) != len(posts_to_push)
-        except Exception as e:
+        except Exception:
             push_failed = True
-            logger.warning(f"Tweet card push failed for @{account_key}: {e}")
+            logger.exception("Tweet card push failed for @{}", account_key)
     elif not adapter:
         successful_tweet_ids = [post.tweet_id for post in posts_to_push]
 
@@ -390,7 +390,7 @@ async def cache_user_tweets(
     except Exception as exc:
         from server.db.engine import database_diagnostic_context
 
-        logger.warning(
+        logger.exception(
             "Twitter cache database unavailable before fetch: username={} count={} cursor={} "
             "db_context={} exc_type={} error={}",
             account_key,
@@ -450,7 +450,7 @@ async def cache_user_tweets(
     except Exception as exc:
         from server.db.engine import database_diagnostic_context
 
-        logger.warning(
+        logger.exception(
             "Twitter cache database write failed: username={} fetched={} cached_before_error={} "
             "newest_tweet_id={} db_context={} exc_type={} error={}",
             account_key,
@@ -487,8 +487,8 @@ async def push_tweet_cards(
                 is_backfill=is_backfill,
             )
             pushed_posts.append(post)
-        except Exception as e:
-            logger.warning(f"Tweet card push failed for #{post.id or post.tweet_id}: {e}")
+        except Exception:
+            logger.exception("Tweet card push failed for #{}", post.id or post.tweet_id)
     return pushed_posts
 
 
@@ -537,7 +537,15 @@ async def run_twitter_monitor(
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     total = 0
-    for r in results:
+    for username, r in zip(usernames, results, strict=False):
+        if isinstance(r, Exception):
+            logger.opt(exception=r).error(
+                "Twitter monitor account check failed: username={} exc_type={} error={}",
+                username,
+                type(r).__name__,
+                r,
+            )
+            continue
         if isinstance(r, list):
             total += len(r)
     logger.info(f"Twitter monitor: {total} new tweets across {len(usernames)} accounts")
@@ -1082,8 +1090,8 @@ async def _upload_card_image(
 ) -> str | None:
     try:
         return await adapter.upload_image(image_url, alt_text)
-    except Exception as e:
-        logger.debug(f"Card image upload failed: {image_url} ({e})")
+    except Exception:
+        logger.exception("Card image upload failed: {}", image_url)
         return None
 
 
@@ -1150,12 +1158,14 @@ async def _cross_reference_posts(posts: list[SocialPost]) -> dict[int, dict]:
                         if trade.direction == "short":
                             unrealized = -unrealized
                 except Exception:
-                    pass
+                    logger.exception(
+                        "Cross-reference position price fetch failed for {}", trade.ticker
+                    )
                 position_info[trade.ticker] = (
                     f"{trade.ticker} (持有 {trade.quantity} 股, 浮盈 ${unrealized:+,.0f})"
                 )
     except Exception:
-        pass
+        logger.exception("Cross-reference portfolio fetch failed")
 
     tracked_tickers: set[str] = set()
     try:
@@ -1163,7 +1173,7 @@ async def _cross_reference_posts(posts: list[SocialPost]) -> dict[int, dict]:
 
         tracked_tickers = set(await get_active_tickers())
     except Exception:
-        pass
+        logger.exception("Cross-reference tracked tickers fetch failed")
 
     from server.stock.scanner import DEFAULT_WATCHLIST
 
@@ -1199,8 +1209,8 @@ async def _push_card_to_admin(adapter: BotAdapter, card: dict) -> list[tuple[str
                 if message_id:
                     sent_messages.append((chat_id, message_id))
             return sent_messages
-    except Exception as e:
-        logger.warning(f"Card push failed, falling back to text: {e}")
+    except Exception:
+        logger.exception("Card push failed; falling back to text")
     return await _push_to_admin(adapter, _card_to_text(card))
 
 
@@ -1223,6 +1233,7 @@ async def _push_to_admin(adapter: BotAdapter, text: str) -> list[tuple[str, str]
                 await adapter.push_to_admin(text)
         return sent_messages
     except Exception:
+        logger.exception("Admin text push failed; falling back to adapter.push_to_admin")
         await adapter.push_to_admin(text)
         return []
 

@@ -59,6 +59,7 @@ class LLMClient:
             )
         except AuthenticationError as exc:
             self.auth_failed = True
+            logger.exception("LLM chat authentication failed")
             raise LLMAuthenticationError(
                 "DeepSeek authentication failed. Check DEEPSEEK_API_KEY or ANTHROPIC_AUTH_TOKEN."
             ) from exc
@@ -79,14 +80,16 @@ class LLMClient:
                 cleaned = "\n".join(lines)
             return json.loads(cleaned)
         except (json.JSONDecodeError, KeyError):
-            logger.debug(f"Intent classification parse error: {raw[:200]}")
+            logger.exception(
+                "Intent classification parse failed; falling back to local classifier: raw={}",
+                raw[:200],
+            )
             return classify_intent_locally(message)
-        except LLMAuthenticationError as e:
-            logger.warning(
+        except LLMAuthenticationError:
+            logger.exception(
                 "Intent classification disabled: LLM authentication failed. "
                 "Check DEEPSEEK_API_KEY or ANTHROPIC_AUTH_TOKEN."
             )
-            logger.debug(f"Intent classification auth error: {e}")
             return classify_intent_locally(message)
 
     async def translate(self, text: str, target_lang: str = "zh") -> str:

@@ -43,7 +43,7 @@ async def fetch_quote_finnhub(ticker: str) -> dict | None:
                 params={"symbol": ticker, "token": settings.finnhub_api_key},
             )
         if resp.status_code != 200:
-            logger.warning(f"Finnhub quote {ticker}: HTTP {resp.status_code}")
+            logger.error("Finnhub quote fetch failed for {}: HTTP {}", ticker, resp.status_code)
             return None
 
         raw = resp.json()
@@ -61,8 +61,8 @@ async def fetch_quote_finnhub(ticker: str) -> dict | None:
         }
         _quote_cache[ticker] = (now, result)
         return result
-    except Exception as e:
-        logger.warning(f"Finnhub quote error for {ticker}: {e}")
+    except Exception:
+        logger.exception("Finnhub quote fetch failed for {}", ticker)
         return None
 
 
@@ -178,8 +178,8 @@ async def _fetch_stock_data_finnhub(ticker: str, period: str = "6mo") -> dict | 
             "beta": _first_metric(metrics, "beta"),
             "source": "finnhub",
         }
-    except Exception as e:
-        logger.warning(f"Finnhub stock data error for {ticker}: {e}")
+    except Exception:
+        logger.exception("Finnhub stock data fetch failed for {}", ticker)
         return None
 
 
@@ -220,8 +220,8 @@ def _fetch_stock_data_sync(ticker: str, period: str = "6mo") -> dict | None:
             "sma_200": close_series.rolling(200).mean().iloc[-1] if len(hist) >= 200 else None,
             "beta": info.get("beta"),
         }
-    except Exception as e:
-        logger.warning(f"yfinance fetch error for {ticker}: {e}")
+    except Exception:
+        logger.exception("yfinance stock data fetch failed for {}", ticker)
         return None
 
 
@@ -260,10 +260,10 @@ async def fetch_news(ticker: str, limit: int = 20) -> list[dict]:
                     }
                     for a in articles
                 ]
-            logger.warning(f"Finnhub news error: {resp.status_code}")
+            logger.error("Finnhub news fetch failed for {}: HTTP {}", ticker, resp.status_code)
             return []
-    except Exception as e:
-        logger.warning(f"News fetch error for {ticker}: {e}")
+    except Exception:
+        logger.exception("Finnhub news fetch failed for {}", ticker)
         return []
 
 
@@ -302,6 +302,7 @@ async def _fetch_return_finnhub(ticker: str, start_date: str) -> float | None:
             return None
         return (closes[-1] / closes[0] - 1) * 100
     except Exception:
+        logger.exception("Finnhub return fetch failed for {}", ticker)
         return None
 
 
@@ -314,6 +315,7 @@ def _fetch_spy_return_sync(start_date: str) -> float | None:
         close_series = cast(Any, hist["Close"])
         return (close_series.iloc[-1] / close_series.iloc[0] - 1) * 100
     except Exception:
+        logger.exception("SPY return fetch failed via yfinance")
         return None
 
 
@@ -331,6 +333,7 @@ def _get_current_price_sync(ticker: str) -> float | None:
         info = stock.fast_info
         return info.get("lastPrice") or info.get("regularMarketPreviousClose")
     except Exception:
+        logger.exception("Current price fetch failed via yfinance for {}", ticker)
         return None
 
 

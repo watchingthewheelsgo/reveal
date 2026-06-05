@@ -29,8 +29,8 @@ async def get_weights() -> dict[str, float]:
             for row in rows:
                 if row.factor in weights:
                     weights[row.factor] = row.weight
-    except Exception as e:
-        logger.warning(f"Failed to load scoring weights, using defaults: {e}")
+    except Exception:
+        logger.exception("Failed to load scoring weights; using defaults")
     return weights
 
 
@@ -51,8 +51,8 @@ async def save_weights(weights: dict[str, float]):
                 else:
                     session.add(ScoringWeights(factor=factor, weight=weight))
             await session.commit()
-    except Exception as e:
-        logger.warning(f"Failed to save weights: {e}")
+    except Exception:
+        logger.exception("Failed to save scoring weights")
 
 
 def score_technical(data: dict) -> tuple[float, str]:

@@ -3,6 +3,7 @@
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
+from loguru import logger
 from sqlalchemy import desc, select
 
 from config.settings import get_settings
@@ -128,6 +129,7 @@ async def _llm_summary(username: str, target_date: date, posts: list[SocialPost]
             max_tokens=900,
         )
     except Exception:
+        logger.exception("Twitter digest LLM summary failed for @{}", username)
         return ""
 
 

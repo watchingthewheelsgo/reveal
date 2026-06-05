@@ -78,8 +78,8 @@ async def run_daily_pick(watchlist: list[str] | None = None) -> dict | None:
         try:
             scored = await score_stock(data)
             results.append(scored)
-        except Exception as e:
-            logger.warning(f"Scoring failed for {ticker}: {e}")
+        except Exception:
+            logger.exception("Scoring failed for {}", ticker)
 
         # Rate limit: pause briefly between tickers
         await asyncio.sleep(0.3)
@@ -123,8 +123,8 @@ async def run_daily_pick(watchlist: list[str] | None = None) -> dict | None:
             )
             session.add(pick)
             await session.commit()
-    except Exception as e:
-        logger.warning(f"Failed to save pick: {e}")
+    except Exception:
+        logger.exception("Failed to save daily pick")
 
     return top
 

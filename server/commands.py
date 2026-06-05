@@ -46,8 +46,8 @@ async def cmd_pick(ctx: BotContext, adapter):
 
         text = format_pick_message(pick)
         await adapter.send_message(ctx.chat_id, text)
-    except Exception as e:
-        logger.error(f"Pick command error: {e}")
+    except Exception:
+        logger.exception("Pick command failed")
         await adapter.send_message(ctx.chat_id, "❌ 选股异常，请稍后重试。")
 
 
@@ -73,8 +73,8 @@ async def cmd_score(ctx: BotContext, adapter):
 
         payload = await get_stock_score_payload(ticker)
         await adapter.send_message(ctx.chat_id, format_stock_score(payload, ticker))
-    except Exception as e:
-        logger.error(f"Score command error: {e}")
+    except Exception:
+        logger.exception("Score command failed")
         await adapter.send_message(ctx.chat_id, "❌ 评分异常，请稍后重试。")
 
 
@@ -570,14 +570,12 @@ async def _bind_research_session_message(
         from server.bot.bindings import bind_message_to_source
 
         await bind_message_to_source(chat_id, message_id, "research_session", session_id)
-    except Exception as e:
-        logger.warning(
-            "Research session message binding failed: "
-            "chat_id={} message_id={} session_id={} err={}",
+    except Exception:
+        logger.exception(
+            "Research session message binding failed: chat_id={} message_id={} session_id={}",
             chat_id,
             message_id or "-",
             session_id,
-            e,
         )
 
 
@@ -594,14 +592,13 @@ async def _bind_unbound_research_session_message(
         existing = await resolve_message_binding(chat_id, message_id)
         if existing is None:
             await bind_message_to_source(chat_id, message_id, "research_session", session_id)
-    except Exception as e:
-        logger.warning(
+    except Exception:
+        logger.exception(
             "Unbound research session message binding failed: "
-            "chat_id={} message_id={} session_id={} err={}",
+            "chat_id={} message_id={} session_id={}",
             chat_id,
             message_id or "-",
             session_id,
-            e,
         )
 
 

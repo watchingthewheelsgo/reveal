@@ -58,8 +58,8 @@ async def lifespan(app: FastAPI):
                 telegram_bot = candidate
                 logger.info("Telegram bot polling started")
                 break
-            except Exception as e:
-                logger.warning(f"Telegram init attempt {attempt + 1}/3 failed: {e}")
+            except Exception:
+                logger.exception("Telegram init attempt {}/3 failed", attempt + 1)
                 await candidate.stop()
                 if attempt < 2:
                     await asyncio.sleep(5)

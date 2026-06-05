@@ -36,7 +36,7 @@ async def check_volume_alerts(tickers: list[str], threshold_ratio: float = 2.5) 
                         ),
                     }
                 )
-        except Exception as e:
-            logger.debug(f"Volume alert check failed for {ticker}: {e}")
+        except Exception:
+            logger.exception("Volume alert check failed for {}", ticker)
 
     return alerts

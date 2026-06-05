@@ -98,8 +98,8 @@ async def fetch_user_tweets_graphql(
                 user["history_cursor"] = page.get("bottom_cursor")
                 user["source"] = "x_graphql"
                 return user
-            except Exception as e:
-                logger.debug(f"X GraphQL fallback failed for @{username}: {e}")
+            except Exception:
+                logger.exception("X GraphQL fallback failed for @{}", username)
                 continue
     return None
 

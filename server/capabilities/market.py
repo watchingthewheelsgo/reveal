@@ -2,6 +2,8 @@
 
 from typing import Any
 
+from loguru import logger
+
 
 async def get_stock_quote_payload(ticker: str) -> dict[str, Any] | None:
     ticker = ticker.upper().strip()
@@ -95,6 +97,7 @@ async def get_portfolio_payload() -> list[dict[str, Any]]:
 
         trades = await get_trades_for_period("all")
     except Exception:
+        logger.exception("Portfolio trade fetch failed")
         return []
 
     positions = []
@@ -105,7 +108,7 @@ async def get_portfolio_payload() -> list[dict[str, Any]]:
             if price:
                 current = price
         except Exception:
-            pass
+            logger.exception("Portfolio price fetch failed for {}", trade.ticker)
         unrealized = (current - trade.entry_price) * trade.quantity
         if trade.direction == "short":
             unrealized = -unrealized

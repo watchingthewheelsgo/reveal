@@ -78,13 +78,13 @@ class TweetProcessor:
         except Exception as e:
             if _is_auth_error(e):
                 self._auth_failed = True
-                logger.warning(
+                logger.exception(
                     "Tweet analysis disabled: LLM authentication failed. "
                     "Check DEEPSEEK_API_KEY or ANTHROPIC_AUTH_TOKEN for the lightweight "
                     "tweet analyzer."
                 )
             else:
-                logger.warning(f"Tweet analysis failed: {e}")
+                logger.exception("Tweet analysis failed")
             return None
 
     async def translate(self, text: str) -> str | None:
@@ -112,6 +112,7 @@ def _parse_analysis(raw: str) -> TweetAnalysis:
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError:
+        logger.exception("Tweet analysis JSON parse failed; using raw summary fallback")
         return TweetAnalysis(summary=raw[:300])
 
     tickers = data.get("mentioned_tickers") or []

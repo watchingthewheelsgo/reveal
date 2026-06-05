@@ -39,8 +39,8 @@ async def generate_daily_briefing() -> str:
             vix_price = vix.get("current_price", 0)
             vix_status = "低波动" if vix_price < 20 else "高波动⚠️" if vix_price > 30 else "正常"
             lines.append(f"😰 VIX: {vix_price:.1f} ({vix_status})")
-    except Exception as e:
-        logger.warning(f"Market context fetch failed: {e}")
+    except Exception:
+        logger.exception("Market context fetch failed for daily briefing")
         lines.append("市场数据暂不可用")
 
     lines.append("")
@@ -56,6 +56,7 @@ async def generate_daily_briefing() -> str:
             try:
                 current = await _get_price(t.ticker)
             except Exception:
+                logger.exception("Position price fetch failed for daily briefing: {}", t.ticker)
                 current = t.entry_price
             unrealized = (current - t.entry_price) * t.quantity
             if t.direction == "short":
@@ -105,6 +106,7 @@ async def generate_daily_briefing() -> str:
             else:
                 lines.append("暂无近期推文")
     except Exception:
+        logger.exception("Recent Twitter signals fetch failed for daily briefing")
         lines.append("Twitter 数据暂不可用")
 
     lines.append("")
@@ -157,6 +159,7 @@ async def generate_daily_briefing() -> str:
         else:
             lines.append("暂无近期研究记录")
     except Exception:
+        logger.exception("Research recap fetch failed for daily briefing")
         lines.append("研究回顾数据暂不可用")
 
     lines.append("")
@@ -184,4 +187,5 @@ async def _get_price(ticker: str) -> float:
         price = await get_current_price(ticker)
         return price or 0
     except Exception:
+        logger.exception("Quick price lookup failed for {}", ticker)
         return 0

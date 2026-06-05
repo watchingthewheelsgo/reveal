@@ -3,6 +3,7 @@
 from datetime import datetime
 from typing import Any
 
+from loguru import logger
 from sqlalchemy import desc, select
 
 from server.db.engine import get_session_factory
@@ -17,6 +18,7 @@ async def build_portfolio_context() -> str:
 
         trades = await get_trades_for_period("all")
     except Exception:
+        logger.exception("Portfolio context build failed while loading trades")
         return "持仓数据暂不可用。"
 
     open_positions = [trade for trade in trades if trade.exit_price is None]
@@ -31,7 +33,7 @@ async def build_portfolio_context() -> str:
             if price:
                 current_price = price
         except Exception:
-            pass
+            logger.exception("Portfolio context price fetch failed for {}", trade.ticker)
         pnl = (current_price - trade.entry_price) * trade.quantity
         if trade.direction == "short":
             pnl = -pnl
@@ -78,6 +80,7 @@ async def build_ticker_context(ticker: str) -> str:
                 url = article.get("url") or ""
                 sections.append(f"- {headline} {url}".strip())
     except Exception:
+        logger.exception("Ticker context market/news fetch failed for {}", ticker)
         sections.append("行情或新闻数据暂不可用。")
 
     history = await find_past_research_by_ticker(ticker, limit=3)

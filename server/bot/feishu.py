@@ -281,8 +281,8 @@ class FeishuBot(BotAdapter):
             future = asyncio.run_coroutine_threadsafe(coro, self._event_loop)
             try:
                 future.result(timeout=120)
-            except Exception as e:
-                logger.error(f"Feishu command handling failed: {e}")
+            except Exception:
+                logger.exception("Feishu command handling failed")
 
     def _make_context(
         self,
@@ -310,6 +310,7 @@ class FeishuBot(BotAdapter):
             content = json.loads(content_str)
             return content.get("text", "").strip()
         except json.JSONDecodeError:
+            logger.exception("Feishu message content JSON parse failed; using raw text")
             return content_str.strip()
 
     def _send_text_sync(self, chat_id: str, text: str) -> None:
@@ -383,7 +384,7 @@ class FeishuBot(BotAdapter):
         )
         response = self.client.im.v1.message.patch(request)
         if not response.success():
-            logger.warning(f"Feishu patch failed: {response.code} - {response.msg}")
+            logger.error("Feishu patch failed: {} - {}", response.code, response.msg)
 
     def _reply_in_thread_sync(self, message_id: str, text: str) -> str | None:
         request = (
@@ -441,8 +442,8 @@ class FeishuBot(BotAdapter):
                 timeout=20,
             )
             response.raise_for_status()
-        except Exception as e:
-            logger.debug(f"Feishu image download failed: {image_url} ({e})")
+        except Exception:
+            logger.exception("Feishu image download failed: {}", image_url)
             return None
 
         image_bytes = response.content
@@ -463,7 +464,7 @@ class FeishuBot(BotAdapter):
         )
         upload_response = self.client.im.v1.image.create(request)
         if not upload_response.success():
-            logger.warning(
+            logger.error(
                 "Feishu image upload failed: {} - {}",
                 upload_response.code,
                 upload_response.msg,

@@ -403,6 +403,7 @@ async def _run_new_agent(
     try:
         return await run_agent(prompt, on_progress=on_progress)
     except AgentRuntimeError as exc:
+        logger.exception("Agent runtime failed for new research session")
         raise ResearchError(exc.user_message) from exc
 
 
@@ -421,7 +422,12 @@ async def _run_agent_for_session(
         )
     except AgentRuntimeError as exc:
         if not _should_rebuild_after_resume_error(exc):
+            logger.exception("Agent runtime failed for research_session={}", research_session.id)
             raise ResearchError(exc.user_message) from exc
+        logger.exception(
+            "Agent session resume failed for research_session={}; rebuilding context",
+            research_session.id,
+        )
 
     logger.info(
         "Agent session resume failed; clearing stale agent_session_id and rebuilding context "

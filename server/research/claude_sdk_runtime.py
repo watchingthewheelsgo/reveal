@@ -158,15 +158,17 @@ async def run_agent(
                 elif message.result:
                     result_answer = message.result
     except CLINotFoundError as exc:
+        logger.exception("Claude Agent SDK CLI was not found")
         raise AgentConfigurationError(
             str(exc),
             "研究 Agent 未找到 Claude Code CLI。请先安装或修复 claude-agent-sdk 的 bundled CLI。",
         ) from exc
     except (CLIConnectionError, ProcessError, ClaudeSDKError) as exc:
+        logger.exception("Claude Agent SDK execution failed")
         raise AgentRuntimeError(str(exc), _user_message_for_exception(exc)) from exc
 
     if result_error:
-        logger.info("Research agent result error: {}", result_error)
+        logger.error("Research agent result error: {}", result_error)
         raise AgentRuntimeError(result_error, _user_message_for_text(result_error))
 
     answer = result_answer or "\n".join(answer_parts).strip()

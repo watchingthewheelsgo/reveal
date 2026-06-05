@@ -46,7 +46,7 @@ async def init_db() -> None:
                 await _migrate_sqlite_social_posts(conn)
                 await _migrate_sqlite_research_sessions(conn)
     except OSError as exc:
-        logger.error(
+        logger.exception(
             "Database init OS error: context={} exc_type={} error={}",
             database_diagnostic_context(db_url),
             type(exc).__name__,
@@ -68,7 +68,7 @@ async def init_db() -> None:
             ) from exc
         raise
     except Exception as exc:
-        logger.error(
+        logger.exception(
             "Database init failed: context={} exc_type={} error={}",
             database_diagnostic_context(db_url),
             type(exc).__name__,
@@ -83,7 +83,7 @@ async def init_db() -> None:
 
 async def get_db_session() -> AsyncGenerator[AsyncSession]:
     if AsyncSessionLocal is None:
-        logger.warning(
+        logger.error(
             "Database session requested before initialization: context={}",
             database_diagnostic_context(),
         )
@@ -93,6 +93,7 @@ async def get_db_session() -> AsyncGenerator[AsyncSession]:
             yield session
             await session.commit()
         except Exception:
+            logger.exception("Database session failed; rolling back transaction")
             await session.rollback()
             raise
         finally:
@@ -109,7 +110,7 @@ async def close_db() -> None:
 
 def get_session_factory():
     if AsyncSessionLocal is None:
-        logger.warning(
+        logger.error(
             "Database session factory requested before initialization: context={}",
             database_diagnostic_context(),
         )

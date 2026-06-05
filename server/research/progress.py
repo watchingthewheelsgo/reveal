@@ -48,8 +48,8 @@ class ResearchProgressReporter:
                 self.status_message_id = await self.adapter.send_card_returning_id(
                     self.chat_id, card
                 )
-        except Exception as e:
-            logger.debug(f"Progress start failed, falling back: {e}")
+        except Exception:
+            logger.exception("Research progress start failed; falling back to text message")
             await self.adapter.send_message(self.chat_id, text)
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
@@ -83,12 +83,12 @@ class ResearchProgressReporter:
                 return await self.adapter.reply_card_in_thread(
                     self.chat_id, anchor_message_id, result_card
                 )
-            except Exception as e:
-                logger.debug(f"Thread card reply failed, sending as regular message: {e}")
+            except Exception:
+                logger.exception("Research result thread card reply failed; sending regular card")
         try:
             return await self.adapter.send_card_returning_id(self.chat_id, result_card)
-        except Exception as e:
-            logger.debug(f"Result card send failed, falling back to text: {e}")
+        except Exception:
+            logger.exception("Research result card send failed; falling back to text")
         await self.adapter.send_message(self.chat_id, result_text)
         return None
 
@@ -111,15 +111,17 @@ class ResearchProgressReporter:
             await self.adapter.send_message(self.chat_id, text)
             return
         if not getattr(self.adapter, "supports_message_edit", True):
-            with suppress(Exception):
+            try:
                 await self.adapter.reply_in_thread(self.chat_id, anchor_message_id, text)
+            except Exception:
+                logger.exception("Research progress thread reply failed")
             return
         if not self.status_message_id:
             return
         try:
             await self.adapter.edit_message(self.chat_id, self.status_message_id, text)
-        except Exception as e:
-            logger.debug(f"Message edit failed (non-fatal): {e}")
+        except Exception:
+            logger.exception("Research progress message edit failed")
 
     async def _heartbeat_loop(self) -> None:
         while True:

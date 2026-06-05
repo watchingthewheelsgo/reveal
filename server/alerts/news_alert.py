@@ -87,7 +87,7 @@ async def check_news_alerts(tickers: list[str]) -> list[dict]:
                     }
                 )
 
-        except Exception as e:
-            logger.debug(f"News alert check failed for {ticker}: {e}")
+        except Exception:
+            logger.exception("News alert check failed for {}", ticker)
 
     return alerts
