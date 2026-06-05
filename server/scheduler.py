@@ -1,6 +1,8 @@
 """APScheduler-based task scheduler for periodic jobs."""
 
 from collections.abc import Awaitable, Callable
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -25,10 +27,26 @@ class Scheduler:
         self._scheduler.add_job(func, trigger, id=name, name=name)
         logger.info(f"Cron job registered: {name} ({hour:02d}:{minute:02d} {tz})")
 
-    def register_interval(self, name: str, func: JobFunc, seconds: int):
+    def register_interval(
+        self,
+        name: str,
+        func: JobFunc,
+        seconds: int,
+        run_immediately: bool = False,
+    ):
         trigger = IntervalTrigger(seconds=seconds)
-        self._scheduler.add_job(func, trigger, id=name, name=name)
-        logger.info(f"Interval job registered: {name} (every {seconds}s)")
+        next_run_time = (
+            datetime.now(ZoneInfo(get_settings().scheduler_timezone)) if run_immediately else None
+        )
+        self._scheduler.add_job(
+            func,
+            trigger,
+            id=name,
+            name=name,
+            next_run_time=next_run_time,
+        )
+        suffix = ", immediate first run" if run_immediately else ""
+        logger.info(f"Interval job registered: {name} (every {seconds}s{suffix})")
 
     def start(self):
         self._scheduler.start()

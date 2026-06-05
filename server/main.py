@@ -169,13 +169,17 @@ async def lifespan(app: FastAPI):
 
         accounts = await list_active_twitter_accounts(get_settings().twitter_accounts)
         if not accounts:
+            logger.info("Twitter monitor skipped: no active accounts")
             return
         processor = TweetProcessor()
         tg = telegram_bot if telegram_bot else feishu_bot
         await run_twitter_monitor(accounts, tg, processor)
 
     scheduler.register_interval(
-        "twitter_monitor", twitter_monitor_job, settings.twitter_monitor_interval
+        "twitter_monitor",
+        twitter_monitor_job,
+        settings.twitter_monitor_interval,
+        run_immediately=True,
     )
 
     # Intraday alerts (every 30 min during market hours)
