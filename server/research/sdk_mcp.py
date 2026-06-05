@@ -51,7 +51,16 @@ def _sdk_tool(name: str, handler: ToolHandler) -> SdkMcpTool[Any]:
         try:
             result = await handler(**args)
         except Exception as exc:
-            logger.warning("Reveal SDK MCP tool failed: {} args={} error={}", name, args, exc)
+            from server.db.engine import database_diagnostic_context
+
+            logger.warning(
+                "Reveal SDK MCP tool failed: tool={} args={} db_context={} exc_type={} error={}",
+                name,
+                args,
+                database_diagnostic_context(),
+                type(exc).__name__,
+                exc,
+            )
             return {
                 "content": [
                     {

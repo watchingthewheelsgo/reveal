@@ -385,7 +385,22 @@ async def cache_user_tweets(
 ) -> list[SocialPost]:
     """Fetch a timeline page and persist every returned tweet without pushing cards."""
     account_key = username.strip().lstrip("@")
-    session_factory = get_session_factory()
+    try:
+        session_factory = get_session_factory()
+    except Exception as exc:
+        from server.db.engine import database_diagnostic_context
+
+        logger.warning(
+            "Twitter cache database unavailable before fetch: username={} count={} cursor={} "
+            "db_context={} exc_type={} error={}",
+            account_key,
+            count,
+            bool(cursor),
+            database_diagnostic_context(),
+            type(exc).__name__,
+            exc,
+        )
+        raise
     data = await fetch_user_tweets(account_key, count=count, cursor=cursor)
     if data is None:
         return []
@@ -396,41 +411,57 @@ async def cache_user_tweets(
     newest_cached_epoch = 0
     newest_cached_tweet_id: str | None = None
 
-    async with session_factory() as session:
-        from sqlalchemy import select
+    try:
+        async with session_factory() as session:
+            from sqlalchemy import select
 
-        for tweet in tweets:
-            tweet_epoch = _tweet_epoch(tweet)
-            tweet_id = _tweet_id(tweet)
-            if tweet_epoch > newest_cached_epoch:
-                newest_cached_epoch = tweet_epoch
-                newest_cached_tweet_id = tweet_id
-            post = await _upsert_social_post(
-                session,
-                display_username,
-                tweet,
-                data,
-                llm_processor=llm_processor,
-                should_analyze=bool(llm_processor),
+            for tweet in tweets:
+                tweet_epoch = _tweet_epoch(tweet)
+                tweet_id = _tweet_id(tweet)
+                if tweet_epoch > newest_cached_epoch:
+                    newest_cached_epoch = tweet_epoch
+                    newest_cached_tweet_id = tweet_id
+                post = await _upsert_social_post(
+                    session,
+                    display_username,
+                    tweet,
+                    data,
+                    llm_processor=llm_processor,
+                    should_analyze=bool(llm_processor),
+                )
+                if post is not None:
+                    cached_posts.append(post)
+
+            result = await session.execute(
+                select(TwitterState).where(TwitterState.username == account_key)
             )
-            if post is not None:
-                cached_posts.append(post)
+            state = result.scalar_one_or_none()
+            if state is None:
+                state = TwitterState(username=account_key, is_active=False)
+                session.add(state)
+            if newest_cached_epoch:
+                state.last_tweet_epoch = max(state.last_tweet_epoch, newest_cached_epoch)
+            if newest_cached_tweet_id:
+                state.newest_tweet_id = newest_cached_tweet_id
+            if history_cursor := data.get("history_cursor"):
+                state.history_cursor = str(history_cursor)
+            state.last_check_at = datetime.now(UTC)
+            await session.commit()
+    except Exception as exc:
+        from server.db.engine import database_diagnostic_context
 
-        result = await session.execute(
-            select(TwitterState).where(TwitterState.username == account_key)
+        logger.warning(
+            "Twitter cache database write failed: username={} fetched={} cached_before_error={} "
+            "newest_tweet_id={} db_context={} exc_type={} error={}",
+            account_key,
+            len(tweets),
+            len(cached_posts),
+            newest_cached_tweet_id,
+            database_diagnostic_context(),
+            type(exc).__name__,
+            exc,
         )
-        state = result.scalar_one_or_none()
-        if state is None:
-            state = TwitterState(username=account_key, is_active=False)
-            session.add(state)
-        if newest_cached_epoch:
-            state.last_tweet_epoch = max(state.last_tweet_epoch, newest_cached_epoch)
-        if newest_cached_tweet_id:
-            state.newest_tweet_id = newest_cached_tweet_id
-        if history_cursor := data.get("history_cursor"):
-            state.history_cursor = str(history_cursor)
-        state.last_check_at = datetime.now(UTC)
-        await session.commit()
+        raise
 
     return cached_posts
 

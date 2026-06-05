@@ -46,6 +46,12 @@ async def init_db() -> None:
                 await _migrate_sqlite_social_posts(conn)
                 await _migrate_sqlite_research_sessions(conn)
     except OSError as exc:
+        logger.error(
+            "Database init OS error: context={} exc_type={} error={}",
+            database_diagnostic_context(db_url),
+            type(exc).__name__,
+            exc,
+        )
         if engine:
             await engine.dispose()
         engine = None
@@ -61,7 +67,13 @@ async def init_db() -> None:
                 "Use the Supabase Session Pooler connection string for DATABASE_URL."
             ) from exc
         raise
-    except Exception:
+    except Exception as exc:
+        logger.error(
+            "Database init failed: context={} exc_type={} error={}",
+            database_diagnostic_context(db_url),
+            type(exc).__name__,
+            exc,
+        )
         if engine:
             await engine.dispose()
         engine = None
@@ -71,6 +83,10 @@ async def init_db() -> None:
 
 async def get_db_session() -> AsyncGenerator[AsyncSession]:
     if AsyncSessionLocal is None:
+        logger.warning(
+            "Database session requested before initialization: context={}",
+            database_diagnostic_context(),
+        )
         raise RuntimeError("Database not initialized.")
     async with AsyncSessionLocal() as session:
         try:
@@ -93,8 +109,37 @@ async def close_db() -> None:
 
 def get_session_factory():
     if AsyncSessionLocal is None:
+        logger.warning(
+            "Database session factory requested before initialization: context={}",
+            database_diagnostic_context(),
+        )
         raise RuntimeError("Database not initialized.")
     return AsyncSessionLocal
+
+
+def database_diagnostic_context(url: URL | None = None) -> dict[str, object]:
+    """Return redacted database diagnostics for logs."""
+    try:
+        db_url = url or normalize_database_url(global_settings.database_url)
+    except Exception as exc:
+        return {
+            "initialized": AsyncSessionLocal is not None,
+            "url_valid": False,
+            "url_error_type": type(exc).__name__,
+            "url_error": str(exc),
+            "render": bool(os.getenv("RENDER")),
+        }
+    host = db_url.host or "local"
+    return {
+        "initialized": AsyncSessionLocal is not None,
+        "driver": db_url.drivername,
+        "host": host,
+        "port": db_url.port,
+        "database": db_url.database or "",
+        "render": bool(os.getenv("RENDER")),
+        "supabase_pooler": host.endswith(".pooler.supabase.com"),
+        "supabase_direct": host.startswith("db.") and host.endswith(".supabase.co"),
+    }
 
 
 def normalize_database_url(value: str) -> URL:
