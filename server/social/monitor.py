@@ -385,13 +385,13 @@ async def cache_user_tweets(
 ) -> list[SocialPost]:
     """Fetch a timeline page and persist every returned tweet without pushing cards."""
     account_key = username.strip().lstrip("@")
+    session_factory = get_session_factory()
     data = await fetch_user_tweets(account_key, count=count, cursor=cursor)
     if data is None:
         return []
 
     tweets = data.get("latest_tweets", [])
     display_username = data.get("screen_name") or account_key
-    session_factory = get_session_factory()
     cached_posts: list[SocialPost] = []
     newest_cached_epoch = 0
     newest_cached_tweet_id: str | None = None

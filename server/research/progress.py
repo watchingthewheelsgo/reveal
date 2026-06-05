@@ -67,22 +67,28 @@ class ResearchProgressReporter:
 
     async def finish(self, result_text: str) -> str | None:
         await self._stop_heartbeat()
+        elapsed = monotonic() - self._started_at
         logger.info(
             "Research progress finish: chat_id={} steps={} elapsed={:.1f}s",
             self.chat_id,
             self.step_count,
-            monotonic() - self._started_at,
+            elapsed,
         )
         if self.status_message_id and getattr(self.adapter, "supports_message_edit", True):
             await self._publish_status(f"✅ 研究完成 ({self.step_count} 步)")
         anchor_message_id = self.reply_to_message_id or self.status_message_id
+        result_card = _result_card(result_text, self.step_count, elapsed)
         if anchor_message_id:
             try:
-                return await self.adapter.reply_in_thread(
-                    self.chat_id, anchor_message_id, result_text
+                return await self.adapter.reply_card_in_thread(
+                    self.chat_id, anchor_message_id, result_card
                 )
             except Exception as e:
-                logger.debug(f"Thread reply failed, sending as regular message: {e}")
+                logger.debug(f"Thread card reply failed, sending as regular message: {e}")
+        try:
+            return await self.adapter.send_card_returning_id(self.chat_id, result_card)
+        except Exception as e:
+            logger.debug(f"Result card send failed, falling back to text: {e}")
         await self.adapter.send_message(self.chat_id, result_text)
         return None
 
@@ -155,3 +161,51 @@ def _status_card(text: str) -> dict:
             }
         ],
     }
+
+
+def _result_card(result_text: str, step_count: int, elapsed_seconds: float) -> dict:
+    chunks = _split_markdown(result_text)
+    elements: list[dict] = [
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": f"**工具步骤**: {step_count} · **耗时**: {elapsed_seconds:.1f}s",
+            },
+        },
+        {"tag": "hr"},
+    ]
+    for index, chunk in enumerate(chunks):
+        if index:
+            elements.append({"tag": "hr"})
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": chunk}})
+    return {
+        "title": "Reveal Research · 研究结果",
+        "sections": [result_text],
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": "green",
+            "title": {"tag": "plain_text", "content": "Reveal Research · 研究结果"},
+        },
+        "elements": elements,
+    }
+
+
+def _split_markdown(text: str, chunk_size: int = 2800) -> list[str]:
+    normalized = text.strip() or "（无内容）"
+    chunks: list[str] = []
+    current = ""
+    for paragraph in normalized.split("\n\n"):
+        candidate = paragraph if not current else f"{current}\n\n{paragraph}"
+        if len(candidate) <= chunk_size:
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+        while len(paragraph) > chunk_size:
+            chunks.append(paragraph[:chunk_size])
+            paragraph = paragraph[chunk_size:]
+        current = paragraph
+    if current:
+        chunks.append(current)
+    return chunks

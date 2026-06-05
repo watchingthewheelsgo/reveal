@@ -69,19 +69,10 @@ async def cmd_score(ctx: BotContext, adapter):
     await adapter.send_message(ctx.chat_id, f"🔍 正在分析 {ticker}...")
 
     try:
-        from server.stock.data import fetch_stock_data
-        from server.stock.scorer import score_stock
+        from server.capabilities.market import format_stock_score, get_stock_score_payload
 
-        data = await fetch_stock_data(ticker)
-        if data is None:
-            await adapter.send_message(ctx.chat_id, f"❌ 无法获取 {ticker} 的数据")
-            return
-
-        scored = await score_stock(data)
-        from server.stock.scanner import format_pick_message
-
-        text = format_pick_message(scored)
-        await adapter.send_message(ctx.chat_id, text)
+        payload = await get_stock_score_payload(ticker)
+        await adapter.send_message(ctx.chat_id, format_stock_score(payload, ticker))
     except Exception as e:
         logger.error(f"Score command error: {e}")
         await adapter.send_message(ctx.chat_id, "❌ 评分异常，请稍后重试。")

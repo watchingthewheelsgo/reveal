@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, get_args, get_origin
 
 from claude_agent_sdk import McpSdkServerConfig, SdkMcpTool, create_sdk_mcp_server, tool
+from loguru import logger
 
 from server import mcp as reveal_mcp
 
@@ -47,7 +48,19 @@ def _sdk_tool(name: str, handler: ToolHandler) -> SdkMcpTool[Any]:
 
     @tool(name, description, input_schema)
     async def wrapped(args: dict[str, Any]) -> dict[str, Any]:
-        result = await handler(**args)
+        try:
+            result = await handler(**args)
+        except Exception as exc:
+            logger.warning("Reveal SDK MCP tool failed: {} args={} error={}", name, args, exc)
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"Reveal tool {name} failed: {type(exc).__name__}: {exc}",
+                    }
+                ],
+                "is_error": True,
+            }
         return {"content": [{"type": "text", "text": result}]}
 
     return wrapped

@@ -157,6 +157,24 @@ def format_stock_quote(payload: dict[str, Any] | None, ticker: str) -> str:
     return "\n".join(lines)
 
 
+def format_stock_score(payload: dict[str, Any] | None, ticker: str) -> str:
+    ticker = ticker.upper().strip()
+    if not payload:
+        return f"❌ 无法获取 {ticker} 的评分数据。"
+    lines = [
+        f"*{ticker} 多因子评分*",
+        "",
+        f"综合评分: {payload.get('composite_score', 0):.3f}",
+    ]
+    factors = payload.get("factors") or {}
+    for name, item in factors.items():
+        lines.append(
+            f"- {name}: {item.get('score', 0):.2f}"
+            + (f" · {item.get('reason')}" if item.get("reason") else "")
+        )
+    return "\n".join(lines)
+
+
 def format_technical_analysis(payload: dict[str, Any] | None, ticker: str) -> str:
     ticker = ticker.upper().strip()
     if not payload:
