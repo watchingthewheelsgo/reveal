@@ -9,6 +9,7 @@ from sqlalchemy import desc, select
 from config.settings import get_settings
 from server.db.engine import get_session_factory
 from server.db.models import SocialPost, TwitterState
+from server.db.time import to_naive_utc
 
 
 async def get_twitter_watch_list_payload() -> dict[str, Any]:
@@ -139,9 +140,9 @@ async def search_cached_twitter_posts(
         if normalized_username:
             statement = statement.where(SocialPost.username == normalized_username)
         if start_utc:
-            statement = statement.where(SocialPost.posted_at >= start_utc)
+            statement = statement.where(SocialPost.posted_at >= to_naive_utc(start_utc))
         if end_utc:
-            statement = statement.where(SocialPost.posted_at < end_utc)
+            statement = statement.where(SocialPost.posted_at < to_naive_utc(end_utc))
         result = await session.execute(
             statement.order_by(desc(SocialPost.posted_at), desc(SocialPost.id)).limit(300)
         )

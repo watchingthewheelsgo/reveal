@@ -9,6 +9,7 @@ from sqlalchemy import desc, select
 from config.settings import get_settings
 from server.db.engine import get_session_factory
 from server.db.models import SocialPost, TwitterState
+from server.db.time import to_naive_utc
 from server.llm.client import get_llm_client
 
 MAX_DIGEST_ITEMS_PER_USER = 8
@@ -158,7 +159,7 @@ def _day_range_utc(target_date: date) -> tuple[datetime, datetime]:
     tz = ZoneInfo(get_settings().twitter_digest_timezone)
     start_local = datetime.combine(target_date, time.min, tzinfo=tz)
     end_local = start_local + timedelta(days=1)
-    return start_local.astimezone(UTC), end_local.astimezone(UTC)
+    return to_naive_utc(start_local.astimezone(UTC)), to_naive_utc(end_local.astimezone(UTC))
 
 
 def _compact(text: str, limit: int) -> str:

@@ -7,12 +7,14 @@ from typing import Any
 
 import httpx
 from loguru import logger
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config.settings import get_settings
 from server.bot.base import BotAdapter
 from server.db.engine import get_session_factory
 from server.db.models import SocialPost, TwitterState
+from server.db.time import assume_utc, to_naive_utc, utc_now_naive
 from server.social.twitter_graphql import fetch_user_tweets_graphql
 
 TWITTER_STATUS_URL_RE = re.compile(r"https?://(?:www\.)?(?:twitter|x)\.com/([^/\s]+)/status/(\d+)")
@@ -27,8 +29,6 @@ async def list_active_twitter_accounts(configured_accounts: list[str] | None = N
     configured_accounts = configured_accounts or []
     session_factory = get_session_factory()
     async with session_factory() as session:
-        from sqlalchemy import select
-
         result = await session.execute(select(TwitterState))
         states = result.scalars().all()
 
@@ -57,8 +57,6 @@ async def set_twitter_account_active(username: str, is_active: bool) -> None:
 
     session_factory = get_session_factory()
     async with session_factory() as session:
-        from sqlalchemy import select
-
         result = await session.execute(
             select(TwitterState).where(TwitterState.username == username)
         )
@@ -149,8 +147,6 @@ async def _upsert_social_post(
     should_analyze: bool = False,
     hydrate_references: bool = True,
 ) -> SocialPost | None:
-    from sqlalchemy import select
-
     _enrich_tweet(tweet, display_username, user_data)
     tweet_id = _tweet_id(tweet)
     tweet_epoch = _tweet_epoch(tweet)
@@ -213,7 +209,7 @@ async def _upsert_social_post(
         "urgency": post_urgency,
         "is_noteworthy": post_is_noteworthy,
         "attention_reason": post_attention_reason,
-        "posted_at": datetime.fromtimestamp(tweet_epoch, tz=UTC),
+        "posted_at": to_naive_utc(datetime.fromtimestamp(tweet_epoch, tz=UTC)),
     }
 
     if post:
@@ -243,14 +239,28 @@ async def check_and_notify(
     first_check = False
 
     async with session_factory() as session:
-        from sqlalchemy import select
-
         result = await session.execute(
             select(TwitterState).where(TwitterState.username == account_key)
         )
         state = result.scalar_one_or_none()
         last_epoch = state.last_tweet_epoch if state else 0
         first_check = last_epoch <= 0
+        last_check_at = state.last_check_at if state else None
+
+    check_age = _seconds_since(last_check_at)
+    min_interval = get_settings().twitter_fetch_min_interval
+    if check_age is not None and check_age < min_interval:
+        logger.info(
+            "@{}: skipped Twitter fetch due to cooldown age={:.0f}s min_interval={}s",
+            account_key,
+            check_age,
+            min_interval,
+        )
+        if adapter and notify_no_updates:
+            await adapter.push_to_admin(
+                f"@{account_key} {int(check_age)} 秒前刚检查过，已跳过拉取以避免触发限流。"
+            )
+        return []
 
     fetch_count = INITIAL_WATCH_BACKFILL_LIMIT if first_check else 20
     data = await fetch_user_tweets(username, count=fetch_count)
@@ -271,8 +281,6 @@ async def check_and_notify(
     )
 
     async with session_factory() as session:
-        from sqlalchemy import select
-
         result = await session.execute(
             select(TwitterState).where(TwitterState.username == account_key)
         )
@@ -320,7 +328,7 @@ async def check_and_notify(
             state.newest_tweet_id = newest_cached_tweet_id
         if history_cursor := data.get("history_cursor"):
             state.history_cursor = str(history_cursor)
-        state.last_check_at = datetime.now(UTC)
+        state.last_check_at = utc_now_naive()
 
         await session.commit()
 
@@ -339,8 +347,6 @@ async def check_and_notify(
         successful_tweet_ids = [post.tweet_id for post in posts_to_push]
 
     async with session_factory() as session:
-        from sqlalchemy import select
-
         if successful_tweet_ids and adapter:
             result = await session.execute(
                 select(SocialPost).where(SocialPost.tweet_id.in_(successful_tweet_ids))
@@ -355,7 +361,7 @@ async def check_and_notify(
         next_epoch = last_epoch if push_failed else max_cached_epoch
         if state:
             state.last_tweet_epoch = max(state.last_tweet_epoch, next_epoch)
-            state.last_check_at = datetime.now(UTC)
+            state.last_check_at = utc_now_naive()
             if newest_cached_tweet_id:
                 state.newest_tweet_id = newest_cached_tweet_id
         else:
@@ -364,7 +370,7 @@ async def check_and_notify(
                     username=account_key,
                     last_tweet_epoch=next_epoch,
                     newest_tweet_id=newest_cached_tweet_id,
-                    last_check_at=datetime.now(UTC),
+                    last_check_at=utc_now_naive(),
                 )
             )
         await session.commit()
@@ -382,6 +388,7 @@ async def cache_user_tweets(
     count: int = 10,
     cursor: str | None = None,
     llm_processor=None,
+    force_fetch: bool = False,
 ) -> list[SocialPost]:
     """Fetch a timeline page and persist every returned tweet without pushing cards."""
     account_key = username.strip().lstrip("@")
@@ -401,9 +408,22 @@ async def cache_user_tweets(
             exc,
         )
         raise
+    state, cached_posts = await _cached_user_tweets(session_factory, account_key, count)
+    check_age = _seconds_since(state.last_check_at if state else None)
+    min_interval = get_settings().twitter_fetch_min_interval
+    if not force_fetch and check_age is not None and check_age < min_interval:
+        logger.info(
+            "@{}: returning {} cached tweets due to cooldown age={:.0f}s min_interval={}s",
+            account_key,
+            len(cached_posts),
+            check_age,
+            min_interval,
+        )
+        return cached_posts
+
     data = await fetch_user_tweets(account_key, count=count, cursor=cursor)
     if data is None:
-        return []
+        return cached_posts
 
     tweets = data.get("latest_tweets", [])
     display_username = data.get("screen_name") or account_key
@@ -413,8 +433,6 @@ async def cache_user_tweets(
 
     try:
         async with session_factory() as session:
-            from sqlalchemy import select
-
             for tweet in tweets:
                 tweet_epoch = _tweet_epoch(tweet)
                 tweet_id = _tweet_id(tweet)
@@ -445,7 +463,7 @@ async def cache_user_tweets(
                 state.newest_tweet_id = newest_cached_tweet_id
             if history_cursor := data.get("history_cursor"):
                 state.history_cursor = str(history_cursor)
-            state.last_check_at = datetime.now(UTC)
+            state.last_check_at = utc_now_naive()
             await session.commit()
     except Exception as exc:
         from server.db.engine import database_diagnostic_context
@@ -464,6 +482,26 @@ async def cache_user_tweets(
         raise
 
     return cached_posts
+
+
+async def _cached_user_tweets(
+    session_factory,
+    username: str,
+    limit: int,
+) -> tuple[TwitterState | None, list[SocialPost]]:
+    async with session_factory() as session:
+        state_result = await session.execute(
+            select(TwitterState).where(TwitterState.username == username)
+        )
+        state = state_result.scalar_one_or_none()
+        posts_result = await session.execute(
+            select(SocialPost)
+            .where(SocialPost.username == username)
+            .order_by(desc(SocialPost.posted_at), desc(SocialPost.id))
+            .limit(limit)
+        )
+        posts = list(posts_result.scalars().all())
+    return state, posts
 
 
 async def push_tweet_cards(
@@ -554,9 +592,7 @@ async def run_twitter_monitor(
 
 def _time_ago(dt: datetime) -> str:
     """Format relative time."""
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    diff = datetime.now(UTC) - dt
+    diff = datetime.now(UTC) - assume_utc(dt)
     if diff.days > 0:
         return f"{diff.days}天前"
     if diff.seconds >= 3600:
@@ -564,6 +600,12 @@ def _time_ago(dt: datetime) -> str:
     if diff.seconds >= 60:
         return f"{diff.seconds // 60}分钟前"
     return "刚刚"
+
+
+def _seconds_since(dt: datetime | None) -> float | None:
+    if dt is None:
+        return None
+    return (datetime.now(UTC) - assume_utc(dt)).total_seconds()
 
 
 def _normalize_timeline_data(data: dict[str, Any], username: str) -> dict[str, Any]:

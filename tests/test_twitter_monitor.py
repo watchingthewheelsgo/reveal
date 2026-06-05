@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -10,7 +11,13 @@ from server.bot.base import BotAdapter
 from server.db import engine as db_engine
 from server.db.engine import get_session_factory
 from server.db.models import SocialPost, TwitterState
-from server.social.monitor import check_and_notify, fetch_user_tweets, run_twitter_monitor
+from server.db.time import utc_now_naive
+from server.social.monitor import (
+    cache_user_tweets,
+    check_and_notify,
+    fetch_user_tweets,
+    run_twitter_monitor,
+)
 from server.social.processor import TweetAnalysis, _parse_analysis
 
 
@@ -183,9 +190,40 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.last_tweet_epoch, 112)
         self.assertEqual(state.newest_tweet_id, "112")
         self.assertEqual(state.history_cursor, "cursor-old-page")
+        assert state.last_check_at is not None
+        self.assertIsNone(state.last_check_at.tzinfo)
         self.assertEqual(post_count, 12)
+        self.assertIsNone(latest_post.posted_at.tzinfo)
         self.assertFalse(old_post.is_pushed)
         self.assertTrue(latest_post.is_pushed)
+
+    async def test_latest_returns_cached_posts_during_fetch_cooldown(self):
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            session.add(
+                TwitterState(
+                    username="alice",
+                    last_tweet_epoch=200,
+                    last_check_at=utc_now_naive(),
+                )
+            )
+            session.add(
+                SocialPost(
+                    username="alice",
+                    tweet_id="200",
+                    tweet_url="https://x.com/alice/status/200",
+                    content="cached tweet",
+                    posted_at=datetime.fromtimestamp(200, tz=UTC).replace(tzinfo=None),
+                )
+            )
+            await session.commit()
+
+        fetch = AsyncMock(return_value=None)
+        with patch("server.social.monitor.fetch_user_tweets", new=fetch):
+            posts = await cache_user_tweets("alice", count=5)
+
+        fetch.assert_not_awaited()
+        self.assertEqual([post.tweet_id for post in posts], ["200"])
 
     async def test_new_tweet_stores_and_pushes_rich_metadata(self):
         session_factory = get_session_factory()

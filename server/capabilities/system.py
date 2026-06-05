@@ -75,6 +75,7 @@ def get_system_status_payload() -> dict[str, Any]:
             "configured_accounts": len(settings.twitter_accounts),
             "graphql_tokens": len(settings.twitter_auth_tokens),
             "monitor_interval_seconds": settings.twitter_monitor_interval,
+            "fetch_min_interval_seconds": settings.twitter_fetch_min_interval,
             "digest_enabled": settings.twitter_digest_enabled,
             "digest_time": settings.twitter_digest_time,
             "digest_timezone": settings.twitter_digest_timezone,
@@ -124,7 +125,8 @@ def format_system_status(payload: dict[str, Any]) -> str:
             f"{database['driver']}://{database['host']}/{database['database']}",
             f"Twitter: {twitter['configured_accounts']} env accounts, "
             f"{twitter['graphql_tokens']} GraphQL tokens, "
-            f"interval {twitter['monitor_interval_seconds']}s",
+            f"interval {twitter['monitor_interval_seconds']}s, "
+            f"fetch cooldown {twitter['fetch_min_interval_seconds']}s",
             f"时区: {scheduler['timezone']}",
             f"选股时间: {scheduler['daily_pick_time']} (ET)",
             f"日报: {_flag(twitter['digest_enabled'])} "

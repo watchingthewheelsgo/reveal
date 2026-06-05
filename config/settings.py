@@ -89,6 +89,7 @@ class Settings(BaseSettings):
     # Scheduler
     scheduler_timezone: str = Field(default="America/New_York", alias="SCHEDULER_TIMEZONE")
     twitter_monitor_interval: int = Field(default=3600, alias="TWITTER_MONITOR_INTERVAL")
+    twitter_fetch_min_interval: int = Field(default=900, alias="TWITTER_FETCH_MIN_INTERVAL")
     daily_pick_time: str = Field(default="08:00", alias="DAILY_PICK_TIME")
     daily_briefing_time: str = Field(default="08:30", alias="DAILY_BRIEFING_TIME")
     twitter_digest_enabled: bool = Field(default=True, alias="TWITTER_DIGEST_ENABLED")
@@ -207,11 +208,11 @@ class Settings(BaseSettings):
             raise ValueError("time values must be in 00:00..23:59")
         return f"{hour:02d}:{minute:02d}"
 
-    @field_validator("twitter_monitor_interval")
+    @field_validator("twitter_monitor_interval", "twitter_fetch_min_interval")
     @classmethod
     def validate_positive_interval(cls, value: int) -> int:
         if value <= 0:
-            raise ValueError("TWITTER_MONITOR_INTERVAL must be positive")
+            raise ValueError("Twitter interval values must be positive")
         return value
 
     @field_validator("agent_runtime")
