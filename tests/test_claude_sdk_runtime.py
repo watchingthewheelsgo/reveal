@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 from claude_agent_sdk import ResultMessage, SystemMessage
 
@@ -137,8 +137,12 @@ class ClaudeSdkRuntimeTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("认证失败", ctx.exception.user_message)
 
-    async def test_run_agent_executes_bracket_pseudo_reveal_tool_fallback(self):
+    async def test_run_agent_rejects_bracket_pseudo_reveal_tool_text(self):
+        calls = 0
+
         async def fake_query(prompt, options):
+            nonlocal calls
+            calls += 1
             yield ResultMessage(
                 subtype="success",
                 duration_ms=1,
@@ -151,19 +155,12 @@ class ClaudeSdkRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 ),
             )
 
-        watch_list_payload = (
-            '{"accounts":[{"username":"TradesMax","last_check_at":null,'
-            '"newest_tweet_id":null}],"disabled_accounts":[],"count":1}'
-        )
-        with (
-            patch("server.research.claude_sdk_runtime.query", new=fake_query),
-            patch("server.mcp.twitter_watch_list", new=AsyncMock(return_value=watch_list_payload)),
-        ):
-            result = await run_agent("我的关注列表里有谁")
+        with patch("server.research.claude_sdk_runtime.query", new=fake_query):
+            with self.assertRaises(AgentRuntimeError) as ctx:
+                await run_agent("我的关注列表里有谁")
 
-        self.assertIn("Twitter 监控列表", result.answer)
-        self.assertIn("@TradesMax", result.answer)
-        self.assertNotIn("[调用", result.answer)
+        self.assertEqual(calls, 2)
+        self.assertIn("没有真正执行工具调用", ctx.exception.user_message)
 
 
 class PseudoToolCallDetectionTest(unittest.TestCase):

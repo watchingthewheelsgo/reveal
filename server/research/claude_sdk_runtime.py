@@ -1,11 +1,9 @@
 """Claude Agent SDK runtime configured for DeepSeek's Anthropic-compatible API."""
 
-import json
-import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Literal, cast
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -19,7 +17,6 @@ from claude_agent_sdk import (
     ToolUseBlock,
     query,
 )
-from claude_agent_sdk.types import McpServerConfig, McpStdioServerConfig
 from loguru import logger
 
 from config.settings import get_settings
@@ -30,15 +27,10 @@ from server.capabilities.registry import (
     agent_mcp_tool_names,
     format_agent_tool_catalog,
 )
+from server.research.sdk_mcp import build_reveal_sdk_mcp_server
 
 REVEAL_MCP_TOOLS = agent_mcp_tool_names()
 AGENT_ALLOWED_TOOLS = agent_allowed_tools()
-MCP_SERVERS: dict[str, McpServerConfig] = {
-    "reveal": McpStdioServerConfig(
-        command="uv",
-        args=["run", "python", "-m", "server.mcp"],
-    ),
-}
 AgentEffort = Literal["low", "medium", "high", "xhigh", "max"]
 ProgressCallback = Callable[[str, str], Awaitable[None]]
 
@@ -47,12 +39,6 @@ ProgressCallback = Callable[[str, str], Awaitable[None]]
 class AgentRunResult:
     answer: str
     agent_session_id: str | None = None
-
-
-@dataclass
-class PseudoToolCall:
-    name: str
-    arguments: dict[str, Any]
 
 
 class AgentRuntimeError(RuntimeError):
@@ -102,7 +88,7 @@ async def run_agent(
         allowed_tools=AGENT_ALLOWED_TOOLS,
         disallowed_tools=DISALLOWED_LOCAL_TOOLS,
         strict_mcp_config=True,
-        mcp_servers=MCP_SERVERS,
+        mcp_servers={"reveal": build_reveal_sdk_mcp_server()},
         permission_mode="dontAsk",
         model=model,
         max_turns=settings.agent_max_turns,
@@ -130,6 +116,7 @@ async def run_agent(
     agent_session_id = resume
     result_answer: str | None = None
     result_error: str | None = None
+    tool_use_count = 0
     logger.info(
         "Research agent run start: resume={} model={} max_turns={} tools={}",
         bool(resume),
@@ -145,9 +132,15 @@ async def run_agent(
                 if session_id:
                     agent_session_id = str(session_id)
                     logger.info("Research agent session initialized: {}", agent_session_id)
+                logger.info(
+                    "Research agent MCP init: servers={} tools={}",
+                    message.data.get("mcp_servers") or [],
+                    len(message.data.get("tools") or []),
+                )
             elif isinstance(message, AssistantMessage):
                 for block in message.content:
                     if isinstance(block, ToolUseBlock):
+                        tool_use_count += 1
                         detail = _format_tool_progress(block)
                         logger.info("Research agent tool use: {}", detail)
                         if on_progress:
@@ -182,17 +175,12 @@ async def run_agent(
             "Agent SDK returned no answer.",
             "研究 Agent 没有返回内容，请稍后重试。",
         )
-    pseudo_tool_results = await _execute_pseudo_reveal_tool_calls(answer)
-    if pseudo_tool_results:
-        answer = "\n\n".join(pseudo_tool_results)
-        logger.info(
-            "Research agent pseudo Reveal tool fallback complete: count={}",
-            len(pseudo_tool_results),
-        )
-        return AgentRunResult(answer=answer, agent_session_id=agent_session_id)
     if _looks_like_pseudo_tool_call_answer(answer):
         logger.info(
-            "Research agent returned pseudo tool calls; retrying={}", _retrying_pseudo_tools
+            "Research agent returned pseudo tool calls without protocol tool use; "
+            "retrying={} tool_uses={}",
+            _retrying_pseudo_tools,
+            tool_use_count,
         )
         if not _retrying_pseudo_tools:
             retry_prompt = (
@@ -212,9 +200,10 @@ async def run_agent(
             "研究 Agent 没有真正执行工具调用，请稍后重试或换用更强模型。",
         )
     logger.info(
-        "Research agent run complete: session_id={} answer_chars={}",
+        "Research agent run complete: session_id={} answer_chars={} tool_uses={}",
         agent_session_id or "-",
         len(answer),
+        tool_use_count,
     )
     return AgentRunResult(answer=answer, agent_session_id=agent_session_id)
 
@@ -261,135 +250,3 @@ def _looks_like_pseudo_tool_call_answer(text: str) -> bool:
     return known_tool_mentions >= 1 and (
         (tool_markers >= 1 and argument_markers >= 1) or xml_tool_markers or bracket_tool_markers
     )
-
-
-async def _execute_pseudo_reveal_tool_calls(text: str) -> list[str]:
-    calls = _extract_pseudo_tool_calls(text)
-    results: list[str] = []
-    for call in calls:
-        if call.name not in REVEAL_MCP_TOOLS:
-            continue
-        try:
-            result = await _execute_reveal_mcp_tool(call)
-        except Exception as exc:
-            logger.warning("Pseudo Reveal tool fallback failed: {} {}", call.name, exc)
-            continue
-        if result:
-            results.append(result)
-    return results
-
-
-def _extract_pseudo_tool_calls(text: str) -> list[PseudoToolCall]:
-    calls: list[PseudoToolCall] = []
-    calls.extend(_extract_json_pseudo_tool_calls(text))
-    calls.extend(_extract_xml_pseudo_tool_calls(text))
-    calls.extend(_extract_bracket_pseudo_tool_calls(text))
-    return _dedupe_pseudo_tool_calls(calls)
-
-
-def _extract_json_pseudo_tool_calls(text: str) -> list[PseudoToolCall]:
-    calls: list[PseudoToolCall] = []
-    for match in re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL):
-        raw = match.group(1)
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        call = _pseudo_tool_call_from_mapping(payload)
-        if call:
-            calls.append(call)
-    return calls
-
-
-def _extract_xml_pseudo_tool_calls(text: str) -> list[PseudoToolCall]:
-    calls: list[PseudoToolCall] = []
-    for match in re.finditer(
-        r"<invoke\s+name=[\"']([^\"']+)[\"']\s*>(.*?)</invoke>",
-        text,
-        flags=re.DOTALL | re.IGNORECASE,
-    ):
-        args: dict[str, Any] = {}
-        body = match.group(2)
-        for param in re.finditer(
-            r"<parameter\s+name=[\"']([^\"']+)[\"']\s*>(.*?)</parameter>",
-            body,
-            flags=re.DOTALL | re.IGNORECASE,
-        ):
-            args[param.group(1)] = param.group(2).strip()
-        calls.append(PseudoToolCall(name=match.group(1).strip(), arguments=args))
-    return calls
-
-
-def _extract_bracket_pseudo_tool_calls(text: str) -> list[PseudoToolCall]:
-    calls: list[PseudoToolCall] = []
-    pattern = r"\[(?:调用|call)\s+([A-Za-z0-9_]+)\]\s*(\{[^\n]*\})?"
-    for match in re.finditer(pattern, text, flags=re.IGNORECASE):
-        raw_args = match.group(2) or "{}"
-        try:
-            args = json.loads(raw_args)
-        except json.JSONDecodeError:
-            args = {}
-        if not isinstance(args, dict):
-            args = {}
-        calls.append(PseudoToolCall(name=match.group(1).strip(), arguments=args))
-    return calls
-
-
-def _pseudo_tool_call_from_mapping(payload: Any) -> PseudoToolCall | None:
-    if not isinstance(payload, dict):
-        return None
-    name = payload.get("tool") or payload.get("name")
-    if not isinstance(name, str):
-        return None
-    arguments = payload.get("arguments") or payload.get("args") or {}
-    if not isinstance(arguments, dict):
-        arguments = {}
-    return PseudoToolCall(name=name.strip(), arguments=arguments)
-
-
-def _dedupe_pseudo_tool_calls(calls: list[PseudoToolCall]) -> list[PseudoToolCall]:
-    deduped: list[PseudoToolCall] = []
-    seen: set[tuple[str, str]] = set()
-    for call in calls:
-        try:
-            args_key = json.dumps(call.arguments, sort_keys=True, ensure_ascii=False)
-        except TypeError:
-            args_key = str(call.arguments)
-        key = (call.name, args_key)
-        if key in seen:
-            continue
-        deduped.append(call)
-        seen.add(key)
-    return deduped
-
-
-async def _execute_reveal_mcp_tool(call: PseudoToolCall) -> str:
-    tool_name = call.name
-    local_name = tool_name.removeprefix("mcp__reveal__")
-    import server.mcp as reveal_mcp
-
-    func = getattr(reveal_mcp, local_name)
-    raw_result = await func(**call.arguments)
-    return _format_reveal_mcp_result(tool_name, str(raw_result))
-
-
-def _format_reveal_mcp_result(tool_name: str, raw_result: str) -> str:
-    try:
-        payload = json.loads(raw_result)
-    except json.JSONDecodeError:
-        return raw_result
-
-    if tool_name == "mcp__reveal__twitter_watch_list":
-        from server.capabilities.twitter import format_twitter_watch_list
-
-        return format_twitter_watch_list(payload)
-    if tool_name == "mcp__reveal__system_status":
-        from server.capabilities.system import format_system_status
-
-        return format_system_status(payload)
-    if tool_name in {"mcp__reveal__twitter_latest", "mcp__reveal__twitter_search"}:
-        from server.capabilities.twitter import format_twitter_posts_payload
-
-        title = f"@{payload.get('username') or payload.get('query') or 'Twitter'} 推文"
-        return format_twitter_posts_payload(title, payload.get("posts") or [])
-    return "工具执行结果:\n```json\n" + json.dumps(payload, ensure_ascii=False, indent=2) + "\n```"

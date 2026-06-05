@@ -62,9 +62,12 @@ EXTERNAL_SERVICES: tuple[ExternalServiceSpec, ...] = (
     ),
     ExternalServiceSpec(
         id="mcp.reveal",
-        title="Reveal MCP server",
+        title="Reveal MCP adapter",
         kind="mcp",
-        description="Reveal 本地 MCP stdio server，向 Agent 暴露受控业务工具。",
+        description=(
+            "Reveal 内部能力的 MCP 适配层；Agent 默认使用 in-process SDK server，"
+            "stdio server 仅用于调试/兼容。"
+        ),
     ),
     ExternalServiceSpec(
         id="database.app",
