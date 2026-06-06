@@ -197,6 +197,40 @@ async def lifespan(app: FastAPI):
             "alert_cycle", alert_cycle_job, settings.alert_interval_minutes * 60
         )
 
+    # Regulatory event alerts (SEC/FDA, independent of market hours)
+    if settings.regulatory_alert_enabled:
+
+        async def regulatory_alert_cycle_job():
+            from server.alerts.regulatory import run_regulatory_alert_cycle
+
+            tg = telegram_bot if telegram_bot else feishu_bot
+            await run_regulatory_alert_cycle(tg)
+
+        scheduler.register_interval(
+            "regulatory_alert_cycle",
+            regulatory_alert_cycle_job,
+            settings.regulatory_alert_interval_minutes * 60,
+        )
+
+    # Manual stock watchlist alerts (every 5 minutes, per chat)
+    if telegram_bot or feishu_bot:
+
+        async def stock_watch_price_job():
+            from server.stock.watchlist import run_stock_watch_price_cycle
+
+            await run_stock_watch_price_cycle(
+                {
+                    "telegram": telegram_bot,
+                    "feishu": feishu_bot,
+                }
+            )
+
+        from server.stock.watchlist import STOCK_WATCH_INTERVAL_SECONDS
+
+        scheduler.register_interval(
+            "stock_watch_price", stock_watch_price_job, STOCK_WATCH_INTERVAL_SECONDS
+        )
+
     scheduler.start()
     logger.info("Scheduler started")
 

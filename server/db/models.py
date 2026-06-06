@@ -4,7 +4,18 @@ All SQLAlchemy ORM models for Reveal.
 
 from datetime import date, datetime
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, Float, Integer, String, Text, func
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Date,
+    DateTime,
+    Float,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -69,6 +80,53 @@ class TrackingLog(Base):
     benchmark_pnl_pct: Mapped[float | None] = mapped_column(Float, nullable=True)  # SPY 同期表现
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+
+class StockWatch(Base):
+    __tablename__ = "stock_watchlist"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    ticker: Mapped[str] = mapped_column(String(10), index=True)
+    chat_id: Mapped[str] = mapped_column(String(100), index=True)
+    platform: Mapped[str] = mapped_column(String(20), default="auto")
+    threshold_pct: Mapped[float] = mapped_column(Float, default=5.0)
+    last_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint(
+            "ticker",
+            "chat_id",
+            "platform",
+            name="uq_stock_watch_ticker_chat_platform",
+        ),
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Regulatory Event Alerts
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class RegulatoryEvent(Base):
+    __tablename__ = "regulatory_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    source: Mapped[str] = mapped_column(String(20))
+    event_id: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    ticker: Mapped[str | None] = mapped_column(String(10), nullable=True, index=True)
+    event_type: Mapped[str] = mapped_column(String(50))
+    severity: Mapped[str] = mapped_column(String(20), default="info")
+    title: Mapped[str] = mapped_column(Text)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    event_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    raw_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    pushed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

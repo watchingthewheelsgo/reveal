@@ -12,6 +12,11 @@ APP_PORT="${APP_PORT:-10000}"
 HOST_PORT="${HOST_PORT:-8000}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:${HOST_PORT}/health}"
 PULL_MODE="${PULL_MODE:---ff-only}"
+LONGBRIDGE_TOKEN_FILE="${LONGBRIDGE_TOKEN_FILE:-reveal-oauth.json}"
+LONGBRIDGE_HOST_DIR="${LONGBRIDGE_HOST_DIR:-/opt/reveal/secrets/longbridge}"
+LONGBRIDGE_CONTAINER_DIR="${LONGBRIDGE_CONTAINER_DIR:-/app/secrets/longbridge}"
+LONGBRIDGE_OAUTH_TOKEN_PATH="$LONGBRIDGE_CONTAINER_DIR/$LONGBRIDGE_TOKEN_FILE"
+LONGBRIDGE_API_BASE="${LONGBRIDGE_API_BASE:-https://openapi.longbridge.cn}"
 
 log() {
   printf '\n==> %s\n' "$*"
@@ -52,6 +57,21 @@ fi
 
 mkdir -p "$DATA_DIR"
 
+LONGBRIDGE_DOCKER_ARGS=()
+if [[ -f "${LONGBRIDGE_HOST_DIR}/${LONGBRIDGE_TOKEN_FILE}" ]]; then
+  chmod 700 "$LONGBRIDGE_HOST_DIR" || true
+  chmod 600 "${LONGBRIDGE_HOST_DIR}/${LONGBRIDGE_TOKEN_FILE}" || true
+  LONGBRIDGE_DOCKER_ARGS=(
+    -e "LONGBRIDGE_API_BASE=${LONGBRIDGE_API_BASE}"
+    -e "LONGBRIDGE_OAUTH_TOKEN_PATH=${LONGBRIDGE_OAUTH_TOKEN_PATH}"
+    -v "${LONGBRIDGE_HOST_DIR}:${LONGBRIDGE_CONTAINER_DIR}"
+  )
+  log "Longbridge token will be mounted: ${LONGBRIDGE_HOST_DIR}/${LONGBRIDGE_TOKEN_FILE} -> ${LONGBRIDGE_OAUTH_TOKEN_PATH}"
+else
+  log "Longbridge token not found; skipping token mount"
+  printf 'Expected token file: %s\n' "${LONGBRIDGE_HOST_DIR}/${LONGBRIDGE_TOKEN_FILE}"
+fi
+
 log "Run new container"
 docker run -d \
   --name "$CONTAINER_NAME" \
@@ -60,6 +80,7 @@ docker run -d \
   -e PORT="$APP_PORT" \
   -p "${HOST_PORT}:${APP_PORT}" \
   -v "${ROOT_DIR}/${DATA_DIR}:/app/data" \
+  "${LONGBRIDGE_DOCKER_ARGS[@]}" \
   "$IMAGE_NAME"
 
 log "Container status"

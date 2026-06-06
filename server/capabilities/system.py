@@ -96,6 +96,10 @@ def get_system_status_payload() -> dict[str, Any]:
             "interval_minutes": settings.alert_interval_minutes,
             "price_pct": settings.alert_price_pct,
             "volume_ratio": settings.alert_volume_ratio,
+            "regulatory_enabled": settings.regulatory_alert_enabled,
+            "regulatory_interval_minutes": settings.regulatory_alert_interval_minutes,
+            "sec_configured": bool(settings.sec_user_agent),
+            "fda_enabled": settings.fda_alert_enabled,
         },
     }
 
@@ -132,6 +136,9 @@ def format_system_status(payload: dict[str, Any]) -> str:
             f"日报: {_flag(twitter['digest_enabled'])} "
             f"{twitter['digest_time']} {twitter['digest_timezone']}",
             f"告警: {_flag(alerts['enabled'])} every {alerts['interval_minutes']}m",
+            f"监管告警: {_flag(alerts['regulatory_enabled'])} "
+            f"every {alerts['regulatory_interval_minutes']}m "
+            f"(SEC {_flag(alerts['sec_configured'])}, FDA {_flag(alerts['fda_enabled'])})",
         ]
     )
 

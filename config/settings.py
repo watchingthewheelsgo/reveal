@@ -105,6 +105,42 @@ class Settings(BaseSettings):
     alert_price_pct: float = Field(default=3.0, alias="ALERT_PRICE_PCT")
     alert_volume_ratio: float = Field(default=2.5, alias="ALERT_VOLUME_RATIO")
 
+    # Regulatory event alerts
+    regulatory_alert_enabled: bool = Field(default=True, alias="REGULATORY_ALERT_ENABLED")
+    regulatory_alert_interval_minutes: int = Field(
+        default=60, alias="REGULATORY_ALERT_INTERVAL_MINUTES"
+    )
+    regulatory_alert_lookback_hours: int = Field(
+        default=24, alias="REGULATORY_ALERT_LOOKBACK_HOURS"
+    )
+    sec_user_agent: str = Field(default="", alias="SEC_USER_AGENT")
+    sec_alert_forms: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: [
+            "8-K",
+            "10-K",
+            "10-Q",
+            "S-1",
+            "F-1",
+            "SC 13D",
+            "SC 13G",
+            "4",
+            "424B",
+            "DEF 14A",
+        ],
+        alias="SEC_ALERT_FORMS",
+    )
+    fda_alert_enabled: bool = Field(default=True, alias="FDA_ALERT_ENABLED")
+    fda_base_url: str = Field(default="https://api.fda.gov", alias="FDA_BASE_URL")
+    fda_alert_categories: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["drug", "device"], alias="FDA_ALERT_CATEGORIES"
+    )
+    fda_alert_classifications: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["Class I", "Class II"], alias="FDA_ALERT_CLASSIFICATIONS"
+    )
+    fda_alert_keywords: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, alias="FDA_ALERT_KEYWORDS"
+    )
+
     # Twitter monitor
     twitter_accounts: Annotated[list[str], NoDecode] = Field(
         default_factory=list, alias="TWITTER_ACCOUNTS"
@@ -165,6 +201,17 @@ class Settings(BaseSettings):
     def parse_twitter_auth_tokens(cls, value) -> list[str]:
         return cls._parse_string_list(value, "TWITTER_AUTH_TOKENS")
 
+    @field_validator(
+        "sec_alert_forms",
+        "fda_alert_categories",
+        "fda_alert_classifications",
+        "fda_alert_keywords",
+        mode="before",
+    )
+    @classmethod
+    def parse_regulatory_lists(cls, value, info) -> list[str]:
+        return cls._parse_string_list(value, info.field_name.upper())
+
     @classmethod
     def _parse_string_list(cls, value, field_name: str) -> list[str]:
         if value is None or value == "":
@@ -208,11 +255,17 @@ class Settings(BaseSettings):
             raise ValueError("time values must be in 00:00..23:59")
         return f"{hour:02d}:{minute:02d}"
 
-    @field_validator("twitter_monitor_interval", "twitter_fetch_min_interval")
+    @field_validator(
+        "twitter_monitor_interval",
+        "twitter_fetch_min_interval",
+        "alert_interval_minutes",
+        "regulatory_alert_interval_minutes",
+        "regulatory_alert_lookback_hours",
+    )
     @classmethod
     def validate_positive_interval(cls, value: int) -> int:
         if value <= 0:
-            raise ValueError("Twitter interval values must be positive")
+            raise ValueError("interval values must be positive")
         return value
 
     @field_validator("agent_runtime")

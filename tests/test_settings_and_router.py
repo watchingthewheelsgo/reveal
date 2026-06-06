@@ -42,6 +42,22 @@ class SettingsTest(unittest.TestCase):
 
         self.assertEqual(settings.twitter_auth_tokens, ["token-a", "token-b"])
 
+    def test_regulatory_list_settings_accept_comma_separated_values(self):
+        with patch.dict(
+            os.environ,
+            {
+                "SEC_ALERT_FORMS": "8-K, 10-Q, 8-K",
+                "FDA_ALERT_CATEGORIES": "drug,device",
+                "FDA_ALERT_KEYWORDS": "Pfizer, Moderna",
+            },
+            clear=False,
+        ):
+            settings = self.build_settings()
+
+        self.assertEqual(settings.sec_alert_forms, ["8-K", "10-Q"])
+        self.assertEqual(settings.fda_alert_categories, ["drug", "device"])
+        self.assertEqual(settings.fda_alert_keywords, ["Pfizer", "Moderna"])
+
     def test_invalid_schedule_time_fails_fast(self):
         with patch.dict(os.environ, {"DAILY_PICK_TIME": "8am"}, clear=False):
             with self.assertRaises(ValidationError):

@@ -122,6 +122,49 @@ async def tracking_report(ticker: str | None = None) -> str:
 
 
 @mcp.tool()
+async def stock_watch_list(chat_id: str = "") -> str:
+    """查看股票观察列表。chat_id 为空时返回全部会话的观察列表。"""
+    from server.stock.watchlist import get_stock_watch_list_payload
+
+    await _ensure_database()
+    return json.dumps(await get_stock_watch_list_payload(chat_id or None), ensure_ascii=False)
+
+
+@mcp.tool()
+async def stock_watch_add(
+    ticker: str,
+    chat_id: str,
+    platform: str = "auto",
+    threshold_pct: float = 5.0,
+) -> str:
+    """把股票加入观察列表；每 5 分钟检查一次，较上次检查变动超过 threshold_pct% 时推送。"""
+    from server.stock.watchlist import add_stock_watch
+
+    await _ensure_database()
+    return json.dumps(
+        await add_stock_watch(
+            ticker,
+            chat_id=chat_id,
+            platform=platform,
+            threshold_pct=threshold_pct,
+        ),
+        ensure_ascii=False,
+    )
+
+
+@mcp.tool()
+async def stock_watch_remove(ticker: str, chat_id: str, platform: str = "") -> str:
+    """把股票移出观察列表。platform 为空时移除该 chat_id 下所有平台的同一 ticker。"""
+    from server.stock.watchlist import remove_stock_watch
+
+    await _ensure_database()
+    return json.dumps(
+        await remove_stock_watch(ticker, chat_id=chat_id, platform=platform or None),
+        ensure_ascii=False,
+    )
+
+
+@mcp.tool()
 async def twitter_watch_list() -> str:
     """查看当前 Twitter/X watch list 和每个账号的缓存 cursor/check 状态。"""
     from server.capabilities.twitter import get_twitter_watch_list_payload

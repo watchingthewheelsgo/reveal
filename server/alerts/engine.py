@@ -33,6 +33,7 @@ async def run_alert_cycle(adapter=None):
 
     from server.journal.service import get_trades_for_period
     from server.stock.tracker import get_active_tickers
+    from server.stock.watchlist import get_manual_stock_watch_tickers
 
     settings = get_settings()
 
@@ -46,6 +47,8 @@ async def run_alert_cycle(adapter=None):
 
     tracked = await get_active_tickers()
     tickers.update(tracked)
+    manual_watch = await get_manual_stock_watch_tickers()
+    tickers.update(manual_watch)
 
     if not tickers:
         logger.debug("No watched tickers for alert cycle")
@@ -94,6 +97,7 @@ async def get_active_tickers_for_alert() -> list[str]:
     """Get the set of tickers that should trigger alerts."""
     from server.journal.service import get_trades_for_period
     from server.stock.tracker import get_active_tickers
+    from server.stock.watchlist import get_manual_stock_watch_tickers
 
     tickers: set[str] = set()
     open_trades = await get_trades_for_period("all")
@@ -102,6 +106,8 @@ async def get_active_tickers_for_alert() -> list[str]:
             tickers.add(t.ticker)
     tracked = await get_active_tickers()
     tickers.update(tracked)
+    manual_watch = await get_manual_stock_watch_tickers()
+    tickers.update(manual_watch)
     return sorted(tickers)
 
 

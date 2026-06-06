@@ -60,6 +60,60 @@ async def cmd_track(ctx: BotContext, adapter):
     await adapter.send_message(ctx.chat_id, report)
 
 
+async def cmd_stock_watch(ctx: BotContext, adapter):
+    """Manage manual stock watchlist: /stock [list|add|del] TICKER [threshold_pct]."""
+    from server.stock.watchlist import (
+        add_stock_watch,
+        format_stock_watch_add_result,
+        format_stock_watch_list,
+        get_stock_watch_list_payload,
+        platform_for_adapter,
+        remove_stock_watch,
+    )
+
+    sub = ctx.args[0].lower() if ctx.args else "list"
+    if sub in {"list", "ls"}:
+        payload = await get_stock_watch_list_payload(ctx.chat_id)
+        await adapter.send_message(ctx.chat_id, format_stock_watch_list(payload))
+        return
+
+    if sub in {"add", "watch"} and len(ctx.args) >= 2:
+        threshold_pct = 5.0
+        if len(ctx.args) >= 3:
+            try:
+                threshold_pct = float(ctx.args[2])
+            except ValueError:
+                await adapter.send_message(ctx.chat_id, "阈值必须是数字，例如 /stock add NVDA 5")
+                return
+        try:
+            payload = await add_stock_watch(
+                ctx.args[1],
+                chat_id=ctx.chat_id,
+                platform=platform_for_adapter(adapter),
+                threshold_pct=threshold_pct,
+            )
+        except ValueError as exc:
+            await adapter.send_message(ctx.chat_id, f"❌ {exc}")
+            return
+        await adapter.send_message(ctx.chat_id, format_stock_watch_add_result(payload))
+        return
+
+    if sub in {"del", "delete", "remove", "rm"} and len(ctx.args) >= 2:
+        try:
+            payload = await remove_stock_watch(ctx.args[1], chat_id=ctx.chat_id)
+        except ValueError as exc:
+            await adapter.send_message(ctx.chat_id, f"❌ {exc}")
+            return
+        prefix = "✅" if payload["removed"] else "ℹ️"
+        await adapter.send_message(ctx.chat_id, f"{prefix} {payload['message']}")
+        return
+
+    await adapter.send_message(
+        ctx.chat_id,
+        "用法:\n/stock list\n/stock add NVDA [阈值%]\n/stock del NVDA",
+    )
+
+
 async def cmd_score(ctx: BotContext, adapter):
     """Score a specific ticker."""
     if not ctx.args:
@@ -611,8 +665,10 @@ async def _run_agent_message_job(
 ) -> None:
     from server.research.progress import ResearchProgressReporter
     from server.research.service import run_agent_session_message, start_agent_session
+    from server.stock.watchlist import platform_for_adapter
 
     reporter = ResearchProgressReporter(adapter, chat_id, reply_to)
+    platform = platform_for_adapter(adapter)
     try:
         session = await start_agent_session(chat_id, text)
         await _bind_research_session_message(chat_id, source_message_id, session.id)
@@ -622,6 +678,7 @@ async def _run_agent_message_job(
         answer = await run_agent_session_message(
             session,
             text,
+            platform=platform,
             on_progress=reporter.on_progress,
         )
         result_message_id = await reporter.finish(answer)
@@ -895,8 +952,11 @@ async def cmd_alert(ctx: BotContext, adapter):
     if sub == "check":
         await adapter.send_message(ctx.chat_id, "🔍 正在检查告警...")
         from server.alerts.engine import run_alert_cycle
+        from server.alerts.regulatory import run_regulatory_alert_cycle
 
         await run_alert_cycle(adapter)
+        if settings.regulatory_alert_enabled:
+            await run_regulatory_alert_cycle(adapter)
         await adapter.send_message(ctx.chat_id, "✅ 告警检查完成")
 
     elif sub == "config" and len(ctx.args) >= 2:
@@ -926,6 +986,12 @@ async def cmd_alert(ctx: BotContext, adapter):
             f"检查间隔: {settings.alert_interval_minutes} 分钟\n"
             f"价格阈值: {settings.alert_price_pct}%\n"
             f"成交量阈值: {settings.alert_volume_ratio}x 均量\n\n"
+            "*监管事件*\n"
+            f"状态: {'✅ 启用' if settings.regulatory_alert_enabled else '❌ 禁用'}\n"
+            f"检查间隔: {settings.regulatory_alert_interval_minutes} 分钟\n"
+            f"SEC: {'✅ 启用' if settings.sec_user_agent else '❌ 缺少 SEC_USER_AGENT'}\n"
+            f"FDA: {'✅ 启用' if settings.fda_alert_enabled else '❌ 禁用'} "
+            f"({'/'.join(settings.fda_alert_categories)})\n\n"
             f"*监控标的 ({len(tickers)}):*\n"
             + (" ".join(f"`{t}`" for t in tickers) if tickers else "暂无")
         )
@@ -1007,6 +1073,7 @@ def register_all_commands(router, adapter):
             "technical": lambda ctx: cmd_technical(ctx, adapter),
             "news": lambda ctx: cmd_news(ctx, adapter),
             "track": lambda ctx: cmd_track(ctx, adapter),
+            "stock": lambda ctx: cmd_stock_watch(ctx, adapter),
             "score": lambda ctx: cmd_score(ctx, adapter),
             "portfolio": lambda ctx: cmd_portfolio(ctx, adapter),
             "history": lambda ctx: cmd_history(ctx, adapter),
