@@ -44,6 +44,9 @@ class ResearchProgressReporterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(adapter.thread_cards[-1][1], "root-msg")
         result_card = adapter.thread_cards[-1][2]
         self.assertEqual(result_card["header"]["template"], "green")
+        self.assertEqual(result_card["header"]["title"]["content"], "Reveal · 研究结果")
+        self.assertEqual(result_card["elements"][0]["tag"], "note")
+        self.assertIn("继续回复本话题即可追问", str(result_card["elements"][0]))
         self.assertIn("这是研究结论", str(result_card["elements"]))
         self.assertFalse(adapter.messages)
 

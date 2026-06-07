@@ -245,6 +245,47 @@ class AgentFirstRoutingTest(unittest.TestCase):
 
         self.assertEqual(spawned, {"label": "agent message"})
 
+    def test_top_level_plain_message_anchors_agent_reply_to_source_message(self):
+        adapter = DummyAdapter(authorized=True)
+        ctx = BotContext(
+            chat_id="chat-1",
+            user_id="user-1",
+            text="分析 NVDA",
+            message_id="user-msg",
+        )
+        captured: dict[str, str] = {}
+
+        async def noop():
+            return None
+
+        def fake_job(chat_id, text, adapter_arg, reply_to="", source_message_id=""):
+            captured["chat_id"] = chat_id
+            captured["text"] = text
+            captured["reply_to"] = reply_to
+            captured["source_message_id"] = source_message_id
+            return noop()
+
+        def fake_spawn(coro, label: str) -> None:
+            captured["label"] = label
+            coro.close()
+
+        with (
+            patch("server.commands._run_agent_message_job", new=fake_job),
+            patch("server.commands._spawn_background_task", new=fake_spawn),
+        ):
+            asyncio.run(handle_plain_message(ctx, adapter))
+
+        self.assertEqual(
+            captured,
+            {
+                "chat_id": "chat-1",
+                "text": "分析 NVDA",
+                "reply_to": "user-msg",
+                "source_message_id": "user-msg",
+                "label": "agent message",
+            },
+        )
+
     def test_top_level_plain_message_starts_new_agent_even_with_active_topic(self):
         adapter = DummyAdapter(authorized=True)
         ctx = BotContext(chat_id="chat-1", user_id="user-1", text="继续分析这个")

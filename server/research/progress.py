@@ -148,13 +148,20 @@ class ResearchProgressReporter:
 
 def _status_card(text: str) -> dict:
     template = "green" if text.startswith("✅") else "red" if text.startswith("❌") else "blue"
+    title = (
+        "Reveal · 研究完成"
+        if text.startswith("✅")
+        else "Reveal · 处理失败"
+        if text.startswith("❌")
+        else "Reveal · 研究中"
+    )
     return {
-        "title": "Reveal Research",
+        "title": title,
         "sections": [text],
         "config": {"wide_screen_mode": True, "update_multi": True},
         "header": {
             "template": template,
-            "title": {"tag": "plain_text", "content": "Reveal Research"},
+            "title": {"tag": "plain_text", "content": title},
         },
         "elements": [
             {
@@ -167,13 +174,16 @@ def _status_card(text: str) -> dict:
 
 def _result_card(result_text: str, step_count: int, elapsed_seconds: float) -> dict:
     chunks = _split_markdown(result_text)
+    metadata = f"{step_count} 个工具步骤 · {elapsed_seconds:.1f}s · 继续回复本话题即可追问"
     elements: list[dict] = [
         {
-            "tag": "div",
-            "text": {
-                "tag": "lark_md",
-                "content": f"**工具步骤**: {step_count} · **耗时**: {elapsed_seconds:.1f}s",
-            },
+            "tag": "note",
+            "elements": [
+                {
+                    "tag": "plain_text",
+                    "content": metadata,
+                }
+            ],
         },
         {"tag": "hr"},
     ]
@@ -182,12 +192,12 @@ def _result_card(result_text: str, step_count: int, elapsed_seconds: float) -> d
             elements.append({"tag": "hr"})
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": chunk}})
     return {
-        "title": "Reveal Research · 研究结果",
+        "title": "Reveal · 研究结果",
         "sections": [result_text],
         "config": {"wide_screen_mode": True},
         "header": {
             "template": "green",
-            "title": {"tag": "plain_text", "content": "Reveal Research · 研究结果"},
+            "title": {"tag": "plain_text", "content": "Reveal · 研究结果"},
         },
         "elements": elements,
     }

@@ -544,12 +544,13 @@ async def handle_plain_message(ctx: BotContext, adapter):
             if routed:
                 return
 
+        reply_anchor = ctx.reply_to_message_id or ctx.message_id
         _spawn_background_task(
             _run_agent_message_job(
                 ctx.chat_id,
                 text,
                 adapter,
-                ctx.reply_to_message_id,
+                reply_anchor,
                 ctx.message_id,
             ),
             "agent message",

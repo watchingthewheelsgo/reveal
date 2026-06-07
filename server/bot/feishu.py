@@ -173,7 +173,7 @@ class FeishuBot(BotAdapter):
         if not chat_id or not content_str:
             return {"status": "ignored"}
 
-        text = self._extract_text(content_str)
+        text = self._strip_leading_mention(self._extract_text(content_str))
         sender_id = sender.get("sender_id", {})
         root_id = message.get("root_id") or message.get("parent_id") or ""
         ctx = self._make_context(
@@ -260,10 +260,7 @@ class FeishuBot(BotAdapter):
             return
 
         chat_id = message.chat_id or ""
-        text = self._extract_text(message.content or "{}")
-        if text.startswith("@"):
-            parts = text.split(maxsplit=1)
-            text = parts[1] if len(parts) > 1 else ""
+        text = self._strip_leading_mention(self._extract_text(message.content or "{}"))
 
         sender_id = data.event.sender.sender_id.open_id if data.event.sender else ""
         root_id = getattr(message, "root_id", None) or getattr(message, "parent_id", None) or ""
@@ -315,6 +312,12 @@ class FeishuBot(BotAdapter):
         except json.JSONDecodeError:
             logger.exception("Feishu message content JSON parse failed; using raw text")
             return content_str.strip()
+
+    def _strip_leading_mention(self, text: str) -> str:
+        if not text.startswith("@"):
+            return text
+        parts = text.split(maxsplit=1)
+        return parts[1] if len(parts) > 1 else ""
 
     def _send_text_sync(self, chat_id: str, text: str) -> None:
         request = (

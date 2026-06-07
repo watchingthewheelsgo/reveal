@@ -69,6 +69,34 @@ class FeishuEventTest(unittest.TestCase):
         self.assertEqual(response, {"status": "ok"})
         self.assertEqual(called, [["verbose"]])
 
+    def test_http_callback_strips_leading_bot_mention(self):
+        bot = FeishuBot()
+        bot.admin_chat_ids = ["chat-1"]
+        router = CommandRouter(bot)
+        bot.set_router(router)
+        called: list[list[str]] = []
+
+        async def handler(ctx):
+            called.append(ctx.args)
+
+        router.register("status", handler)
+        body = {
+            "header": {"event_type": "im.message.receive_v1"},
+            "event": {
+                "sender": {"sender_id": {"open_id": "user-1"}},
+                "message": {
+                    "chat_id": "chat-1",
+                    "message_id": "user-msg",
+                    "content": '{"text": "@Reveal /status verbose"}',
+                },
+            },
+        }
+
+        response = asyncio.run(bot.handle_event(body))
+
+        self.assertEqual(response, {"status": "ok"})
+        self.assertEqual(called, [["verbose"]])
+
     def test_signature_verification_matches_feishu_formula(self):
         bot = FeishuBot()
         bot.verification_token = "token"
