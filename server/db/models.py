@@ -130,6 +130,31 @@ class RegulatoryEvent(Base):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Market Mover Alerts
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class MarketMoverEvent(Base):
+    __tablename__ = "market_mover_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    source: Mapped[str] = mapped_column(String(30))
+    event_id: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    market: Mapped[str] = mapped_column(String(10), index=True)
+    symbol: Mapped[str] = mapped_column(String(30), index=True)
+    ticker: Mapped[str] = mapped_column(String(20), index=True)
+    event_type: Mapped[str] = mapped_column(String(80))
+    direction: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    change_text: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    event_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    raw_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    pushed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Social Monitor State
 # ═══════════════════════════════════════════════════════════════════════════════
 

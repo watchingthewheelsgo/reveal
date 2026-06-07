@@ -120,6 +120,13 @@ EXTERNAL_SERVICES: tuple[ExternalServiceSpec, ...] = (
         description="历史行情、技术指标和 Finnhub fallback 行情源。",
     ),
     ExternalServiceSpec(
+        id="market.longbridge",
+        title="Longbridge OpenAPI",
+        kind="external_api",
+        description="OAuth Bearer API，用于美股/港股等行情异动发现和行情权限状态。",
+        config_keys=("LONGBRIDGE_ENABLED", "LONGBRIDGE_OAUTH_TOKEN_PATH"),
+    ),
+    ExternalServiceSpec(
         id="sec.edgar",
         title="SEC EDGAR APIs",
         kind="external_api",
@@ -297,6 +304,23 @@ CAPABILITIES: tuple[CapabilitySpec, ...] = (
         external_services=("database.app", "market.finnhub", "market.yfinance", "mcp.reveal"),
         usage="/stock list|add TICKER [阈值%]|del TICKER",
         side_effects="add/remove 会更新当前会话的股票观察列表；后台每 5 分钟检查价格并推送异动。",
+    ),
+    CapabilitySpec(
+        id="market.movers",
+        title="Longbridge 市场异动",
+        kind="workflow",
+        group="股票",
+        description="使用 Longbridge anomaly API 发现市场异动，入库去重并主动推送到管理员会话。",
+        slash_commands=("movers",),
+        natural_examples=("检查美股异动", "最近有哪些市场异动", "Longbridge 异动状态"),
+        agent_tools=(
+            "mcp__reveal__market_movers_status",
+            "mcp__reveal__market_movers_check",
+            "mcp__reveal__market_movers_recent",
+        ),
+        external_services=("market.longbridge", "database.app", "mcp.reveal"),
+        usage="/movers check|recent [数量]|status",
+        side_effects="后台每 5 分钟检查 Longbridge 异动；新事件会推送到 admin chat。",
     ),
     CapabilitySpec(
         id="portfolio.view",

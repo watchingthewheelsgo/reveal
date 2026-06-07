@@ -165,6 +165,35 @@ async def stock_watch_remove(ticker: str, chat_id: str, platform: str = "") -> s
 
 
 @mcp.tool()
+async def market_movers_status() -> str:
+    """查看 Longbridge 异动监控配置和启用状态。"""
+    from server.alerts.market_movers import get_market_mover_status_payload
+
+    await _ensure_database()
+    return json.dumps(await get_market_mover_status_payload(), ensure_ascii=False)
+
+
+@mcp.tool()
+async def market_movers_check(count: int = 50) -> str:
+    """主动检查 Longbridge 市场异动并入库去重，返回本次新发现的异动。"""
+    from server.alerts.market_movers import check_market_movers, persist_new_market_mover_events
+
+    await _ensure_database()
+    events = await check_market_movers(count=count)
+    new_events = await persist_new_market_mover_events(events)
+    return json.dumps(new_events, ensure_ascii=False, default=str)
+
+
+@mcp.tool()
+async def market_movers_recent(limit: int = 10) -> str:
+    """查看最近已记录的 Longbridge 市场异动。"""
+    from server.alerts.market_movers import get_recent_market_movers
+
+    await _ensure_database()
+    return json.dumps(await get_recent_market_movers(limit=limit), ensure_ascii=False)
+
+
+@mcp.tool()
 async def twitter_watch_list() -> str:
     """查看当前 Twitter/X watch list 和每个账号的缓存 cursor/check 状态。"""
     from server.capabilities.twitter import get_twitter_watch_list_payload

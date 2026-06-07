@@ -957,6 +957,10 @@ async def cmd_alert(ctx: BotContext, adapter):
         await run_alert_cycle(adapter)
         if settings.regulatory_alert_enabled:
             await run_regulatory_alert_cycle(adapter)
+        if settings.is_longbridge_configured() and settings.longbridge_movers_enabled:
+            from server.alerts.market_movers import run_market_mover_alert_cycle
+
+            await run_market_mover_alert_cycle(adapter)
         await adapter.send_message(ctx.chat_id, "✅ 告警检查完成")
 
     elif sub == "config" and len(ctx.args) >= 2:
@@ -980,6 +984,9 @@ async def cmd_alert(ctx: BotContext, adapter):
 
     else:
         tickers = await get_active_tickers_for_alert()
+        longbridge_enabled = (
+            settings.is_longbridge_configured() and settings.longbridge_movers_enabled
+        )
         text = (
             "*⚙️ 告警配置*\n\n"
             f"状态: {'✅ 启用' if settings.alert_enabled else '❌ 禁用'}\n"
@@ -992,10 +999,78 @@ async def cmd_alert(ctx: BotContext, adapter):
             f"SEC: {'✅ 启用' if settings.sec_user_agent else '❌ 缺少 SEC_USER_AGENT'}\n"
             f"FDA: {'✅ 启用' if settings.fda_alert_enabled else '❌ 禁用'} "
             f"({'/'.join(settings.fda_alert_categories)})\n\n"
+            "*Longbridge 异动*\n"
+            f"状态: {'✅ 启用' if longbridge_enabled else '❌ 禁用/未配置'}\n"
+            f"检查间隔: {settings.longbridge_movers_interval_seconds} 秒\n"
+            f"市场: {settings.longbridge_movers_market} | "
+            f"每次 {settings.longbridge_movers_count} 条\n\n"
             f"*监控标的 ({len(tickers)}):*\n"
             + (" ".join(f"`{t}`" for t in tickers) if tickers else "暂无")
         )
         await adapter.send_message(ctx.chat_id, text)
+
+
+async def cmd_movers(ctx: BotContext, adapter):
+    """Longbridge market mover alerts: /movers [check|recent|status]."""
+    action = ctx.args[0].lower() if ctx.args else "recent"
+    try:
+        from server.alerts.market_movers import (
+            check_market_movers,
+            format_market_mover_alert,
+            format_market_mover_list,
+            get_market_mover_status_payload,
+            get_recent_market_movers,
+            persist_new_market_mover_events,
+        )
+
+        if action == "check":
+            await adapter.send_message(ctx.chat_id, "🔍 正在检查 Longbridge 市场异动...")
+            events = await check_market_movers()
+            new_events = await persist_new_market_mover_events(events, mark_pushed=True)
+            if not new_events:
+                await adapter.send_message(ctx.chat_id, "Longbridge 暂无新的异动。")
+                return
+            for event in new_events[:10]:
+                await adapter.send_message(ctx.chat_id, format_market_mover_alert(event))
+            if len(new_events) > 10:
+                await adapter.send_message(
+                    ctx.chat_id, f"还有 {len(new_events) - 10} 条新异动未展开。"
+                )
+            return
+
+        if action in {"recent", "list"}:
+            limit = 10
+            if len(ctx.args) > 1 and ctx.args[1].isdigit():
+                limit = max(1, min(50, int(ctx.args[1])))
+            await adapter.send_message(
+                ctx.chat_id, format_market_mover_list(await get_recent_market_movers(limit))
+            )
+            return
+
+        if action == "status":
+            payload = await get_market_mover_status_payload()
+            await adapter.send_message(
+                ctx.chat_id,
+                "\n".join(
+                    [
+                        "*Longbridge 异动监控*",
+                        f"状态: {'✅ 启用' if payload['enabled'] else '❌ 禁用'}",
+                        f"配置: {'✅ OK' if payload['configured'] else '❌ 缺少 token path'}",
+                        f"市场: {payload['market']}",
+                        f"间隔: {payload['interval_seconds']} 秒",
+                        f"每次拉取: {payload['count']} 条",
+                        f"每轮最多推送: {payload['push_limit']} 条",
+                    ]
+                ),
+            )
+            return
+
+        await adapter.send_message(
+            ctx.chat_id, "用法:\n/movers check\n/movers recent [数量]\n/movers status"
+        )
+    except Exception:
+        logger.exception("Longbridge movers command failed")
+        await adapter.send_message(ctx.chat_id, "❌ Longbridge 异动检查失败，请稍后重试。")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1088,6 +1163,7 @@ def register_all_commands(router, adapter):
             "x": lambda ctx: cmd_twatch(ctx, adapter),
             "twatch": lambda ctx: cmd_twatch(ctx, adapter),
             "alert": lambda ctx: cmd_alert(ctx, adapter),
+            "movers": lambda ctx: cmd_movers(ctx, adapter),
             "briefing": lambda ctx: cmd_briefing(ctx, adapter),
             "digest": lambda ctx: cmd_digest(ctx, adapter),
             "summary": lambda ctx: cmd_summary(ctx, adapter),

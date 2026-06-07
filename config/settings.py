@@ -141,6 +141,23 @@ class Settings(BaseSettings):
         default_factory=list, alias="FDA_ALERT_KEYWORDS"
     )
 
+    # Longbridge market anomaly discovery
+    longbridge_enabled: bool = Field(default=False, alias="LONGBRIDGE_ENABLED")
+    longbridge_api_base: str = Field(
+        default="https://openapi.longbridge.cn", alias="LONGBRIDGE_API_BASE"
+    )
+    longbridge_oauth_token_path: str = Field(default="", alias="LONGBRIDGE_OAUTH_TOKEN_PATH")
+    longbridge_movers_enabled: bool = Field(default=True, alias="LONGBRIDGE_MOVERS_ENABLED")
+    longbridge_movers_market: str = Field(default="US", alias="LONGBRIDGE_MOVERS_MARKET")
+    longbridge_movers_interval_seconds: int = Field(
+        default=300, alias="LONGBRIDGE_MOVERS_INTERVAL_SECONDS"
+    )
+    longbridge_movers_count: int = Field(default=50, alias="LONGBRIDGE_MOVERS_COUNT")
+    longbridge_movers_push_limit: int = Field(default=10, alias="LONGBRIDGE_MOVERS_PUSH_LIMIT")
+
+    def is_longbridge_configured(self) -> bool:
+        return bool(self.longbridge_enabled and self.longbridge_oauth_token_path)
+
     # Twitter monitor
     twitter_accounts: Annotated[list[str], NoDecode] = Field(
         default_factory=list, alias="TWITTER_ACCOUNTS"
@@ -261,12 +278,23 @@ class Settings(BaseSettings):
         "alert_interval_minutes",
         "regulatory_alert_interval_minutes",
         "regulatory_alert_lookback_hours",
+        "longbridge_movers_interval_seconds",
+        "longbridge_movers_count",
+        "longbridge_movers_push_limit",
     )
     @classmethod
     def validate_positive_interval(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("interval values must be positive")
         return value
+
+    @field_validator("longbridge_movers_market")
+    @classmethod
+    def validate_longbridge_market(cls, value: str) -> str:
+        normalized = value.upper().strip()
+        if normalized not in {"US", "HK", "CN", "SG"}:
+            raise ValueError("LONGBRIDGE_MOVERS_MARKET must be one of: US, HK, CN, SG")
+        return normalized
 
     @field_validator("agent_runtime")
     @classmethod

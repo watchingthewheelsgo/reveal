@@ -231,6 +231,22 @@ async def lifespan(app: FastAPI):
             "stock_watch_price", stock_watch_price_job, STOCK_WATCH_INTERVAL_SECONDS
         )
 
+    # Longbridge market mover discovery alerts (every 5 minutes by default)
+    if settings.is_longbridge_configured() and settings.longbridge_movers_enabled:
+
+        async def market_mover_alert_job():
+            from server.alerts.market_movers import run_market_mover_alert_cycle
+
+            tg = telegram_bot if telegram_bot else feishu_bot
+            if tg:
+                await run_market_mover_alert_cycle(tg)
+
+        scheduler.register_interval(
+            "longbridge_market_movers",
+            market_mover_alert_job,
+            settings.longbridge_movers_interval_seconds,
+        )
+
     scheduler.start()
     logger.info("Scheduler started")
 

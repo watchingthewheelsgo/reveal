@@ -83,7 +83,7 @@ def _make_handler(expected_state: str):
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--client-id", required=True)
-    parser.add_argument("--scope", default="4 6 10 11")
+    parser.add_argument("--scope", default="3")
     parser.add_argument("--timeout", type=int, default=600)
     args = parser.parse_args()
 

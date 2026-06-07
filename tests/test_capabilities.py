@@ -24,6 +24,8 @@ class CapabilityRegistryTest(unittest.TestCase):
         self.assertIn("mcp__reveal__stock_score", tools)
         self.assertIn("mcp__reveal__stock_watch_add", tools)
         self.assertIn("mcp__reveal__stock_watch_remove", tools)
+        self.assertIn("mcp__reveal__market_movers_check", tools)
+        self.assertIn("mcp__reveal__market_movers_recent", tools)
         self.assertIn("mcp__reveal__system_status", tools)
         self.assertIn("mcp__reveal__capability_catalog", tools)
         self.assertIn("mcp__reveal__twitter_watch_list", tools)
@@ -44,6 +46,7 @@ class CapabilityRegistryTest(unittest.TestCase):
             "/portfolio",
             "/history",
             "/stock",
+            "/movers",
             "/research",
             "/x",
         ):
@@ -59,6 +62,7 @@ class CapabilityRegistryTest(unittest.TestCase):
         self.assertIn("External services", catalog)
         self.assertIn("stock.quote", capability_ids)
         self.assertIn("stock.watch", capability_ids)
+        self.assertIn("market.movers", capability_ids)
         self.assertIn("research.ticker", capability_ids)
 
     def test_agent_catalog_exposes_capabilities_and_service_backing(self):
@@ -67,6 +71,7 @@ class CapabilityRegistryTest(unittest.TestCase):
         self.assertIn("Reveal system capabilities", catalog)
         self.assertIn("mcp__reveal__twitter_watch_list", catalog)
         self.assertIn("mcp__reveal__stock_watch_add", catalog)
+        self.assertIn("mcp__reveal__market_movers_check", catalog)
         self.assertIn("mcp__reveal__system_status", catalog)
         self.assertIn("social.x_graphql", catalog)
         self.assertIn("WebSearch", catalog)
@@ -77,6 +82,7 @@ class CapabilityRegistryTest(unittest.TestCase):
         self.assertIn("bot.feishu", services)
         self.assertIn("llm.deepseek_agent", services)
         self.assertIn("market.finnhub", services)
+        self.assertIn("market.longbridge", services)
         self.assertIn("social.vxtwitter", services)
 
 

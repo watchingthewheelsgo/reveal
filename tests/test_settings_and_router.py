@@ -58,6 +58,23 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(settings.fda_alert_categories, ["drug", "device"])
         self.assertEqual(settings.fda_alert_keywords, ["Pfizer", "Moderna"])
 
+    def test_longbridge_oauth_settings_configure_market_movers(self):
+        with patch.dict(
+            os.environ,
+            {
+                "LONGBRIDGE_ENABLED": "true",
+                "LONGBRIDGE_OAUTH_TOKEN_PATH": "/app/secrets/longbridge/reveal-oauth.json",
+                "LONGBRIDGE_MOVERS_MARKET": "us",
+                "LONGBRIDGE_MOVERS_INTERVAL_SECONDS": "300",
+            },
+            clear=False,
+        ):
+            settings = self.build_settings()
+
+        self.assertTrue(settings.is_longbridge_configured())
+        self.assertEqual(settings.longbridge_movers_market, "US")
+        self.assertEqual(settings.longbridge_movers_interval_seconds, 300)
+
     def test_invalid_schedule_time_fails_fast(self):
         with patch.dict(os.environ, {"DAILY_PICK_TIME": "8am"}, clear=False):
             with self.assertRaises(ValidationError):

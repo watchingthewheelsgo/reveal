@@ -70,6 +70,9 @@ def get_system_status_payload() -> dict[str, Any]:
             "finnhub_configured": settings.is_finnhub_configured(),
             "finnhub_base_url": settings.finnhub_base_url,
             "yfinance_available": True,
+            "longbridge_enabled": settings.longbridge_enabled,
+            "longbridge_configured": settings.is_longbridge_configured(),
+            "longbridge_api_base": settings.longbridge_api_base,
         },
         "twitter": {
             "configured_accounts": len(settings.twitter_accounts),
@@ -100,6 +103,8 @@ def get_system_status_payload() -> dict[str, Any]:
             "regulatory_interval_minutes": settings.regulatory_alert_interval_minutes,
             "sec_configured": bool(settings.sec_user_agent),
             "fda_enabled": settings.fda_alert_enabled,
+            "longbridge_movers_enabled": settings.longbridge_movers_enabled,
+            "longbridge_movers_interval_seconds": settings.longbridge_movers_interval_seconds,
         },
     }
 
@@ -125,6 +130,8 @@ def format_system_status(payload: dict[str, Any]) -> str:
             f"研究 Agent: {_flag(llm['agent_configured'])} "
             f"{llm['agent_model']} @ {llm['agent_base_url']}",
             f"Finnhub: {_flag(market['finnhub_configured'])}",
+            f"Longbridge: {_flag(market['longbridge_configured'])} @ "
+            f"{market['longbridge_api_base']}",
             f"数据库: {_flag(database['initialized'])} "
             f"{database['driver']}://{database['host']}/{database['database']}",
             f"Twitter: {twitter['configured_accounts']} env accounts, "
@@ -139,6 +146,8 @@ def format_system_status(payload: dict[str, Any]) -> str:
             f"监管告警: {_flag(alerts['regulatory_enabled'])} "
             f"every {alerts['regulatory_interval_minutes']}m "
             f"(SEC {_flag(alerts['sec_configured'])}, FDA {_flag(alerts['fda_enabled'])})",
+            f"Longbridge 异动: {_flag(alerts['longbridge_movers_enabled'])} "
+            f"every {alerts['longbridge_movers_interval_seconds']}s",
         ]
     )
 
