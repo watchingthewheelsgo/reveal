@@ -1,21 +1,20 @@
 """Research progress reporter — streams Agent tool calls to IM as status updates."""
 
 import asyncio
-import re
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from time import monotonic
 
 from loguru import logger
+from markdown_it import MarkdownIt
+from markdown_it.token import Token
 
 from server.bot.base import BotAdapter
 
 ProgressCallback = Callable[[str, str], Awaitable[None]]
 HEARTBEAT_INTERVAL_SECONDS = 30.0
-RESULT_CARD_MAX_BLOCKS = 24
-HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
-ORDERED_LIST_RE = re.compile(r"^\d+[\.)]\s+")
-UNORDERED_LIST_PREFIXES = ("- ", "* ", "+ ")
+CARD_MARKDOWN_CHUNK_SIZE = 1600
+MARKDOWN_PARSER = MarkdownIt("commonmark", {"breaks": True}).enable("table")
 
 
 class ResearchProgressReporter:
@@ -210,97 +209,155 @@ def _result_card(result_text: str, step_count: int, elapsed_seconds: float) -> d
 
 def _result_body_elements(text: str) -> list[dict]:
     normalized = text.strip() or "（无内容）"
-    lines = normalized.splitlines()
     elements: list[dict] = []
-    paragraph_lines: list[str] = []
-    list_lines: list[str] = []
-    code_lines: list[str] = []
-    in_code = False
-    truncated = False
-
-    def append_elements(new_elements: list[dict]) -> None:
-        nonlocal truncated
-        remaining = RESULT_CARD_MAX_BLOCKS - len(elements)
-        if remaining <= 0:
-            truncated = True
-            return
-        if len(new_elements) > remaining:
-            truncated = True
-        elements.extend(new_elements[:remaining])
-
-    def flush_paragraph() -> None:
-        if not paragraph_lines:
-            return
-        content = "\n".join(paragraph_lines).strip()
-        paragraph_lines.clear()
-        append_elements([_md_div(chunk) for chunk in _split_markdown(content, chunk_size=1600)])
-
-    def flush_list() -> None:
-        if not list_lines:
-            return
-        content = "\n".join(_format_list_line(line) for line in list_lines)
-        list_lines.clear()
-        append_elements([_md_div(chunk) for chunk in _split_markdown(content, chunk_size=1600)])
-
-    def flush_code() -> None:
-        if not code_lines:
-            return
-        content = "```\n" + "\n".join(code_lines).strip() + "\n```"
-        code_lines.clear()
-        append_elements([_md_div(chunk) for chunk in _split_markdown(content, chunk_size=1600)])
-
-    for raw_line in lines:
-        line = raw_line.rstrip()
-        stripped = line.strip()
-        if stripped.startswith("```"):
-            if in_code:
-                flush_code()
-                in_code = False
-            else:
-                flush_paragraph()
-                flush_list()
-                in_code = True
+    tokens = MARKDOWN_PARSER.parse(normalized)
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        token_type = token.type
+        if token_type == "heading_open":
+            content, index = _collect_inline_block(tokens, index, "heading_close")
+            _append_markdown_elements(elements, f"**{content}**")
             continue
-        if in_code:
-            code_lines.append(line)
+        if token_type == "paragraph_open":
+            content, index = _collect_inline_block(tokens, index, "paragraph_close")
+            _append_markdown_elements(elements, content)
             continue
-        if not stripped:
-            flush_paragraph()
-            flush_list()
+        if token_type in {"bullet_list_open", "ordered_list_open"}:
+            content, index = _collect_list_block(tokens, index)
+            _append_markdown_elements(elements, content)
             continue
-        heading = HEADING_RE.match(stripped)
-        if heading:
-            flush_paragraph()
-            flush_list()
-            append_elements([_md_div(f"**{heading.group(2).strip()}**")])
+        if token_type == "table_open":
+            rows, index = _collect_table_block(tokens, index)
+            _append_code_elements(elements, _format_table(rows))
             continue
-        if _is_markdown_list_line(stripped):
-            flush_paragraph()
-            list_lines.append(stripped)
-            continue
-        flush_list()
-        paragraph_lines.append(stripped)
+        if token_type in {"fence", "code_block"}:
+            _append_code_elements(elements, token.content)
+        elif token_type == "html_block":
+            _append_markdown_elements(elements, token.content)
+        index += 1
 
-    if in_code:
-        flush_code()
-    flush_paragraph()
-    flush_list()
-
-    if truncated:
-        elements[-1] = _md_div("内容较长，已截断。请继续在本话题追问，我会展开剩余部分。")
     return elements or [_md_div("（无内容）")]
 
 
-def _is_markdown_list_line(line: str) -> bool:
-    return line.startswith(UNORDERED_LIST_PREFIXES) or bool(ORDERED_LIST_RE.match(line))
+def _collect_inline_block(
+    tokens: list[Token], start_index: int, close_type: str
+) -> tuple[str, int]:
+    parts: list[str] = []
+    index = start_index + 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token.type == close_type:
+            return _compact_lines(parts), index + 1
+        if token.type == "inline":
+            parts.append(token.content)
+        elif token.type in {"fence", "code_block"}:
+            parts.append(token.content)
+        index += 1
+    return _compact_lines(parts), index
 
 
-def _format_list_line(line: str) -> str:
-    stripped = line.strip()
-    for prefix in UNORDERED_LIST_PREFIXES:
-        if stripped.startswith(prefix):
-            return f"• {stripped[len(prefix) :].strip()}"
-    return stripped
+def _collect_list_block(tokens: list[Token], start_index: int) -> tuple[str, int]:
+    opening = tokens[start_index]
+    ordered = opening.type == "ordered_list_open"
+    close_type = "ordered_list_close" if ordered else "bullet_list_close"
+    first_number = _ordered_list_start(opening)
+    items: list[str] = []
+    item_parts: list[str] = []
+    item_depth = 0
+    index = start_index + 1
+
+    while index < len(tokens):
+        token = tokens[index]
+        if token.type == close_type and item_depth == 0:
+            break
+        if token.type == "list_item_open":
+            if item_depth == 0:
+                item_parts = []
+            item_depth += 1
+        elif token.type == "list_item_close":
+            item_depth -= 1
+            if item_depth == 0:
+                item = _compact_lines(item_parts)
+                if item:
+                    items.append(item)
+        elif item_depth > 0 and token.type == "inline":
+            item_parts.append(token.content)
+        elif item_depth > 0 and token.type in {"fence", "code_block"}:
+            item_parts.append(token.content)
+        index += 1
+
+    lines = []
+    for offset, item in enumerate(items):
+        if ordered:
+            lines.append(f"{first_number + offset}. {item}")
+        else:
+            lines.append(f"• {item}")
+    return "\n".join(lines), index + 1
+
+
+def _ordered_list_start(token: Token) -> int:
+    raw_start = token.attrGet("start")
+    if raw_start is None:
+        return 1
+    try:
+        return int(raw_start)
+    except ValueError:
+        return 1
+
+
+def _collect_table_block(tokens: list[Token], start_index: int) -> tuple[list[list[str]], int]:
+    rows: list[list[str]] = []
+    current_row: list[str] | None = None
+    index = start_index + 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token.type == "table_close":
+            return rows, index + 1
+        if token.type == "tr_open":
+            current_row = []
+        elif token.type == "tr_close":
+            if current_row is not None:
+                rows.append(current_row)
+            current_row = None
+        elif token.type == "inline" and current_row is not None:
+            current_row.append(" ".join(token.content.split()))
+        index += 1
+    return rows, index
+
+
+def _format_table(rows: list[list[str]]) -> str:
+    if not rows:
+        return ""
+    column_count = max(len(row) for row in rows)
+    normalized_rows = [row + [""] * (column_count - len(row)) for row in rows]
+    widths = [
+        max(len(row[column_index]) for row in normalized_rows)
+        for column_index in range(column_count)
+    ]
+
+    def format_row(row: list[str]) -> str:
+        return " | ".join(cell.ljust(widths[index]) for index, cell in enumerate(row)).rstrip()
+
+    lines = [format_row(normalized_rows[0])]
+    if len(normalized_rows) > 1:
+        lines.append("-+-".join("-" * width for width in widths))
+        lines.extend(format_row(row) for row in normalized_rows[1:])
+    return "\n".join(lines)
+
+
+def _compact_lines(parts: list[str]) -> str:
+    return "\n".join(part.strip() for part in parts if part.strip()).strip()
+
+
+def _append_markdown_elements(elements: list[dict], content: str) -> None:
+    for chunk in _split_markdown(content, chunk_size=CARD_MARKDOWN_CHUNK_SIZE):
+        elements.append(_md_div(chunk))
+
+
+def _append_code_elements(elements: list[dict], content: str) -> None:
+    for chunk in _split_plain_text(content, chunk_size=CARD_MARKDOWN_CHUNK_SIZE):
+        elements.append(_md_div(f"```\n{chunk}\n```"))
 
 
 def _md_div(content: str) -> dict:
@@ -322,6 +379,26 @@ def _split_markdown(text: str, chunk_size: int = 2800) -> list[str]:
             chunks.append(paragraph[:chunk_size])
             paragraph = paragraph[chunk_size:]
         current = paragraph
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _split_plain_text(text: str, chunk_size: int = 2800) -> list[str]:
+    normalized = text.strip() or "（无内容）"
+    chunks: list[str] = []
+    current = ""
+    for line in normalized.splitlines():
+        candidate = line if not current else f"{current}\n{line}"
+        if len(candidate) <= chunk_size:
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+        while len(line) > chunk_size:
+            chunks.append(line[:chunk_size])
+            line = line[chunk_size:]
+        current = line
     if current:
         chunks.append(current)
     return chunks
