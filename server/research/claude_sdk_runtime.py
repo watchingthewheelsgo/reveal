@@ -173,20 +173,25 @@ async def run_agent(
     except (CLIConnectionError, ProcessError, ClaudeSDKError) as exc:
         logger.exception("Claude Agent SDK execution failed")
         raise AgentRuntimeError(str(exc), _user_message_for_exception(exc)) from exc
+    except Exception as exc:
+        if _is_max_turns_error(str(exc)):
+            return _max_turns_result(
+                answer_parts,
+                observation_parts,
+                tool_use_count,
+                agent_session_id,
+            )
+        logger.exception("Claude Agent SDK execution failed unexpectedly")
+        raise AgentRuntimeError(str(exc), _user_message_for_exception(exc)) from exc
 
     if result_error:
         if _is_max_turns_error(result_error):
-            partial_answer = _partial_answer_from_max_turns(
-                answer_parts, observation_parts, tool_use_count
-            )
-            logger.warning(
-                "Research agent max turns reached; returning partial answer: "
-                "session_id={} answer_chars={} tool_uses={}",
-                agent_session_id or "-",
-                len(partial_answer),
+            return _max_turns_result(
+                answer_parts,
+                observation_parts,
                 tool_use_count,
+                agent_session_id,
             )
-            return AgentRunResult(answer=partial_answer, agent_session_id=agent_session_id)
         logger.error("Research agent result error: {}", result_error)
         raise AgentRuntimeError(result_error, _user_message_for_text(result_error))
 
@@ -280,6 +285,23 @@ def _is_max_turns_error(text: str) -> bool:
         or "max turns" in normalized
         or "reached maximum turns" in normalized
     )
+
+
+def _max_turns_result(
+    answer_parts: list[str],
+    observation_parts: list[str],
+    tool_use_count: int,
+    agent_session_id: str | None = None,
+) -> AgentRunResult:
+    partial_answer = _partial_answer_from_max_turns(answer_parts, observation_parts, tool_use_count)
+    logger.warning(
+        "Research agent max turns reached; returning partial answer: "
+        "session_id={} answer_chars={} tool_uses={}",
+        agent_session_id or "-",
+        len(partial_answer),
+        tool_use_count,
+    )
+    return AgentRunResult(answer=partial_answer, agent_session_id=agent_session_id)
 
 
 def _partial_answer_from_max_turns(

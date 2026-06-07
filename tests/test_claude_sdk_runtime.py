@@ -204,6 +204,24 @@ class ClaudeSdkRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("已获取的信息片段", result.answer)
         self.assertIn("NVDA 盘前上涨 6.2%", result.answer)
 
+    async def test_run_agent_returns_partial_answer_when_max_turns_exception_is_raised(self):
+        async def fake_query(prompt, options):
+            yield SystemMessage(subtype="init", data={"session_id": "init-session"})
+            yield AssistantMessage(
+                content=[TextBlock(text="已完成 NVDA 新闻和报价检查。")],
+                model="test-model",
+            )
+            raise Exception(
+                "Claude Code returned an error result: Reached maximum number of turns (8)"
+            )
+
+        with patch("server.research.claude_sdk_runtime.query", new=fake_query):
+            result = await run_agent("research this")
+
+        self.assertEqual(result.agent_session_id, "init-session")
+        self.assertIn("阶段性总结", result.answer)
+        self.assertIn("已完成 NVDA 新闻和报价检查", result.answer)
+
     async def test_run_agent_rejects_bracket_pseudo_reveal_tool_text(self):
         calls = 0
 
