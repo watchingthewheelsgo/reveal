@@ -36,6 +36,7 @@ from server.bot.base import (
 from server.bot.base import (
     MessageHandler as BotMessageHandler,
 )
+from server.bot.feishu_markdown import markdown_to_card_elements
 
 
 class FeishuBot(BotAdapter):
@@ -490,10 +491,10 @@ class FeishuBot(BotAdapter):
         footer = str(card.get("footer") or "")
         elements: list[dict] = []
         for section in sections:
-            elements.append({"tag": "div", "text": {"tag": "lark_md", "content": section}})
+            elements.extend(markdown_to_card_elements(section))
             elements.append({"tag": "hr"})
         if footer:
-            elements.append({"tag": "div", "text": {"tag": "lark_md", "content": footer}})
+            elements.extend(markdown_to_card_elements(footer))
         if elements and elements[-1].get("tag") == "hr":
             elements.pop()
         return {
@@ -547,10 +548,5 @@ def _markdown_card(text: str, title: str = "Reveal") -> dict:
             "template": "blue",
             "title": {"tag": "plain_text", "content": title},
         },
-        "elements": [
-            {
-                "tag": "div",
-                "text": {"tag": "lark_md", "content": text},
-            }
-        ],
+        "elements": markdown_to_card_elements(text),
     }

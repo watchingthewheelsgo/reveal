@@ -78,7 +78,7 @@ class ResearchProgressReporterTest(unittest.IsolatedAsyncioTestCase):
 
         rendered = str(card["elements"])
 
-        self.assertIn("```", rendered)
+        self.assertIn("fields", rendered)
         self.assertIn("Ticker", rendered)
         self.assertIn("NVDA", rendered)
         self.assertIn("盘前成交放大", rendered)

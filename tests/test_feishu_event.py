@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from server.bot.base import CommandRouter
-from server.bot.feishu import FeishuBot, _should_send_as_markdown_card
+from server.bot.feishu import FeishuBot, _markdown_card, _should_send_as_markdown_card
 
 
 class DummyFeishuResponse:
@@ -122,8 +122,24 @@ class FeishuEventTest(unittest.TestCase):
         self.assertEqual(request.request_body.msg_type, "interactive")
         self.assertTrue(request.request_body.reply_in_thread)
         payload = json.loads(request.request_body.content)
-        self.assertEqual(payload["elements"][0]["text"]["tag"], "lark_md")
-        self.assertIn("**结论**", payload["elements"][0]["text"]["content"])
+        self.assertIn("**结论**", str(payload["elements"]))
+
+    def test_markdown_card_renders_table_as_structured_fields(self):
+        card = _markdown_card(
+            "| Ticker | Move | Reason |\n"
+            "| --- | --- | --- |\n"
+            "| NVDA | +5.2% | 盘前成交放大 |\n"
+            "| TSLA | -3.1% | 指引下调 |"
+        )
+
+        rendered = str(card["elements"])
+
+        self.assertEqual(card["elements"][0]["tag"], "div")
+        self.assertIn("fields", card["elements"][0])
+        self.assertIn("Ticker", rendered)
+        self.assertIn("NVDA", rendered)
+        self.assertIn("盘前成交放大", rendered)
+        self.assertNotIn("| --- | --- | --- |", rendered)
 
     def test_markdown_detection_keeps_simple_status_as_text(self):
         self.assertFalse(_should_send_as_markdown_card("正在检查告警"))
