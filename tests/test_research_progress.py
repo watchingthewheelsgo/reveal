@@ -2,7 +2,7 @@ import unittest
 from typing import cast
 
 from server.bot.base import BotAdapter
-from server.research.progress import ResearchProgressReporter
+from server.research.progress import ResearchProgressReporter, _result_card
 
 
 class FakeProgressAdapter:
@@ -49,6 +49,22 @@ class ResearchProgressReporterTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("继续回复本话题即可追问", str(result_card["elements"][0]))
         self.assertIn("这是研究结论", str(result_card["elements"]))
         self.assertFalse(adapter.messages)
+
+    async def test_result_card_structures_markdown_body(self):
+        card = _result_card(
+            "## 结论\n\n- NVDA 继续观察\n- 留意盘前成交量\n\n普通段落说明。",
+            step_count=3,
+            elapsed_seconds=12.3,
+        )
+
+        body = card["elements"]
+        rendered = str(body)
+
+        self.assertIn("**结论**", rendered)
+        self.assertNotIn("## 结论", rendered)
+        self.assertIn("• NVDA 继续观察", rendered)
+        self.assertIn("• 留意盘前成交量", rendered)
+        self.assertIn("普通段落说明。", rendered)
 
 
 if __name__ == "__main__":
