@@ -7,6 +7,7 @@ from typing import Any, cast
 
 from server.bot.base import CommandRouter
 from server.bot.feishu import FeishuBot, _markdown_card, _should_send_as_markdown_card
+from server.research.progress import _result_card
 
 
 class DummyFeishuResponse:
@@ -122,9 +123,11 @@ class FeishuEventTest(unittest.TestCase):
         self.assertEqual(request.request_body.msg_type, "interactive")
         self.assertTrue(request.request_body.reply_in_thread)
         payload = json.loads(request.request_body.content)
-        self.assertIn("**结论**", str(payload["elements"]))
+        self.assertEqual(payload["schema"], "2.0")
+        self.assertEqual(payload["body"]["elements"][0]["tag"], "markdown")
+        self.assertIn("**结论**", payload["body"]["elements"][0]["content"])
 
-    def test_markdown_card_renders_table_as_structured_fields(self):
+    def test_markdown_card_uses_json_v2_markdown_component(self):
         card = _markdown_card(
             "| Ticker | Move | Reason |\n"
             "| --- | --- | --- |\n"
@@ -132,14 +135,31 @@ class FeishuEventTest(unittest.TestCase):
             "| TSLA | -3.1% | 指引下调 |"
         )
 
-        rendered = str(card["elements"])
+        element = card["body"]["elements"][0]
 
-        self.assertEqual(card["elements"][0]["tag"], "div")
-        self.assertIn("fields", card["elements"][0])
-        self.assertIn("Ticker", rendered)
-        self.assertIn("NVDA", rendered)
-        self.assertIn("盘前成交放大", rendered)
-        self.assertNotIn("| --- | --- | --- |", rendered)
+        self.assertEqual(card["schema"], "2.0")
+        self.assertEqual(element["tag"], "markdown")
+        self.assertIn("| --- | --- | --- |", element["content"])
+        self.assertIn("NVDA", element["content"])
+        self.assertIn("盘前成交放大", element["content"])
+
+    def test_legacy_result_card_formats_as_json_v2(self):
+        bot = FeishuBot()
+
+        payload = bot._format_feishu_card(
+            _result_card(
+                "| Ticker | Move |\n| --- | --- |\n| NVDA | +5.2% |",
+                step_count=2,
+                elapsed_seconds=8.0,
+            )
+        )
+        rendered = str(payload["body"]["elements"])
+
+        self.assertEqual(payload["schema"], "2.0")
+        self.assertNotIn("elements", payload)
+        self.assertIn("tag': 'markdown'", rendered)
+        self.assertIn("| --- | --- |", rendered)
+        self.assertIn("继续回复本话题即可追问", rendered)
 
     def test_markdown_detection_keeps_simple_status_as_text(self):
         self.assertFalse(_should_send_as_markdown_card("正在检查告警"))

@@ -475,16 +475,11 @@ class FeishuBot(BotAdapter):
         return None
 
     def _format_feishu_card(self, card: dict) -> dict:
+        if card.get("schema") == "2.0":
+            return _normalize_v2_card(card)
+
         if card.get("elements") or card.get("header"):
-            allowed_keys = {
-                "card_link",
-                "config",
-                "elements",
-                "header",
-                "i18n_elements",
-                "i18n_header",
-            }
-            return {key: value for key, value in card.items() if key in allowed_keys}
+            return _legacy_card_to_v2(card)
 
         title = str(card.get("title") or "Reveal")
         sections = [str(section) for section in card.get("sections", [])]
@@ -497,31 +492,16 @@ class FeishuBot(BotAdapter):
             elements.extend(markdown_to_card_elements(footer))
         if elements and elements[-1].get("tag") == "hr":
             elements.pop()
-        return {
-            "config": {"wide_screen_mode": True},
-            "header": {
-                "template": "blue",
-                "title": {"tag": "plain_text", "content": title},
-            },
-            "elements": elements,
-        }
+        return _v2_card(title=title, elements=elements, template="blue")
 
     def _format_progress_card(self, text: str) -> dict:
         template = "green" if text.startswith("✅") else "red" if text.startswith("❌") else "blue"
-        title = "Reveal Research"
-        return {
-            "config": {"wide_screen_mode": True, "update_multi": True},
-            "header": {
-                "template": template,
-                "title": {"tag": "plain_text", "content": title},
-            },
-            "elements": [
-                {
-                    "tag": "div",
-                    "text": {"tag": "lark_md", "content": text},
-                }
-            ],
-        }
+        return _v2_card(
+            title="Reveal Research",
+            elements=markdown_to_card_elements(text),
+            template=template,
+            config={"update_multi": True},
+        )
 
 
 def _image_filename(image_url: str, alt_text: str | None = None) -> str:
@@ -542,11 +522,100 @@ def _should_send_as_markdown_card(text: str) -> bool:
 
 
 def _markdown_card(text: str, title: str = "Reveal") -> dict:
-    return {
-        "config": {"wide_screen_mode": True},
+    return _v2_card(title=title, elements=markdown_to_card_elements(text), template="blue")
+
+
+def _legacy_card_to_v2(card: dict) -> dict:
+    title = str(
+        card.get("title") or card.get("header", {}).get("title", {}).get("content") or "Reveal"
+    )
+    header = card.get("header") if isinstance(card.get("header"), dict) else {}
+    template = str(header.get("template") or "blue")
+    elements = _legacy_elements_to_v2(card.get("elements") or [])
+    return _v2_card(
+        title=title,
+        elements=elements,
+        template=template,
+        config=card.get("config") if isinstance(card.get("config"), dict) else None,
+        card_link=card.get("card_link") if isinstance(card.get("card_link"), dict) else None,
+    )
+
+
+def _legacy_elements_to_v2(elements: list[dict]) -> list[dict]:
+    converted: list[dict] = []
+    for element in elements:
+        tag = element.get("tag")
+        if tag == "div":
+            if "fields" in element:
+                converted.append(element)
+                continue
+            text = element.get("text") if isinstance(element.get("text"), dict) else {}
+            content = str(text.get("content") or "")
+            converted.extend(markdown_to_card_elements(content))
+            continue
+        if tag == "note":
+            converted.extend(markdown_to_card_elements(_legacy_note_text(element)))
+            continue
+        if tag in {"hr", "img", "action"}:
+            converted.append(element)
+            continue
+        converted.append(element)
+    return converted
+
+
+def _legacy_note_text(element: dict) -> str:
+    parts = []
+    for item in element.get("elements") or []:
+        if isinstance(item, dict):
+            parts.append(str(item.get("content") or item.get("text") or ""))
+    content = " · ".join(part for part in parts if part).strip()
+    return content if not content else f"*{content}*"
+
+
+def _normalize_v2_card(card: dict) -> dict:
+    title = str(
+        card.get("title") or card.get("header", {}).get("title", {}).get("content") or "Reveal"
+    )
+    header = card.get("header") if isinstance(card.get("header"), dict) else {}
+    body = card.get("body") if isinstance(card.get("body"), dict) else {}
+    raw_elements_value = body.get("elements")
+    raw_elements = raw_elements_value if isinstance(raw_elements_value, list) else []
+    elements = [element for element in raw_elements if isinstance(element, dict)]
+    return _v2_card(
+        title=title,
+        elements=elements,
+        template=str(header.get("template") or "blue"),
+        config=card.get("config") if isinstance(card.get("config"), dict) else None,
+        card_link=card.get("card_link") if isinstance(card.get("card_link"), dict) else None,
+    )
+
+
+def _v2_card(
+    *,
+    title: str,
+    elements: list[dict],
+    template: str,
+    config: dict | None = None,
+    card_link: dict | None = None,
+) -> dict:
+    payload = {
+        "schema": "2.0",
+        "config": _v2_config(config),
         "header": {
-            "template": "blue",
+            "template": template,
             "title": {"tag": "plain_text", "content": title},
         },
-        "elements": markdown_to_card_elements(text),
+        "body": {"elements": elements},
+    }
+    if card_link:
+        payload["card_link"] = card_link
+    return payload
+
+
+def _v2_config(config: dict | None = None) -> dict:
+    normalized = dict(config or {})
+    normalized.pop("wide_screen_mode", None)
+    normalized["update_multi"] = True
+    return {
+        key: value for key, value in normalized.items() if key in {"enable_forward", "update_multi"}
     }

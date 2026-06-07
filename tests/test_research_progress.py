@@ -60,10 +60,9 @@ class ResearchProgressReporterTest(unittest.IsolatedAsyncioTestCase):
         body = card["elements"]
         rendered = str(body)
 
-        self.assertIn("**结论**", rendered)
-        self.assertNotIn("## 结论", rendered)
-        self.assertIn("• NVDA 继续观察", rendered)
-        self.assertIn("• 留意盘前成交量", rendered)
+        self.assertIn("## 结论", rendered)
+        self.assertIn("- NVDA 继续观察", rendered)
+        self.assertIn("- 留意盘前成交量", rendered)
         self.assertIn("普通段落说明。", rendered)
 
     async def test_result_card_renders_markdown_table(self):
@@ -78,11 +77,11 @@ class ResearchProgressReporterTest(unittest.IsolatedAsyncioTestCase):
 
         rendered = str(card["elements"])
 
-        self.assertIn("fields", rendered)
+        self.assertIn("tag': 'markdown'", rendered)
         self.assertIn("Ticker", rendered)
+        self.assertIn("| --- | --- | --- |", rendered)
         self.assertIn("NVDA", rendered)
         self.assertIn("盘前成交放大", rendered)
-        self.assertNotIn("| --- | --- | --- |", rendered)
 
     async def test_result_card_does_not_replace_long_body_with_truncation_notice(self):
         long_body = "\n\n".join(
@@ -92,7 +91,7 @@ class ResearchProgressReporterTest(unittest.IsolatedAsyncioTestCase):
         card = _result_card(long_body, step_count=9, elapsed_seconds=42.0)
         rendered = str(card["elements"])
 
-        self.assertIn("**第 29 段**", rendered)
+        self.assertIn("## 第 29 段", rendered)
         self.assertIn("这是第 29 段内容。", rendered)
         self.assertNotIn("内容较长，已截断", rendered)
 
