@@ -13,6 +13,7 @@ from server.db.engine import get_session_factory
 from server.db.models import SocialPost, TwitterState
 from server.db.time import utc_now_naive
 from server.social.monitor import (
+    _epoch_or_zero,
     cache_user_tweets,
     check_and_notify,
     fetch_user_tweets,
@@ -87,6 +88,10 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await db_engine.close_db()
         self.tmpdir.cleanup()
+
+    def test_epoch_or_zero_handles_legacy_null_state(self):
+        self.assertEqual(_epoch_or_zero(None), 0)
+        self.assertEqual(_epoch_or_zero(1780818687), 1780818687)
 
     async def test_tweet_analysis_parser_preserves_attention_signal(self):
         analysis = _parse_analysis(

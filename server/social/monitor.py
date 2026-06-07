@@ -243,7 +243,7 @@ async def check_and_notify(
             select(TwitterState).where(TwitterState.username == account_key)
         )
         state = result.scalar_one_or_none()
-        last_epoch = state.last_tweet_epoch if state else 0
+        last_epoch = _epoch_or_zero(state.last_tweet_epoch if state else None)
         first_check = last_epoch <= 0
         last_check_at = state.last_check_at if state else None
 
@@ -360,7 +360,7 @@ async def check_and_notify(
         state = result.scalar_one_or_none()
         next_epoch = last_epoch if push_failed else max_cached_epoch
         if state:
-            state.last_tweet_epoch = max(state.last_tweet_epoch, next_epoch)
+            state.last_tweet_epoch = max(_epoch_or_zero(state.last_tweet_epoch), next_epoch)
             state.last_check_at = utc_now_naive()
             if newest_cached_tweet_id:
                 state.newest_tweet_id = newest_cached_tweet_id
@@ -458,7 +458,9 @@ async def cache_user_tweets(
                 state = TwitterState(username=account_key, is_active=False)
                 session.add(state)
             if newest_cached_epoch:
-                state.last_tweet_epoch = max(state.last_tweet_epoch, newest_cached_epoch)
+                state.last_tweet_epoch = max(
+                    _epoch_or_zero(state.last_tweet_epoch), newest_cached_epoch
+                )
             if newest_cached_tweet_id:
                 state.newest_tweet_id = newest_cached_tweet_id
             if history_cursor := data.get("history_cursor"):
@@ -606,6 +608,10 @@ def _seconds_since(dt: datetime | None) -> float | None:
     if dt is None:
         return None
     return (datetime.now(UTC) - assume_utc(dt)).total_seconds()
+
+
+def _epoch_or_zero(value: int | None) -> int:
+    return value or 0
 
 
 def _normalize_timeline_data(data: dict[str, Any], username: str) -> dict[str, Any]:
