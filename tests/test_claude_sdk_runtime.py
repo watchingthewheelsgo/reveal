@@ -83,7 +83,7 @@ class ClaudeSdkRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(options.strict_mcp_config)
         self.assertIn("reveal", options.mcp_servers)
         self.assertEqual(options.setting_sources, [])
-        self.assertEqual(options.extra_args, {"bare": None})
+        self.assertEqual(options.extra_args, {})
         self.assertEqual(options.effort, "max")
         self.assertEqual(options.resume, "old-session")
         self.assertEqual(options.env["ANTHROPIC_BASE_URL"], "https://api.deepseek.com/anthropic")

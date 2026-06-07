@@ -100,7 +100,8 @@ async def run_agent(
         effort=cast(AgentEffort, settings.agent_effort),
         resume=resume,
         setting_sources=[],
-        extra_args={"bare": None},
+        # Claude Code bare mode omits built-in WebSearch/WebFetch from the tool context.
+        extra_args={},
         system_prompt=(
             "你是 Reveal 美股交易助手的研究代理。\n\n"
             f"{format_agent_tool_catalog()}\n\n"
