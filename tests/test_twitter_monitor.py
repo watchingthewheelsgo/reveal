@@ -13,6 +13,7 @@ from server.db.engine import get_session_factory
 from server.db.models import SocialPost, TwitterState
 from server.db.time import utc_now_naive
 from server.social.monitor import (
+    _build_tweet_card,
     _epoch_or_zero,
     cache_user_tweets,
     check_and_notify,
@@ -321,6 +322,58 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(quoted_post.content, "quoted context")
         self.assertFalse(quoted_post.is_pushed)
         self.assertTrue(post.is_pushed)
+
+    async def test_low_priority_summary_card_stays_compact(self):
+        long_summary = (
+            "该推文作者庆祝粉丝数突破70万，并在过去3天内新增5000名订阅者，"
+            "特别感谢中文社区的支持。同时引用内容显示其已成为X平台订阅数第一的账号，"
+            "超越了埃隆·马斯克。"
+        )
+        post = SocialPost(
+            id=103,
+            username="aleabitoreddit",
+            tweet_id="103",
+            tweet_url="https://x.com/aleabitoreddit/status/103",
+            content=(
+                "哇？我的粉丝数竟然突破70万了……而且在过去的短短3天里，"
+                "我又额外收获了5000名订阅者。\n\n真的非常感谢大家。\n\n"
+                "尤其要特别感谢最近给予我巨大支持的中文社区！ https://t.co/nLLSohl0lN"
+            ),
+            translated_content="译文重复内容，不应该在已有摘要的低优先级卡片中展开。",
+            summary=long_summary,
+            media=[
+                {
+                    "url": "https://pbs.twimg.com/media/fans.jpg",
+                    "type": "image",
+                    "alt_text": "followers",
+                }
+            ],
+            links=["https://t.co/nLLSohl0lN"],
+            referenced_tweets=[
+                {
+                    "type": "quote",
+                    "username": "aleabitoreddit",
+                    "url": "https://x.com/aleabitoreddit/status/102",
+                }
+            ],
+            is_quote=True,
+            posted_at=utc_now_naive(),
+            topics=["社交媒体增长", "粉丝庆祝"],
+            sentiment="bullish",
+            urgency="low",
+        )
+
+        card = await _build_tweet_card(post, DummyAdapter())
+        pushed = "\n".join([card["title"], *card["sections"]])
+
+        self.assertEqual(card["title"], "Twitter Update · @aleabitoreddit (引用)")
+        self.assertIn("消息 ID #103", pushed)
+        self.assertIn("**摘要**", pushed)
+        self.assertIn(long_summary, pushed)
+        self.assertIn("**正文**", pushed)
+        self.assertIn("https://t.co/nLLSohl0lN", pushed)
+        self.assertNotIn("译文重复内容", pushed)
+        self.assertEqual(pushed.count("**媒体**"), 1)
 
     async def test_monitor_can_notify_admin_when_account_has_no_new_updates(self):
         session_factory = get_session_factory()

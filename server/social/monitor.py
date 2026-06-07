@@ -23,6 +23,10 @@ MAX_PUSHED_MEDIA = 4
 INITIAL_WATCH_BACKFILL_LIMIT = 10
 MAX_CARD_IMAGES = 4
 MAX_CARD_REFERENCES = 3
+CARD_SUMMARY_LIMIT = 360
+CARD_BODY_LIMIT = 900
+CARD_BODY_WITH_SUMMARY_LIMIT = 420
+CARD_TRANSLATION_LIMIT = 450
 
 
 async def list_active_twitter_accounts(configured_accounts: list[str] | None = None) -> list[str]:
@@ -938,18 +942,20 @@ async def _build_tweet_card(
         sections.append(alert)
 
     if post.summary:
-        summary = f"**Summary**\n{_trim_text(post.summary, 700)}"
+        summary = f"**摘要**\n{_trim_text(post.summary, CARD_SUMMARY_LIMIT)}"
         elements.extend([{"tag": "hr"}, _md_div(summary)])
         sections.append(summary)
 
-    body = f"**正文**\n{_trim_text(post.content or '（无正文）', 1800)}"
+    body_limit = CARD_BODY_WITH_SUMMARY_LIMIT if post.summary else CARD_BODY_LIMIT
+    body = f"**正文**\n{_trim_text(post.content or '（无正文）', body_limit)}"
     elements.extend([{"tag": "hr"}, _md_div(body)])
     sections.append(body)
 
-    if post.translated_content:
-        translation = (
-            f"**译文**\n{_trim_text(_display_translation_text(post.translated_content), 900)}"
+    if post.translated_content and (not post.summary or post.is_noteworthy):
+        translated = _trim_text(
+            _display_translation_text(post.translated_content), CARD_TRANSLATION_LIMIT
         )
+        translation = f"**译文**\n{translated}"
         elements.extend([{"tag": "hr"}, _md_div(translation)])
         sections.append(translation)
 
@@ -999,8 +1005,7 @@ def _tweet_card_title(post: SocialPost, is_backfill: bool = False) -> str:
     else:
         prefix = "Twitter Backfill" if is_backfill else "Twitter Update"
     flags = _post_type_label(post)
-    summary = _trim_text(post.summary or post.content or "新推文", 52)
-    return f"{prefix} · @{post.username}{flags} · {summary}"
+    return f"{prefix} · @{post.username}{flags}"
 
 
 def _tweet_card_template(post: SocialPost) -> str:
@@ -1017,34 +1022,37 @@ def _tweet_card_template(post: SocialPost) -> str:
 
 def _tweet_metadata_text(post: SocialPost) -> str:
     user_url = f"https://x.com/{post.username}"
-    parts = [
-        f"**用户**: [@{post.username}]({user_url})",
-        f"**时间**: {_time_ago(post.posted_at)}",
-    ]
+    parts = [f"[@{post.username}]({user_url})", _time_ago(post.posted_at)]
     if labels := _post_type_label(post):
-        parts.append(f"**类型**: {labels.strip(' ()')}")
+        parts.append(labels.strip(" ()"))
     if post.id:
-        parts.append(f"**消息 ID**: #{post.id}")
+        parts.append(f"消息 ID #{post.id}")
     if post.tweet_url:
-        parts.append(f"**原文**: [打开]({post.tweet_url})")
+        parts.append(f"[原文]({post.tweet_url})")
+
+    tag_parts: list[str] = []
     if post.mentioned_tickers:
-        parts.append("**Ticker**: " + ", ".join(str(t) for t in post.mentioned_tickers[:8]))
+        tag_parts.append("Ticker: " + ", ".join(str(t) for t in post.mentioned_tickers[:8]))
     if post.topics:
-        parts.append("**Topic**: " + " · ".join(str(t) for t in post.topics[:5]))
+        tag_parts.append("Topic: " + " · ".join(str(t) for t in post.topics[:5]))
     if sentiment := _sentiment_label(post.sentiment):
-        parts.append(f"**情绪**: {sentiment}")
+        tag_parts.append(f"情绪: {sentiment}")
     if post.urgency:
-        parts.append(f"**优先级**: {post.urgency}")
+        tag_parts.append(f"优先级: {post.urgency}")
     if post.is_noteworthy:
-        parts.append("**标记**: 重点关注")
-    return "\n".join(parts)
+        tag_parts.append("标记: 重点关注")
+
+    lines = [" · ".join(parts)]
+    if tag_parts:
+        lines.append(" · ".join(tag_parts))
+    return "\n".join(lines)
 
 
 async def _tweet_media_card_elements(
     media: list[dict[str, Any]],
     adapter: BotAdapter,
 ) -> tuple[list[dict[str, Any]], str]:
-    elements: list[dict[str, Any]] = [_md_div("**媒体**")]
+    elements: list[dict[str, Any]] = []
     section_lines = ["**媒体**"]
     image_count = 0
     image_total = 0
@@ -1076,16 +1084,21 @@ async def _tweet_media_card_elements(
         if is_video:
             video_lines.append(f"- 视频: [{_display_url(display_url)}]({display_url})")
 
+    element_lines: list[str] = []
     if image_count:
-        section_lines.append(f"- {image_count} 张图片已展示")
+        element_lines.append(f"{image_count} 张图片已展示")
     elif image_total:
-        section_lines.append(f"- {image_total} 张图片已缓存")
+        element_lines.append(f"{image_total} 张图片已缓存")
+    section_lines.extend(f"- {line}" for line in element_lines)
     section_lines.extend(video_lines)
 
     if len(media) > MAX_PUSHED_MEDIA:
         section_lines.append(f"- 还有 {len(media) - MAX_PUSHED_MEDIA} 个媒体已缓存")
+        element_lines.append(f"还有 {len(media) - MAX_PUSHED_MEDIA} 个媒体已缓存")
     if len(section_lines) > 1:
-        elements.append(_md_div("\n".join(section_lines)))
+        compact_lines = [f"- {line}" for line in element_lines]
+        compact_lines.extend(video_lines)
+        elements.append(_md_div("**媒体**\n" + "\n".join(compact_lines)))
     return elements, "\n".join(section_lines)
 
 
