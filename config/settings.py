@@ -169,7 +169,7 @@ class Settings(BaseSettings):
     # Claude Agent SDK runtime backed by DeepSeek's Anthropic-compatible API.
     agent_runtime: str = Field(default="claude_sdk", alias="AGENT_RUNTIME")
     agent_effort: str = Field(default="max", alias="AGENT_EFFORT")
-    agent_max_turns: int = Field(default=8, alias="AGENT_MAX_TURNS")
+    agent_max_turns: int = Field(default=20, alias="AGENT_MAX_TURNS")
 
     # Native Claude Code / Agent SDK environment names.
     anthropic_base_url: str = Field(

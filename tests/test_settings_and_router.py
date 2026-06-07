@@ -87,11 +87,12 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(settings.scheduler_timezone, "America/New_York")
 
     def test_agent_runtime_defaults_to_claude_sdk(self):
-        settings = self.build_settings()
+        with patch.dict(os.environ, {}, clear=True):
+            settings = self.build_settings()
 
         self.assertEqual(settings.agent_runtime, "claude_sdk")
         self.assertEqual(settings.agent_effort, "max")
-        self.assertEqual(settings.agent_max_turns, 8)
+        self.assertEqual(settings.agent_max_turns, 20)
         self.assertEqual(settings.get_agent_base_url(), "https://api.deepseek.com/anthropic")
         self.assertEqual(settings.get_agent_model(), "deepseek-v4-pro[1m]")
 

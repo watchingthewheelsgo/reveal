@@ -1,7 +1,13 @@
 import unittest
 from unittest.mock import patch
 
-from claude_agent_sdk import ResultMessage, SystemMessage
+from claude_agent_sdk import (
+    AssistantMessage,
+    ResultMessage,
+    SystemMessage,
+    TextBlock,
+    ToolResultBlock,
+)
 
 from config import settings as settings_module
 from server.research.claude_sdk_runtime import (
@@ -16,6 +22,7 @@ class ClaudeSdkRuntimeTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.original_openai_api_key = settings_module.global_settings.openai_api_key
         self.original_agent_effort = settings_module.global_settings.agent_effort
+        self.original_agent_max_turns = settings_module.global_settings.agent_max_turns
         self.original_anthropic_base_url = settings_module.global_settings.anthropic_base_url
         self.original_anthropic_auth_token = settings_module.global_settings.anthropic_auth_token
         self.original_anthropic_model = settings_module.global_settings.anthropic_model
@@ -24,6 +31,7 @@ class ClaudeSdkRuntimeTest(unittest.IsolatedAsyncioTestCase):
         )
         settings_module.global_settings.openai_api_key = "deepseek-key"
         settings_module.global_settings.agent_effort = "max"
+        settings_module.global_settings.agent_max_turns = 20
         settings_module.global_settings.anthropic_base_url = "https://api.deepseek.com/anthropic"
         settings_module.global_settings.anthropic_auth_token = ""
         settings_module.global_settings.anthropic_model = "deepseek-v4-pro[1m]"
@@ -32,6 +40,7 @@ class ClaudeSdkRuntimeTest(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         settings_module.global_settings.openai_api_key = self.original_openai_api_key
         settings_module.global_settings.agent_effort = self.original_agent_effort
+        settings_module.global_settings.agent_max_turns = self.original_agent_max_turns
         settings_module.global_settings.anthropic_base_url = self.original_anthropic_base_url
         settings_module.global_settings.anthropic_auth_token = self.original_anthropic_auth_token
         settings_module.global_settings.anthropic_model = self.original_anthropic_model
@@ -105,6 +114,7 @@ class ClaudeSdkRuntimeTest(unittest.IsolatedAsyncioTestCase):
 
         options = captured["options"]
         self.assertEqual(options.model, "native-model")
+        self.assertEqual(options.max_turns, 20)
         self.assertEqual(options.env["ANTHROPIC_BASE_URL"], "https://example.com/anthropic")
         self.assertEqual(options.env["ANTHROPIC_AUTH_TOKEN"], "native-token")
         self.assertEqual(options.env["ANTHROPIC_MODEL"], "native-model")
@@ -136,6 +146,63 @@ class ClaudeSdkRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 await run_agent("research this")
 
         self.assertIn("认证失败", ctx.exception.user_message)
+
+    async def test_run_agent_returns_partial_answer_when_max_turns_reached(self):
+        async def fake_query(prompt, options):
+            yield SystemMessage(subtype="init", data={"session_id": "init-session"})
+            yield AssistantMessage(
+                content=[TextBlock(text="已找到 SEC 文件和价格异动线索。")],
+                model="test-model",
+            )
+            yield AssistantMessage(
+                content=[TextBlock(text="当前证据指向盘前消息驱动。")],
+                model="test-model",
+            )
+            yield ResultMessage(
+                subtype="error",
+                duration_ms=1,
+                duration_api_ms=1,
+                is_error=True,
+                num_turns=20,
+                session_id="result-session",
+                result="Claude Code returned an error result: Reached maximum number of turns (20)",
+            )
+
+        with patch("server.research.claude_sdk_runtime.query", new=fake_query):
+            result = await run_agent("research this")
+
+        self.assertEqual(result.agent_session_id, "result-session")
+        self.assertIn("阶段性总结", result.answer)
+        self.assertIn("已找到 SEC 文件和价格异动线索", result.answer)
+        self.assertIn("当前证据指向盘前消息驱动", result.answer)
+
+    async def test_run_agent_summarizes_tool_observations_when_max_turns_reached(self):
+        async def fake_query(prompt, options):
+            yield AssistantMessage(
+                content=[
+                    ToolResultBlock(
+                        tool_use_id="tool-1",
+                        content="NVDA 盘前上涨 6.2%，SEC 8-K 显示新增重大客户合同。",
+                    )
+                ],
+                model="test-model",
+            )
+            yield ResultMessage(
+                subtype="error",
+                duration_ms=1,
+                duration_api_ms=1,
+                is_error=True,
+                num_turns=20,
+                session_id="result-session",
+                result="Reached maximum number of turns (20)",
+            )
+
+        with patch("server.research.claude_sdk_runtime.query", new=fake_query):
+            result = await run_agent("research this")
+
+        self.assertIn("阶段性总结", result.answer)
+        self.assertIn("已获取的信息片段", result.answer)
+        self.assertIn("NVDA 盘前上涨 6.2%", result.answer)
 
     async def test_run_agent_rejects_bracket_pseudo_reveal_tool_text(self):
         calls = 0

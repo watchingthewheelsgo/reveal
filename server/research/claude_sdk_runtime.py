@@ -1,5 +1,6 @@
 """Claude Agent SDK runtime configured for DeepSeek's Anthropic-compatible API."""
 
+import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,7 +14,9 @@ from claude_agent_sdk import (
     CLINotFoundError,
     ProcessError,
     ResultMessage,
+    ServerToolResultBlock,
     SystemMessage,
+    ToolResultBlock,
     ToolUseBlock,
     query,
 )
@@ -113,6 +116,7 @@ async def run_agent(
     )
 
     answer_parts: list[str] = []
+    observation_parts: list[str] = []
     agent_session_id = resume
     result_answer: str | None = None
     result_error: str | None = None
@@ -148,6 +152,9 @@ async def run_agent(
                     text = getattr(block, "text", None)
                     if text:
                         answer_parts.append(str(text))
+                    observation = _tool_result_observation(block)
+                    if observation:
+                        observation_parts.append(observation)
             elif isinstance(message, ResultMessage):
                 if message.session_id:
                     agent_session_id = message.session_id
@@ -168,6 +175,18 @@ async def run_agent(
         raise AgentRuntimeError(str(exc), _user_message_for_exception(exc)) from exc
 
     if result_error:
+        if _is_max_turns_error(result_error):
+            partial_answer = _partial_answer_from_max_turns(
+                answer_parts, observation_parts, tool_use_count
+            )
+            logger.warning(
+                "Research agent max turns reached; returning partial answer: "
+                "session_id={} answer_chars={} tool_uses={}",
+                agent_session_id or "-",
+                len(partial_answer),
+                tool_use_count,
+            )
+            return AgentRunResult(answer=partial_answer, agent_session_id=agent_session_id)
         logger.error("Research agent result error: {}", result_error)
         raise AgentRuntimeError(result_error, _user_message_for_text(result_error))
 
@@ -222,8 +241,67 @@ def _format_tool_progress(block: ToolUseBlock) -> str:
     return f"工具: {name}"
 
 
+def _tool_result_observation(block: object) -> str:
+    if isinstance(block, ToolResultBlock):
+        if block.is_error:
+            return ""
+        return _stringify_tool_result_content(block.content)
+    if isinstance(block, ServerToolResultBlock):
+        return _stringify_tool_result_content(block.content)
+    return ""
+
+
+def _stringify_tool_result_content(content: object) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return _clip_partial_context(content.strip())
+    try:
+        text = json.dumps(content, ensure_ascii=False, default=str)
+    except TypeError:
+        text = str(content)
+    return _clip_partial_context(text.strip())
+
+
+def _clip_partial_context(text: str, limit: int = 800) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
+
+
 def _user_message_for_exception(exc: BaseException) -> str:
     return _user_message_for_text(str(exc))
+
+
+def _is_max_turns_error(text: str) -> bool:
+    normalized = text.lower()
+    return (
+        "maximum number of turns" in normalized
+        or "max turns" in normalized
+        or "reached maximum turns" in normalized
+    )
+
+
+def _partial_answer_from_max_turns(
+    answer_parts: list[str],
+    observation_parts: list[str],
+    tool_use_count: int,
+) -> str:
+    answer = "\n".join(part.strip() for part in answer_parts if part.strip()).strip()
+    if not answer and observation_parts:
+        snippets = "\n\n".join(
+            f"- {_clip_partial_context(part, 500)}"
+            for part in observation_parts[-6:]
+            if part.strip()
+        )
+        answer = f"已获取的信息片段：\n{snippets}".strip()
+    if not answer:
+        answer = "本次运行已执行若干步骤，但没有收到可直接整理的文本结果。"
+    return (
+        f"阶段性总结：研究 Agent 已达到本次最大轮数限制，"
+        f"下面是基于已获取信息整理的当前结论。\n\n{answer}\n\n"
+        f"已执行工具步骤：{tool_use_count}。如需继续，可以在这条结果下继续追问。"
+    )
 
 
 def _user_message_for_text(text: str) -> str:
