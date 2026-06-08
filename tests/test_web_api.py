@@ -5,8 +5,8 @@ from pathlib import Path
 
 from server.db import engine as db_engine
 from server.db.engine import get_session_factory
-from server.db.models import ResearchSession, SocialPost
-from server.web import get_post, list_posts
+from server.db.models import JobRun, ResearchSession, SocialPost
+from server.web import get_post, list_events, list_posts, list_system_jobs, list_system_modules
 
 
 class WebApiTest(unittest.IsolatedAsyncioTestCase):
@@ -70,6 +70,32 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(detail_payload["post"]["tweet_url"], "https://x.com/alice/status/200")
         self.assertEqual(detail_payload["post"]["links"], ["https://example.com/report"])
         self.assertEqual(detail_payload["research_sessions"][0]["answer"], "Research answer")
+
+        events_payload = await list_events(limit=80, source_type=None, ticker=None, q=None)
+        self.assertEqual(events_payload["count"], 1)
+        self.assertEqual(events_payload["events"][0]["source_type"], "twitter")
+        self.assertTrue(events_payload["events"][0]["has_research"])
+
+    async def test_system_modules_and_jobs_api(self):
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            session.add(
+                JobRun(
+                    job_id="twitter_monitor",
+                    module_id="twitter_monitor",
+                    status="succeeded",
+                    summary="ok",
+                    metrics={"count": 1},
+                )
+            )
+            await session.commit()
+
+        modules = await list_system_modules()
+        jobs = await list_system_jobs(limit=20, job_id=None)
+
+        self.assertIn("data_sources", modules)
+        self.assertIn("system_modules", modules)
+        self.assertEqual(jobs["jobs"][0]["job_id"], "twitter_monitor")
 
 
 if __name__ == "__main__":

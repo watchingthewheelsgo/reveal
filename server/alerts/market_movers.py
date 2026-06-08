@@ -33,7 +33,42 @@ async def run_market_mover_alert_cycle(adapter=None) -> list[dict[str, Any]]:
     pushed = new_events[: settings.longbridge_movers_push_limit]
     if adapter:
         for event in pushed:
-            await adapter.push_to_admin(format_market_mover_alert(event))
+            from server.delivery.service import send_alert_to_admin
+            from server.events.types import AlertCandidate
+            from server.interactions.threading import get_or_create_thread_for_source
+            from server.stock.watchlist import platform_for_adapter
+
+            platform = platform_for_adapter(adapter)
+            source_id = event.get("db_id")
+
+            async def thread_for_chat(chat_id: str) -> int | None:
+                if not isinstance(source_id, int):
+                    return None
+                thread = await get_or_create_thread_for_source(
+                    chat_id=chat_id,
+                    platform=platform,
+                    source_type="market_mover",
+                    source_id=source_id,
+                    source_key=str(event.get("event_id") or ""),
+                )
+                return thread.id
+
+            await send_alert_to_admin(
+                adapter,
+                AlertCandidate(
+                    event_key=f"market_mover:{event.get('event_id')}",
+                    event_type="market_mover",
+                    source_id=source_id,
+                    title=f"{event.get('ticker')} {event.get('event_type')}",
+                    summary=str(event.get("change_text") or event.get("detail") or ""),
+                    severity="warning",
+                    payload=event,
+                ),
+                text=format_market_mover_alert(event),
+                platform=platform,
+                thread_factory=thread_for_chat,
+                reason="longbridge market mover",
+            )
 
     if len(new_events) > len(pushed) and adapter:
         await adapter.push_to_admin(
@@ -102,6 +137,8 @@ async def persist_new_market_mover_events(
                 pushed_at=now if mark_pushed else None,
             )
             session.add(row)
+            await session.flush()
+            event["db_id"] = row.id
             new_events.append(event)
         await session.commit()
     return new_events

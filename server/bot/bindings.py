@@ -11,6 +11,10 @@ async def bind_message_to_source(
     message_id: str | None,
     source_type: str,
     source_id: int | None,
+    *,
+    platform: str | None = None,
+    thread_id: int | None = None,
+    role: str | None = None,
 ) -> None:
     if not chat_id or not message_id or source_id is None:
         return
@@ -27,6 +31,12 @@ async def bind_message_to_source(
         if existing:
             existing.source_type = source_type
             existing.source_id = source_id
+            if platform is not None:
+                existing.platform = platform
+            if thread_id is not None:
+                existing.thread_id = thread_id
+            if role is not None:
+                existing.role = role
         else:
             session.add(
                 BotMessageBinding(
@@ -34,6 +44,9 @@ async def bind_message_to_source(
                     message_id=message_id,
                     source_type=source_type,
                     source_id=source_id,
+                    platform=platform,
+                    thread_id=thread_id,
+                    role=role,
                 )
             )
         await session.commit()

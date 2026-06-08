@@ -1,9 +1,9 @@
 const state = {
-  posts: [],
-  selectedPost: null,
+  events: [],
+  selectedEvent: null,
   selectedDetail: null,
   query: "",
-  account: "",
+  source: "",
   busy: false,
 };
 
@@ -30,32 +30,32 @@ const elements = {
 };
 
 window.addEventListener("DOMContentLoaded", () => {
-  elements.refreshButton.addEventListener("click", () => loadPosts());
+  elements.refreshButton.addEventListener("click", () => loadEvents());
   elements.searchInput.addEventListener("input", debounce(handleSearch, 260));
   elements.accountFilter.addEventListener("change", () => {
-    state.account = elements.accountFilter.value;
-    loadPosts();
+    state.source = elements.accountFilter.value;
+    loadEvents();
   });
   elements.deepButton.addEventListener("click", runDeepResearch);
   elements.askButton.addEventListener("click", askFollowUp);
-  loadPosts();
+  loadEvents();
 });
 
-async function loadPosts() {
+async function loadEvents() {
   setSync("syncing");
   const params = new URLSearchParams({ limit: "120" });
-  if (state.account) params.set("username", state.account);
+  if (state.source) params.set("source_type", state.source);
   if (state.query) params.set("q", state.query);
 
   try {
-    const payload = await api(`/api/posts?${params.toString()}`);
-    state.posts = payload.posts || [];
-    renderAccountFilter();
-    renderPostList();
+    const payload = await api(`/api/events?${params.toString()}`);
+    state.events = payload.events || [];
+    renderSourceFilter();
+    renderEventList();
     renderStats();
     setSync("ready");
-    if (!state.selectedPost && state.posts.length > 0) {
-      selectPost(state.posts[0].id);
+    if (!state.selectedEvent && state.events.length > 0) {
+      selectEvent(state.events[0].source_type, state.events[0].source_id);
     }
   } catch (error) {
     setSync("error");
@@ -65,66 +65,69 @@ async function loadPosts() {
 
 function handleSearch() {
   state.query = elements.searchInput.value.trim();
-  loadPosts();
+  loadEvents();
 }
 
-function renderAccountFilter() {
+function renderSourceFilter() {
   const current = elements.accountFilter.value;
-  const accounts = Array.from(new Set(state.posts.map((post) => post.username))).sort();
-  elements.accountFilter.innerHTML = `<option value="">All accounts</option>`;
-  for (const account of accounts) {
+  const sources = Array.from(new Set(state.events.map((event) => event.source_type))).sort();
+  elements.accountFilter.innerHTML = `<option value="">All sources</option>`;
+  for (const source of sources) {
     const option = document.createElement("option");
-    option.value = account;
-    option.textContent = `@${account}`;
+    option.value = source;
+    option.textContent = sourceLabel(source);
     elements.accountFilter.append(option);
   }
-  elements.accountFilter.value = accounts.includes(current) ? current : state.account;
+  elements.accountFilter.value = sources.includes(current) ? current : state.source;
 }
 
 function renderStats() {
-  elements.postCount.textContent = String(state.posts.length);
-  const active = state.posts.filter((post) => post.research?.status === "active").length;
+  elements.postCount.textContent = String(state.events.length);
+  const active = state.events.filter((event) => event.has_research).length;
   elements.activeResearchCount.textContent = String(active);
 }
 
-function renderPostList() {
-  if (state.posts.length === 0) {
-    elements.postList.innerHTML = `<div class="empty-state">No updates in this view.</div>`;
+function renderEventList() {
+  if (state.events.length === 0) {
+    elements.postList.innerHTML = `<div class="empty-state">No events in this view.</div>`;
     return;
   }
   elements.postList.innerHTML = "";
-  for (const post of state.posts) {
+  for (const event of state.events) {
     const item = document.createElement("button");
     item.type = "button";
-    item.className = `post-item ${state.selectedPost?.id === post.id ? "active" : ""}`;
-    item.addEventListener("click", () => selectPost(post.id));
+    item.className = `post-item ${state.selectedEvent?.id === event.id ? "active" : ""}`;
+    item.addEventListener("click", () => selectEvent(event.source_type, event.source_id));
     item.innerHTML = `
       <div class="post-topline">
-        <span>@${escapeHtml(post.username)} · ${relativeTime(post.posted_at)}</span>
-        <span>#${post.id}</span>
+        <span>${escapeHtml(sourceLabel(event.source_type))} · ${relativeTime(event.occurred_at || event.created_at)}</span>
+        <span>${escapeHtml(event.id)}</span>
       </div>
-      <p class="post-preview">${escapeHtml(post.preview || "（无正文）")}</p>
+      <p class="post-preview">${escapeHtml(event.summary || event.title || "（无正文）")}</p>
       <div class="post-metrics">
-        ${metricChip(`${post.link_count} links`)}
-        ${metricChip(`${post.media_count} media`)}
-        ${metricChip(`${post.reference_count} refs`)}
-        ${post.research ? metricChip("research", "hot") : ""}
+        ${metricChip(event.priority || "info", priorityClass(event.priority))}
+        ${event.sentiment && event.sentiment !== "unknown" ? metricChip(event.sentiment) : ""}
+        ${event.tickers?.map((ticker) => metricChip(ticker, "hot")).join("") || ""}
+        ${event.has_research ? metricChip("research", "hot") : ""}
+        ${event.delivery_status && event.delivery_status !== "none" ? metricChip(event.delivery_status) : ""}
       </div>
     `;
     elements.postList.append(item);
   }
 }
 
-async function selectPost(postId) {
-  const summary = state.posts.find((post) => post.id === postId);
-  state.selectedPost = summary || null;
-  renderPostList();
+async function selectEvent(sourceType, sourceId) {
+  const summary = state.events.find(
+    (event) => event.source_type === sourceType && String(event.source_id) === String(sourceId),
+  );
+  state.selectedEvent = summary || null;
+  renderEventList();
   setAgentStatus("loading");
   try {
-    const detail = await api(`/api/posts/${postId}`);
+    const detail = await api(`/api/events/${sourceType}/${sourceId}`);
     state.selectedDetail = detail;
-    state.selectedPost = detail.post;
-    renderDetail(detail);
+    state.selectedEvent = detail.event;
+    renderEventDetail(detail);
     setAgentStatus("ready");
   } catch (error) {
     setAgentStatus("error");
@@ -132,29 +135,48 @@ async function selectPost(postId) {
   }
 }
 
-function renderDetail(detail) {
-  const post = detail.post;
-  const latestResearch = detail.research_sessions?.[0];
-  elements.detailEyebrow.textContent = `@${post.username} · ${relativeTime(post.posted_at)} · #${post.id}`;
-  elements.detailTitle.textContent = compact(post.preview || post.content || "Untitled", 120);
+function renderEventDetail(detail) {
+  const event = detail.event;
+  const record = detail.record || {};
+  elements.detailEyebrow.textContent = `${sourceLabel(event.source_type)} · ${relativeTime(event.occurred_at || event.created_at)} · ${event.id}`;
+  elements.detailTitle.textContent = compact(event.title || event.summary || "Untitled", 120);
   elements.detailMeta.textContent = [
-    `${post.link_count} links`,
-    `${post.media_count} media`,
-    `${post.reference_count} refs`,
-  ].join(" / ");
+    event.priority || "info",
+    event.delivery_status || "none",
+    event.thread_id ? `thread #${event.thread_id}` : "",
+  ]
+    .filter(Boolean)
+    .join(" / ");
 
-  if (post.tweet_url) {
-    elements.originalLink.href = post.tweet_url;
+  if (event.url) {
+    elements.originalLink.href = event.url;
     elements.originalLink.classList.remove("hidden");
   } else {
     elements.originalLink.classList.add("hidden");
   }
 
   elements.postDetail.classList.remove("empty");
-  elements.postDetail.innerHTML = `
+  elements.postDetail.innerHTML =
+    event.source_type === "twitter"
+      ? renderTwitterRecord(event, record)
+      : renderGenericRecord(event, record);
+
+  elements.deepButton.disabled = event.source_type !== "twitter";
+  elements.askButton.disabled = event.source_type !== "twitter";
+  if (event.has_research || event.thread_id) {
+    loadEventResearch(event);
+  } else {
+    elements.answerOutput.textContent = "No research yet.";
+    elements.answerSession.textContent = "-";
+  }
+}
+
+function renderTwitterRecord(event, post) {
+  return `
     <div class="detail-chips">
-      ${post.labels.map((label) => metricChip(label, "hot")).join("")}
-      ${latestResearch ? metricChip(`research ${latestResearch.status}`, "hot") : ""}
+      ${metricChip(event.priority || "info", priorityClass(event.priority))}
+      ${event.tickers?.map((ticker) => metricChip(ticker, "hot")).join("") || ""}
+      ${event.has_research ? metricChip("research", "hot") : ""}
     </div>
     <div class="post-body">${escapeHtml(post.content || "（无正文）")}</div>
     ${post.translated_content ? resourceCard("Translation", escapeHtml(post.translated_content)) : ""}
@@ -163,12 +185,35 @@ function renderDetail(detail) {
     ${renderMedia(post.media)}
     ${renderReferences(post.referenced_tweets)}
   `;
+}
 
-  if (latestResearch?.answer) {
-    elements.answerOutput.textContent = latestResearch.answer;
-    elements.answerSession.textContent = `#${latestResearch.id}`;
-  } else {
+function renderGenericRecord(event, record) {
+  return `
+    <div class="detail-chips">
+      ${metricChip(sourceLabel(event.source_type), "hot")}
+      ${metricChip(event.priority || "info", priorityClass(event.priority))}
+      ${event.tickers?.map((ticker) => metricChip(ticker, "hot")).join("") || ""}
+      ${event.delivery_status && event.delivery_status !== "none" ? metricChip(event.delivery_status) : ""}
+    </div>
+    <div class="post-body">${escapeHtml(event.summary || event.body || "（无正文）")}</div>
+    ${event.body ? resourceCard("Detail", escapeHtml(event.body)) : ""}
+    ${resourceCard("Record", `<pre>${escapeHtml(JSON.stringify(record, null, 2))}</pre>`)}
+  `;
+}
+
+async function loadEventResearch(event) {
+  try {
+    if (event.thread_id) {
+      const payload = await api(`/api/threads/${event.thread_id}`);
+      const research = payload.research;
+      elements.answerOutput.textContent = research?.answer || "No research answer yet.";
+      elements.answerSession.textContent = research?.id ? `#${research.id}` : "-";
+      return;
+    }
     elements.answerOutput.textContent = "No research yet.";
+    elements.answerSession.textContent = "-";
+  } catch (error) {
+    elements.answerOutput.textContent = error.message;
     elements.answerSession.textContent = "-";
   }
 }
@@ -210,16 +255,16 @@ function renderReferences(references = []) {
 }
 
 async function runDeepResearch() {
-  if (!state.selectedPost || state.busy) return;
+  if (!state.selectedEvent || state.selectedEvent.source_type !== "twitter" || state.busy) return;
   setBusy(true, "researching");
   try {
-    const payload = await api(`/api/posts/${state.selectedPost.id}/deep`, {
+    const payload = await api(`/api/posts/${state.selectedEvent.source_id}/deep`, {
       method: "POST",
       body: JSON.stringify({ focus: elements.focusInput.value.trim() }),
     });
     elements.answerOutput.textContent = payload.answer;
     elements.answerSession.textContent = `#${payload.session_id}`;
-    await selectPost(state.selectedPost.id);
+    await selectEvent(state.selectedEvent.source_type, state.selectedEvent.source_id);
   } catch (error) {
     elements.answerOutput.textContent = error.message;
   } finally {
@@ -228,7 +273,7 @@ async function runDeepResearch() {
 }
 
 async function askFollowUp() {
-  if (!state.selectedPost || state.busy) return;
+  if (!state.selectedEvent || state.selectedEvent.source_type !== "twitter" || state.busy) return;
   const question = elements.questionInput.value.trim();
   if (!question) {
     elements.answerOutput.textContent = "Question is required.";
@@ -236,13 +281,13 @@ async function askFollowUp() {
   }
   setBusy(true, "asking");
   try {
-    const payload = await api(`/api/posts/${state.selectedPost.id}/ask`, {
+    const payload = await api(`/api/posts/${state.selectedEvent.source_id}/ask`, {
       method: "POST",
       body: JSON.stringify({ question }),
     });
     elements.answerOutput.textContent = payload.answer;
     elements.questionInput.value = "";
-    await selectPost(state.selectedPost.id);
+    await selectEvent(state.selectedEvent.source_type, state.selectedEvent.source_id);
   } catch (error) {
     elements.answerOutput.textContent = error.message;
   } finally {
@@ -279,6 +324,22 @@ function setSync(value) {
 
 function metricChip(text, modifier = "") {
   return `<span class="chip ${modifier}">${escapeHtml(text)}</span>`;
+}
+
+function sourceLabel(sourceType) {
+  return {
+    twitter: "Twitter/X",
+    regulatory: "SEC/FDA",
+    market_mover: "Market mover",
+    stock_watch: "Stock watch",
+    price: "Price alert",
+    volume: "Volume alert",
+    news: "News alert",
+  }[sourceType] || sourceType || "Event";
+}
+
+function priorityClass(priority) {
+  return priority === "critical" || priority === "warning" ? "hot" : "";
 }
 
 function resourceCard(title, body) {

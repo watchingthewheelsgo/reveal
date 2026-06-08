@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Reveal Research Desk</title>
+    <title>Reveal Workbench</title>
     <link rel="stylesheet" href="/static/app.css" />
   </head>
   <body>
@@ -13,7 +13,7 @@
           <div class="brand-mark">R</div>
           <div>
             <h1>Reveal</h1>
-            <p>Research Desk</p>
+            <p>Workbench</p>
           </div>
         </div>
 
@@ -23,9 +23,9 @@
             <input id="searchInput" type="search" placeholder="keyword, ticker, theme" />
           </label>
           <label class="field">
-            <span>Account</span>
+            <span>Source</span>
             <select id="accountFilter">
-              <option value="">All accounts</option>
+              <option value="">All sources</option>
             </select>
           </label>
           <button id="refreshButton" class="button primary" type="button">Refresh</button>
@@ -34,7 +34,7 @@
         <section class="stats" aria-label="workspace stats">
           <div>
             <span id="postCount">0</span>
-            <small>updates</small>
+            <small>events</small>
           </div>
           <div>
             <span id="activeResearchCount">0</span>
@@ -54,10 +54,10 @@
       <section class="workspace">
         <header class="workspace-header">
           <div>
-            <p id="detailEyebrow" class="eyebrow">No update selected</p>
-            <h2 id="detailTitle">Select a Twitter/X update</h2>
+            <p id="detailEyebrow" class="eyebrow">No event selected</p>
+            <h2 id="detailTitle">Select a market event</h2>
           </div>
-          <a id="originalLink" class="button ghost hidden" target="_blank" rel="noreferrer">Open X</a>
+          <a id="originalLink" class="button ghost hidden" target="_blank" rel="noreferrer">Open</a>
         </header>
 
         <div class="workspace-grid">
@@ -67,7 +67,7 @@
               <span id="detailMeta">-</span>
             </div>
             <article id="postDetail" class="post-detail empty">
-              <p>Pick an item from the inbox.</p>
+              <p>Pick an event from the inbox.</p>
             </article>
           </section>
 

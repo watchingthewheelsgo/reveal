@@ -563,11 +563,113 @@ async def handle_plain_message(ctx: BotContext, adapter):
 
 async def _route_bound_reply(ctx: BotContext, adapter, text: str) -> bool:
     from server.bot.bindings import resolve_message_binding
+    from server.interactions.threading import (
+        attach_research_session,
+        bind_message_to_thread,
+        get_or_create_thread_for_source,
+        resolve_thread_by_message,
+    )
+    from server.stock.watchlist import platform_for_adapter
+
+    platform = platform_for_adapter(adapter)
+    try:
+        thread = await resolve_thread_by_message(ctx.chat_id, ctx.reply_to_message_id)
+    except RuntimeError:
+        thread = None
+    if thread is not None:
+        if thread.research_session_id:
+            await bind_message_to_thread(
+                chat_id=ctx.chat_id,
+                message_id=ctx.message_id,
+                thread_id=thread.id,
+                platform=platform,
+                role="user_reply",
+                source_type=thread.source_type,
+                source_id=thread.source_id,
+            )
+            _spawn_background_task(
+                _run_topic_message_job(
+                    ctx.chat_id,
+                    text,
+                    adapter,
+                    ctx.reply_to_message_id,
+                    thread.research_session_id,
+                    thread.id,
+                ),
+                "thread topic message",
+            )
+            return True
+
+        if thread.source_type:
+            try:
+                from server.research.service import get_or_start_topic_for_event_thread
+
+                topic = await get_or_start_topic_for_event_thread(
+                    ctx.chat_id,
+                    thread.source_type,
+                    thread.source_id,
+                    thread.id,
+                    "",
+                )
+                await attach_research_session(thread.id, topic.id)
+                await bind_message_to_thread(
+                    chat_id=ctx.chat_id,
+                    message_id=ctx.message_id,
+                    thread_id=thread.id,
+                    platform=platform,
+                    role="user_reply",
+                    source_type=thread.source_type,
+                    source_id=thread.source_id,
+                )
+                _spawn_background_task(
+                    _run_topic_message_job(
+                        ctx.chat_id,
+                        text,
+                        adapter,
+                        ctx.reply_to_message_id,
+                        topic.id,
+                        thread.id,
+                    ),
+                    "thread source message",
+                )
+                return True
+            except ResearchError as e:
+                await adapter.send_message(ctx.chat_id, f"❌ {e}")
+                return True
 
     binding = await resolve_message_binding(ctx.chat_id, ctx.reply_to_message_id)
     if binding is None:
         return False
     if binding.source_type == "research_session":
+        try:
+            thread = await get_or_create_thread_for_source(
+                chat_id=ctx.chat_id,
+                platform=platform,
+                source_type="agent",
+                source_id=binding.source_id,
+                root_message_id=ctx.reply_to_message_id,
+                research_session_id=binding.source_id,
+            )
+            await bind_message_to_thread(
+                chat_id=ctx.chat_id,
+                message_id=ctx.reply_to_message_id,
+                thread_id=thread.id,
+                platform=platform,
+                role="root",
+                source_type="research_session",
+                source_id=binding.source_id,
+            )
+            await bind_message_to_thread(
+                chat_id=ctx.chat_id,
+                message_id=ctx.message_id,
+                thread_id=thread.id,
+                platform=platform,
+                role="user_reply",
+                source_type="research_session",
+                source_id=binding.source_id,
+            )
+        except RuntimeError:
+            thread = None
         _spawn_background_task(
             _run_topic_message_job(
                 ctx.chat_id,
@@ -575,17 +677,49 @@ async def _route_bound_reply(ctx: BotContext, adapter, text: str) -> bool:
                 adapter,
                 ctx.reply_to_message_id,
                 binding.source_id,
+                thread.id if thread else None,
             ),
             "bound agent session message",
         )
         return True
-    if binding.source_type != "twitter":
-        return False
-
     try:
-        from server.research.service import get_or_start_topic_for_post
+        from server.research.service import get_or_start_topic_for_event
 
-        topic = await get_or_start_topic_for_post(ctx.chat_id, str(binding.source_id), "")
+        topic = await get_or_start_topic_for_event(
+            ctx.chat_id,
+            binding.source_type,
+            binding.source_id,
+            "",
+        )
+        try:
+            thread = await get_or_create_thread_for_source(
+                chat_id=ctx.chat_id,
+                platform=platform,
+                source_type=binding.source_type,
+                source_id=binding.source_id,
+                root_message_id=ctx.reply_to_message_id,
+                research_session_id=topic.id,
+            )
+            await bind_message_to_thread(
+                chat_id=ctx.chat_id,
+                message_id=ctx.reply_to_message_id,
+                thread_id=thread.id,
+                platform=platform,
+                role="root",
+                source_type=binding.source_type,
+                source_id=binding.source_id,
+            )
+            await bind_message_to_thread(
+                chat_id=ctx.chat_id,
+                message_id=ctx.message_id,
+                thread_id=thread.id,
+                platform=platform,
+                role="user_reply",
+                source_type=binding.source_type,
+                source_id=binding.source_id,
+            )
+        except RuntimeError:
+            thread = None
         _spawn_background_task(
             _run_topic_message_job(
                 ctx.chat_id,
@@ -593,6 +727,7 @@ async def _route_bound_reply(ctx: BotContext, adapter, text: str) -> bool:
                 adapter,
                 ctx.reply_to_message_id,
                 topic.id,
+                thread.id if thread else None,
             ),
             "bound topic message",
         )
@@ -618,13 +753,25 @@ async def _bind_research_session_message(
     chat_id: str,
     message_id: str | None,
     session_id: int | None,
+    *,
+    platform: str | None = None,
+    thread_id: int | None = None,
+    role: str | None = None,
 ) -> None:
     if session_id is None:
         return
     try:
         from server.bot.bindings import bind_message_to_source
 
-        await bind_message_to_source(chat_id, message_id, "research_session", session_id)
+        await bind_message_to_source(
+            chat_id,
+            message_id,
+            "research_session",
+            session_id,
+            platform=platform,
+            thread_id=thread_id,
+            role=role,
+        )
     except Exception:
         logger.exception(
             "Research session message binding failed: chat_id={} message_id={} session_id={}",
@@ -638,6 +785,10 @@ async def _bind_unbound_research_session_message(
     chat_id: str,
     message_id: str | None,
     session_id: int | None,
+    *,
+    platform: str | None = None,
+    thread_id: int | None = None,
+    role: str | None = None,
 ) -> None:
     if not chat_id or not message_id or session_id is None:
         return
@@ -646,7 +797,15 @@ async def _bind_unbound_research_session_message(
 
         existing = await resolve_message_binding(chat_id, message_id)
         if existing is None:
-            await bind_message_to_source(chat_id, message_id, "research_session", session_id)
+            await bind_message_to_source(
+                chat_id,
+                message_id,
+                "research_session",
+                session_id,
+                platform=platform,
+                thread_id=thread_id,
+                role=role,
+            )
     except Exception:
         logger.exception(
             "Unbound research session message binding failed: "
@@ -664,18 +823,62 @@ async def _run_agent_message_job(
     reply_to: str = "",
     source_message_id: str = "",
 ) -> None:
+    from server.interactions.threading import (
+        attach_research_session,
+        bind_message_to_thread,
+        create_agent_thread,
+    )
     from server.research.progress import ResearchProgressReporter
     from server.research.service import run_agent_session_message, start_agent_session
     from server.stock.watchlist import platform_for_adapter
 
     reporter = ResearchProgressReporter(adapter, chat_id, reply_to)
     platform = platform_for_adapter(adapter)
+    thread_id: int | None = None
     try:
         session = await start_agent_session(chat_id, text)
-        await _bind_research_session_message(chat_id, source_message_id, session.id)
-        await _bind_unbound_research_session_message(chat_id, reply_to, session.id)
+        thread = await create_agent_thread(
+            chat_id=chat_id,
+            platform=platform,
+            root_message_id=reply_to or source_message_id or None,
+            research_session_id=session.id,
+        )
+        thread_id = thread.id
+        await attach_research_session(thread_id, session.id)
+        await _bind_research_session_message(
+            chat_id,
+            source_message_id,
+            session.id,
+            platform=platform,
+            thread_id=thread_id,
+            role="user_reply",
+        )
+        await _bind_unbound_research_session_message(
+            chat_id,
+            reply_to,
+            session.id,
+            platform=platform,
+            thread_id=thread_id,
+            role="root",
+        )
+        await bind_message_to_thread(
+            chat_id=chat_id,
+            message_id=source_message_id,
+            thread_id=thread_id,
+            platform=platform,
+            role="user_reply",
+            source_type="research_session",
+            source_id=session.id,
+        )
         await reporter.start("Agent 处理中...")
-        await _bind_research_session_message(chat_id, reporter.status_message_id, session.id)
+        await _bind_research_session_message(
+            chat_id,
+            reporter.status_message_id,
+            session.id,
+            platform=platform,
+            thread_id=thread_id,
+            role="status",
+        )
         answer = await run_agent_session_message(
             session,
             text,
@@ -683,7 +886,14 @@ async def _run_agent_message_job(
             on_progress=reporter.on_progress,
         )
         result_message_id = await reporter.finish(answer)
-        await _bind_research_session_message(chat_id, result_message_id, session.id)
+        await _bind_research_session_message(
+            chat_id,
+            result_message_id,
+            session.id,
+            platform=platform,
+            thread_id=thread_id,
+            role="result",
+        )
     except ResearchError as e:
         await reporter.error(str(e))
     except Exception as e:
@@ -764,10 +974,13 @@ async def _run_topic_message_job(
     adapter,
     reply_to: str = "",
     session_id: int | None = None,
+    thread_id: int | None = None,
 ) -> None:
     from server.research.progress import ResearchProgressReporter
+    from server.stock.watchlist import platform_for_adapter
 
     reporter = ResearchProgressReporter(adapter, chat_id, reply_to)
+    platform = platform_for_adapter(adapter)
     try:
         from server.research.service import handle_topic_message
 
@@ -782,9 +995,21 @@ async def _run_topic_message_job(
             result_message_id = await reporter.finish(answer)
             if session_id:
                 await _bind_research_session_message(
-                    chat_id, reporter.status_message_id, session_id
+                    chat_id,
+                    reporter.status_message_id,
+                    session_id,
+                    platform=platform,
+                    thread_id=thread_id,
+                    role="status",
                 )
-                await _bind_research_session_message(chat_id, result_message_id, session_id)
+                await _bind_research_session_message(
+                    chat_id,
+                    result_message_id,
+                    session_id,
+                    platform=platform,
+                    thread_id=thread_id,
+                    role="result",
+                )
     except ResearchError as e:
         await reporter.error(str(e))
     except Exception as e:

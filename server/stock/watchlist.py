@@ -260,6 +260,10 @@ async def _send_stock_watch_alert(
     watch: StockWatch, alert: dict[str, Any], adapters: dict[str, Any]
 ) -> None:
     text = format_stock_watch_alert(alert)
+    from server.delivery.service import send_alert
+    from server.events.types import AlertCandidate
+    from server.interactions.threading import get_or_create_thread_for_source
+
     targets: list[Any]
     if watch.platform == "auto":
         targets = [adapter for adapter in adapters.values() if adapter is not None]
@@ -269,7 +273,36 @@ async def _send_stock_watch_alert(
 
     for adapter in targets:
         try:
-            await adapter.send_message(watch.chat_id, text)
+            platform = platform_for_adapter(adapter)
+            thread = await get_or_create_thread_for_source(
+                chat_id=watch.chat_id,
+                platform=platform,
+                source_type="stock_watch",
+                source_id=watch.id,
+                source_key=f"stock_watch:{watch.ticker}:{watch.chat_id}",
+            )
+            candidate = AlertCandidate(
+                event_key=(
+                    f"stock_watch:{watch.id}:{alert['previous_price']:.4f}:"
+                    f"{alert['current_price']:.4f}"
+                ),
+                event_type="stock_watch",
+                source_id=watch.id,
+                title=f"{watch.ticker} 股票观察提醒",
+                summary=alert["message"],
+                severity=alert["severity"],
+                payload=alert,
+                target_chats=(watch.chat_id,),
+            )
+            await send_alert(
+                adapter,
+                candidate,
+                chat_id=watch.chat_id,
+                text=text,
+                platform=platform,
+                thread_id=thread.id,
+                reason="stock watch price move",
+            )
         except Exception:
             logger.exception(
                 "Stock watch alert push failed: ticker={} platform={} chat_id={}",

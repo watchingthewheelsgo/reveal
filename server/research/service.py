@@ -1,5 +1,6 @@
 """Research workflows — supports tweet-anchored, ticker, and freeform research."""
 
+import json
 import re
 from dataclasses import dataclass
 
@@ -191,6 +192,105 @@ async def get_or_start_topic_for_post(
     return await _create_topic_for_post(chat_id, post_ref, focus, close_previous=False)
 
 
+async def get_or_start_topic_for_event(
+    chat_id: str,
+    source_type: str,
+    source_id: int,
+    focus: str = "",
+) -> ResearchSession:
+    """Return an active topic for a non-Twitter event, or create one from event detail."""
+    if source_type == "twitter":
+        return await get_or_start_topic_for_post(chat_id, str(source_id), focus)
+
+    existing = await _find_active_session_for_source(chat_id, source_type, source_id)
+    if existing is not None:
+        return existing
+
+    from server.events.feed import get_event_detail
+
+    detail = await get_event_detail(source_type, source_id)
+    if detail is None:
+        raise ResearchError(f"找不到事件: {source_type}:{source_id}")
+
+    event = detail["event"]
+    topic = focus or str(event.get("title") or event.get("summary") or f"{source_type}:{source_id}")
+    source_query = _event_context(detail)
+    session_id = await _create_session(
+        chat_id,
+        source_id,
+        topic,
+        source_type=source_type,
+        source_query=source_query,
+        close_previous=False,
+    )
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        result = await session.execute(
+            select(ResearchSession).where(ResearchSession.id == session_id)
+        )
+        topic_session = result.scalar_one()
+        session.add(
+            ConversationMessage(
+                session_id=session_id,
+                role="assistant",
+                content=f"已基于 {source_type}:{source_id} 开启研究线程。",
+            )
+        )
+        await session.commit()
+    return topic_session
+
+
+async def get_or_start_topic_for_event_thread(
+    chat_id: str,
+    source_type: str,
+    source_id: int | None,
+    thread_id: int | None,
+    focus: str = "",
+) -> ResearchSession:
+    """Return/create a topic for the event represented by an interaction thread."""
+    if source_type == "twitter" and source_id is not None:
+        return await get_or_start_topic_for_post(chat_id, str(source_id), focus)
+
+    if source_id is not None:
+        existing = await _find_active_session_for_source(chat_id, source_type, source_id)
+        if existing is not None:
+            return existing
+
+    from server.events.feed import get_event_detail_for_thread
+
+    detail = await get_event_detail_for_thread(source_type, source_id, thread_id)
+    if detail is None:
+        raise ResearchError(f"找不到事件: {source_type}:{source_id or '-'}")
+
+    event = detail["event"]
+    session_source_id = source_id if source_id is not None else _int_or_none(event.get("source_id"))
+    topic = focus or str(event.get("title") or event.get("summary") or f"{source_type}:{source_id}")
+    source_query = _event_context(detail)
+    session_id = await _create_session(
+        chat_id,
+        session_source_id,
+        topic,
+        source_type=source_type,
+        source_query=source_query,
+        close_previous=False,
+    )
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        result = await session.execute(
+            select(ResearchSession).where(ResearchSession.id == session_id)
+        )
+        topic_session = result.scalar_one()
+        session.add(
+            ConversationMessage(
+                session_id=session_id,
+                role="assistant",
+                content=f"已基于 {event.get('id') or f'{source_type}:{source_id}'} 开启研究线程。",
+            )
+        )
+        await session.commit()
+        return topic_session
+
+
 async def _create_topic_for_post(
     chat_id: str,
     post_ref: str,
@@ -355,13 +455,22 @@ async def _create_session(
 
 
 async def _find_active_session_for_post(chat_id: str, post: SocialPost) -> ResearchSession | None:
+    return await _find_active_session_for_source(chat_id, "twitter", post.id)
+
+
+async def _find_active_session_for_source(
+    chat_id: str,
+    source_type: str,
+    source_id: int,
+) -> ResearchSession | None:
     session_factory = get_session_factory()
     async with session_factory() as session:
         result = await session.execute(
             select(ResearchSession)
             .where(
                 ResearchSession.chat_id == chat_id,
-                ResearchSession.source_id == post.id,
+                ResearchSession.source_type == source_type,
+                ResearchSession.source_id == source_id,
                 ResearchSession.status == "active",
             )
             .order_by(desc(ResearchSession.updated_at), desc(ResearchSession.created_at))
@@ -655,10 +764,19 @@ def _ticker_prompt(ticker: str, focus: str) -> str:
 
 
 def _freeform_followup_prompt(topic: ResearchSession, message: str) -> str:
-    label = "Agent 会话" if topic.source_type == "agent" else "自由研究线程"
+    label = (
+        "Agent 会话"
+        if topic.source_type == "agent"
+        else "事件研究线程"
+        if topic.source_type not in {"freeform", "ticker"}
+        else "自由研究线程"
+    )
     return f"""当前对话是一个{label}。
 
 研究主题: {topic.topic or topic.source_query or ""}
+
+原始上下文:
+{topic.source_query or "（无）"}
 
 需要数据时请使用内部工具 (stock_quote, portfolio 等) 和 WebSearch。
 保持多轮研究上下文，不要把回答降级成简单摘要。
@@ -726,6 +844,36 @@ def _default_topic(post: SocialPost) -> str:
 def _agent_topic(message: str) -> str:
     cleaned = _strip_urls(message).strip()
     return (cleaned or message.strip())[:120]
+
+
+def _event_context(detail: dict) -> str:
+    event = detail.get("event") or {}
+    record = detail.get("record") or {}
+    lines = [
+        f"event_id: {event.get('id')}",
+        f"source_type: {event.get('source_type')}",
+        f"source_id: {event.get('source_id')}",
+        f"title: {event.get('title') or ''}",
+        f"summary: {event.get('summary') or ''}",
+        f"tickers: {', '.join(event.get('tickers') or [])}",
+        f"priority: {event.get('priority') or ''}",
+        f"sentiment: {event.get('sentiment') or ''}",
+        f"occurred_at: {event.get('occurred_at') or ''}",
+    ]
+    if event.get("url"):
+        lines.append(f"url: {event['url']}")
+    record_json = json.dumps(record, ensure_ascii=False, default=str, indent=2)
+    if len(record_json) > 6000:
+        record_json = record_json[:5997].rstrip() + "..."
+    lines.extend(["record:", record_json])
+    return "\n".join(lines)
+
+
+def _int_or_none(value) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 _KNOWN_TICKERS = {

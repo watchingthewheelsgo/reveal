@@ -85,9 +85,16 @@ async def lifespan(app: FastAPI):
             logger.info("Feishu bot WebSocket disabled; HTTP callback API is available")
 
     # Init scheduler with real jobs
+    from server.runtime.jobs import run_recorded_job
     from server.scheduler import Scheduler
 
     scheduler = Scheduler()
+
+    def recorded(job_id: str, module_id: str, func):
+        async def _runner():
+            return await run_recorded_job(job_id, module_id, func)
+
+        return _runner
 
     # Daily stock pick
     async def daily_pick_job():
@@ -105,7 +112,12 @@ async def lifespan(app: FastAPI):
             await feishu_bot.push_to_admin(text)
 
     pick_hour, pick_minute = map(int, settings.daily_pick_time.split(":"))
-    scheduler.register_cron("daily_pick", daily_pick_job, pick_hour, pick_minute)
+    scheduler.register_cron(
+        "daily_pick",
+        recorded("daily_pick", "daily_pick", daily_pick_job),
+        pick_hour,
+        pick_minute,
+    )
 
     # Daily tracking update (after market close ~4:30 PM ET)
     async def tracking_update_job():
@@ -114,7 +126,12 @@ async def lifespan(app: FastAPI):
         await update_tracking()
         await apply_feedback()
 
-    scheduler.register_cron("tracking_update", tracking_update_job, 16, 30)
+    scheduler.register_cron(
+        "tracking_update",
+        recorded("tracking_update", "tracking_update", tracking_update_job),
+        16,
+        30,
+    )
 
     # Daily briefing (before market open ~8:30 AM ET)
     async def daily_briefing_job():
@@ -128,7 +145,12 @@ async def lifespan(app: FastAPI):
             await feishu_bot.push_to_admin(text)
 
     brief_hour, brief_minute = map(int, settings.daily_briefing_time.split(":"))
-    scheduler.register_cron("daily_briefing", daily_briefing_job, brief_hour, brief_minute)
+    scheduler.register_cron(
+        "daily_briefing",
+        recorded("daily_briefing", "daily_briefing", daily_briefing_job),
+        brief_hour,
+        brief_minute,
+    )
 
     # Twitter daily digest
     if settings.twitter_digest_enabled:
@@ -150,7 +172,7 @@ async def lifespan(app: FastAPI):
         digest_hour, digest_minute = map(int, settings.twitter_digest_time.split(":"))
         scheduler.register_cron(
             "twitter_digest",
-            twitter_digest_job,
+            recorded("twitter_digest", "twitter_digest", twitter_digest_job),
             digest_hour,
             digest_minute,
             timezone=settings.twitter_digest_timezone,
@@ -179,7 +201,7 @@ async def lifespan(app: FastAPI):
 
     scheduler.register_interval(
         "twitter_monitor",
-        twitter_monitor_job,
+        recorded("twitter_monitor", "twitter_monitor", twitter_monitor_job),
         settings.twitter_monitor_interval,
         run_immediately=True,
     )
@@ -194,7 +216,9 @@ async def lifespan(app: FastAPI):
             await run_alert_cycle(tg)
 
         scheduler.register_interval(
-            "alert_cycle", alert_cycle_job, settings.alert_interval_minutes * 60
+            "alert_cycle",
+            recorded("alert_cycle", "alert_cycle", alert_cycle_job),
+            settings.alert_interval_minutes * 60,
         )
 
     # Regulatory event alerts (SEC/FDA, independent of market hours)
@@ -208,7 +232,7 @@ async def lifespan(app: FastAPI):
 
         scheduler.register_interval(
             "regulatory_alert_cycle",
-            regulatory_alert_cycle_job,
+            recorded("regulatory_alert_cycle", "regulatory_alerts", regulatory_alert_cycle_job),
             settings.regulatory_alert_interval_minutes * 60,
         )
 
@@ -228,7 +252,9 @@ async def lifespan(app: FastAPI):
         from server.stock.watchlist import STOCK_WATCH_INTERVAL_SECONDS
 
         scheduler.register_interval(
-            "stock_watch_price", stock_watch_price_job, STOCK_WATCH_INTERVAL_SECONDS
+            "stock_watch_price",
+            recorded("stock_watch_price", "stock_watch_price", stock_watch_price_job),
+            STOCK_WATCH_INTERVAL_SECONDS,
         )
 
     # Longbridge market mover discovery alerts (every 5 minutes by default)
@@ -243,7 +269,11 @@ async def lifespan(app: FastAPI):
 
         scheduler.register_interval(
             "longbridge_market_movers",
-            market_mover_alert_job,
+            recorded(
+                "longbridge_market_movers",
+                "longbridge_market_movers",
+                market_mover_alert_job,
+            ),
             settings.longbridge_movers_interval_seconds,
         )
 

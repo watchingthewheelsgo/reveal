@@ -65,7 +65,42 @@ async def run_regulatory_alert_cycle(adapter=None) -> None:
 
     if adapter:
         for event in new_events:
-            await adapter.push_to_admin(format_regulatory_alert(event))
+            from server.delivery.service import send_alert_to_admin
+            from server.events.types import AlertCandidate
+            from server.interactions.threading import get_or_create_thread_for_source
+            from server.stock.watchlist import platform_for_adapter
+
+            platform = platform_for_adapter(adapter)
+            source_id = event.get("db_id")
+
+            async def thread_for_chat(chat_id: str) -> int | None:
+                if not isinstance(source_id, int):
+                    return None
+                thread = await get_or_create_thread_for_source(
+                    chat_id=chat_id,
+                    platform=platform,
+                    source_type="regulatory",
+                    source_id=source_id,
+                    source_key=str(event.get("event_id") or ""),
+                )
+                return thread.id
+
+            await send_alert_to_admin(
+                adapter,
+                AlertCandidate(
+                    event_key=f"regulatory:{event.get('event_id')}",
+                    event_type="regulatory",
+                    source_id=source_id,
+                    title=str(event.get("title") or event.get("message") or "Regulatory event"),
+                    summary=str(event.get("detail") or event.get("message") or ""),
+                    severity=str(event.get("severity") or "info"),
+                    payload=event,
+                ),
+                text=format_regulatory_alert(event),
+                platform=platform,
+                thread_factory=thread_for_chat,
+                reason="regulatory alert",
+            )
 
     logger.info("Regulatory alert cycle complete: {} new events", len(new_events))
 
@@ -309,22 +344,23 @@ async def record_new_regulatory_events(events: list[dict[str, Any]]) -> list[dic
             if result.scalar_one_or_none() is not None:
                 continue
 
-            session.add(
-                RegulatoryEvent(
-                    source=str(event.get("source") or ""),
-                    event_id=event_id,
-                    ticker=event.get("ticker"),
-                    event_type=str(event.get("type") or "Regulatory Event"),
-                    severity=str(event.get("severity") or "info"),
-                    title=str(event.get("title") or event.get("message") or event_id),
-                    detail=event.get("detail"),
-                    url=event.get("url"),
-                    event_date=event.get("event_date"),
-                    raw_json=event.get("raw"),
-                    first_seen_at=now,
-                    pushed_at=now,
-                )
+            row = RegulatoryEvent(
+                source=str(event.get("source") or ""),
+                event_id=event_id,
+                ticker=event.get("ticker"),
+                event_type=str(event.get("type") or "Regulatory Event"),
+                severity=str(event.get("severity") or "info"),
+                title=str(event.get("title") or event.get("message") or event_id),
+                detail=event.get("detail"),
+                url=event.get("url"),
+                event_date=event.get("event_date"),
+                raw_json=event.get("raw"),
+                first_seen_at=now,
+                pushed_at=now,
             )
+            session.add(row)
+            await session.flush()
+            event["db_id"] = row.id
             new_events.append(event)
         await session.commit()
 

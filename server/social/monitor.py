@@ -559,7 +559,7 @@ async def push_tweet_card(
     """Push one tweet as a rich card and bind the sent message to the post."""
     card = await _build_tweet_card(post, adapter, cross_ref=cross_ref, is_backfill=is_backfill)
     sent_messages = await _push_card_to_admin(adapter, card)
-    await _bind_sent_messages(sent_messages, post.id)
+    await _bind_sent_messages(sent_messages, post.id, adapter)
 
 
 async def run_twitter_monitor(
@@ -1392,13 +1392,65 @@ def _admin_chat_ids(adapter: BotAdapter) -> list[str]:
     return list(dict.fromkeys(chat_ids))
 
 
-async def _bind_sent_messages(sent_messages: list[tuple[str, str]], post_id: int | None) -> None:
+async def _bind_sent_messages(
+    sent_messages: list[tuple[str, str]],
+    post_id: int | None,
+    adapter: BotAdapter | None = None,
+) -> None:
     if not sent_messages or post_id is None:
         return
     from server.bot.bindings import bind_message_to_source
+    from server.delivery.service import record_sent_delivery
+    from server.events.types import AlertCandidate
+    from server.interactions.threading import (
+        bind_message_to_thread,
+        get_or_create_thread_for_source,
+    )
+    from server.stock.watchlist import platform_for_adapter
 
+    platform = platform_for_adapter(adapter) if adapter else "auto"
     for chat_id, message_id in sent_messages:
-        await bind_message_to_source(chat_id, message_id, "twitter", post_id)
+        thread = await get_or_create_thread_for_source(
+            chat_id=chat_id,
+            platform=platform,
+            source_type="twitter",
+            source_id=post_id,
+            root_message_id=message_id,
+        )
+        await bind_message_to_source(
+            chat_id,
+            message_id,
+            "twitter",
+            post_id,
+            platform=platform,
+            thread_id=thread.id,
+            role="source",
+        )
+        await bind_message_to_thread(
+            chat_id=chat_id,
+            message_id=message_id,
+            thread_id=thread.id,
+            platform=platform,
+            role="source",
+            source_type="twitter",
+            source_id=post_id,
+        )
+        await record_sent_delivery(
+            AlertCandidate(
+                event_key=f"twitter:{post_id}",
+                event_type="twitter",
+                source_id=post_id,
+                title="Twitter update",
+                summary=f"Twitter post #{post_id}",
+                severity="info",
+                target_chats=(chat_id,),
+            ),
+            chat_id=chat_id,
+            platform=platform,
+            message_id=message_id,
+            thread_id=thread.id,
+            reason="twitter monitor push",
+        )
 
 
 def _post_type_label(post) -> str:

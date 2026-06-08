@@ -41,6 +41,7 @@ async def init_db() -> None:
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            await _migrate_bot_message_bindings(conn, db_url.get_backend_name())
             if db_url.get_backend_name() == "sqlite":
                 await _migrate_sqlite_twitter_state(conn)
                 await _migrate_sqlite_social_posts(conn)
@@ -254,4 +255,33 @@ async def _migrate_sqlite_research_sessions(conn) -> None:
         if column not in existing_columns:
             await conn.execute(
                 text(f"ALTER TABLE research_sessions ADD COLUMN {column} {column_type}")
+            )
+
+
+async def _migrate_bot_message_bindings(conn, backend_name: str) -> None:
+    """Add thread-binding columns to databases created before interaction threads."""
+    if backend_name == "sqlite":
+        result = await conn.execute(text("PRAGMA table_info(bot_message_bindings)"))
+        existing_columns = {row[1] for row in result.fetchall()}
+    else:
+        result = await conn.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'bot_message_bindings'"
+            )
+        )
+        existing_columns = {row[0] for row in result.fetchall()}
+
+    if not existing_columns:
+        return
+
+    columns = {
+        "platform": "VARCHAR(20)",
+        "thread_id": "INTEGER",
+        "role": "VARCHAR(30)",
+    }
+    for column, column_type in columns.items():
+        if column not in existing_columns:
+            await conn.execute(
+                text(f"ALTER TABLE bot_message_bindings ADD COLUMN {column} {column_type}")
             )

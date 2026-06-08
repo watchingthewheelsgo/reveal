@@ -10,6 +10,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     Float,
+    Index,
     Integer,
     String,
     Text,
@@ -232,11 +233,86 @@ class BotMessageBinding(Base):
     __tablename__ = "bot_message_bindings"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    platform: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
     chat_id: Mapped[str] = mapped_column(String(100), index=True)
     message_id: Mapped[str] = mapped_column(String(100), index=True)
     source_type: Mapped[str] = mapped_column(String(50), default="twitter")
     source_id: Mapped[int] = mapped_column(Integer, index=True)
+    thread_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    role: Mapped[str | None] = mapped_column(String(30), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Interaction, delivery, and runtime observability
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class InteractionThread(Base):
+    __tablename__ = "interaction_threads"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    platform: Mapped[str] = mapped_column(String(20), default="auto", index=True)
+    chat_id: Mapped[str] = mapped_column(String(100), index=True)
+    root_message_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    source_type: Mapped[str] = mapped_column(String(50), default="agent", index=True)
+    source_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    source_key: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    research_session_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(30), default="active", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
+    last_activity_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+    __table_args__ = (
+        Index("ix_interaction_thread_source", "source_type", "source_id"),
+        Index("ix_interaction_thread_root", "platform", "chat_id", "root_message_id"),
+    )
+
+
+class AlertDelivery(Base):
+    __tablename__ = "alert_deliveries"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    event_type: Mapped[str] = mapped_column(String(50), index=True)
+    event_source_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    event_key: Mapped[str] = mapped_column(String(255), index=True)
+    thread_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    platform: Mapped[str] = mapped_column(String(20), default="auto", index=True)
+    chat_id: Mapped[str] = mapped_column(String(100), index=True)
+    message_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    severity: Mapped[str] = mapped_column(String(20), default="info")
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint(
+            "event_key",
+            "platform",
+            "chat_id",
+            name="uq_alert_delivery_event_platform_chat",
+        ),
+    )
+
+
+class JobRun(Base):
+    __tablename__ = "job_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    job_id: Mapped[str] = mapped_column(String(100), index=True)
+    module_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(30), default="running", index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

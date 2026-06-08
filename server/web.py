@@ -11,8 +11,17 @@ from pydantic import BaseModel
 from sqlalchemy import desc, select
 
 from server.db.engine import get_session_factory
-from server.db.models import ConversationMessage, ResearchSession, SocialPost, TwitterState
+from server.db.models import (
+    ConversationMessage,
+    InteractionThread,
+    ResearchSession,
+    SocialPost,
+    TwitterState,
+)
+from server.events.feed import get_event_detail, list_event_items
 from server.research.service import ResearchError, ask_about_post, run_deep_research
+from server.runtime.jobs import list_recent_job_runs
+from server.system.catalog import get_system_catalog_payload
 
 WEB_CHAT_ID = "web"
 STATIC_DIR = Path(__file__).parent / "static"
@@ -76,6 +85,92 @@ async def list_posts(
         "posts": [_post_summary(post, research.get(post.id)) for post in posts],
         "count": len(posts),
     }
+
+
+@router.get("/api/events")
+async def list_events(
+    limit: int = Query(default=80, ge=1, le=200),
+    source_type: str | None = Query(default=None),
+    ticker: str | None = Query(default=None),
+    q: str | None = Query(default=None),
+):
+    items = await list_event_items(
+        limit=limit,
+        source_type=source_type,
+        ticker=ticker,
+        q=q,
+    )
+    return {"events": [item.to_dict() for item in items], "count": len(items)}
+
+
+@router.get("/api/events/{source_type}/{source_id}")
+async def get_event(source_type: str, source_id: int):
+    payload = await get_event_detail(source_type, source_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Event not found")
+    return payload
+
+
+@router.get("/api/threads/{thread_id}")
+async def get_thread(thread_id: int):
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        thread = await session.get(InteractionThread, thread_id)
+        if thread is None:
+            raise HTTPException(status_code=404, detail="Thread not found")
+
+        research = None
+        messages: list[ConversationMessage] = []
+        if thread.research_session_id:
+            research = await session.get(ResearchSession, thread.research_session_id)
+            if research:
+                result = await session.execute(
+                    select(ConversationMessage)
+                    .where(ConversationMessage.session_id == research.id)
+                    .order_by(ConversationMessage.created_at, ConversationMessage.id)
+                )
+                messages = list(result.scalars().all())
+
+    return {
+        "thread": _thread_detail(thread),
+        "research": _research_detail(research, messages) if research else None,
+    }
+
+
+@router.get("/api/research/{session_id}")
+async def get_research(session_id: int):
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        research = await session.get(ResearchSession, session_id)
+        if research is None:
+            raise HTTPException(status_code=404, detail="Research session not found")
+        result = await session.execute(
+            select(ConversationMessage)
+            .where(ConversationMessage.session_id == research.id)
+            .order_by(ConversationMessage.created_at, ConversationMessage.id)
+        )
+        messages = list(result.scalars().all())
+    return {"research": _research_detail(research, messages)}
+
+
+@router.get("/api/watchlist/stocks")
+async def list_stock_watchlist(chat_id: str | None = Query(default=None)):
+    from server.stock.watchlist import get_stock_watch_list_payload
+
+    return await get_stock_watch_list_payload(chat_id)
+
+
+@router.get("/api/system/modules")
+async def list_system_modules():
+    return get_system_catalog_payload()
+
+
+@router.get("/api/system/jobs")
+async def list_system_jobs(
+    limit: int = Query(default=50, ge=1, le=200),
+    job_id: str | None = Query(default=None),
+):
+    return {"jobs": await list_recent_job_runs(limit=limit, job_id=job_id)}
 
 
 @router.get("/api/posts/{post_id}")
@@ -226,6 +321,23 @@ def _research_detail(
         }
     )
     return data
+
+
+def _thread_detail(thread: InteractionThread) -> dict[str, Any]:
+    return {
+        "id": thread.id,
+        "platform": thread.platform,
+        "chat_id": thread.chat_id,
+        "root_message_id": thread.root_message_id,
+        "source_type": thread.source_type,
+        "source_id": thread.source_id,
+        "source_key": thread.source_key,
+        "research_session_id": thread.research_session_id,
+        "status": thread.status,
+        "created_at": _iso(thread.created_at),
+        "updated_at": _iso(thread.updated_at),
+        "last_activity_at": _iso(thread.last_activity_at),
+    }
 
 
 def _post_labels(post: SocialPost) -> list[str]:

@@ -88,7 +88,26 @@ async def run_alert_cycle(adapter=None):
     for ticker, alert in seen.items():
         text = _format_alert(alert)
         if adapter:
-            await adapter.push_to_admin(text)
+            from server.delivery.service import send_alert_to_admin
+            from server.events.types import AlertCandidate
+            from server.stock.watchlist import platform_for_adapter
+
+            platform = platform_for_adapter(adapter)
+            await send_alert_to_admin(
+                adapter,
+                AlertCandidate(
+                    event_key=_alert_event_key(alert),
+                    event_type=_alert_event_type(alert),
+                    source_id=ticker,
+                    title=f"{alert.get('type', '告警')} — {ticker}",
+                    summary=str(alert.get("message") or ""),
+                    severity=str(alert.get("severity") or "info"),
+                    payload=alert,
+                ),
+                text=text,
+                platform=platform,
+                reason="intraday alert cycle",
+            )
 
     logger.info(f"Alert cycle complete: {len(seen)} alerts pushed")
 
@@ -129,3 +148,21 @@ def _format_alert(alert: dict) -> str:
         lines.append(f"💰 现价: ${alert['price']:.2f}")
 
     return "\n".join(lines)
+
+
+def _alert_event_key(alert: dict) -> str:
+    ticker = str(alert.get("ticker") or "UNKNOWN").upper()
+    alert_type = str(alert.get("type") or "alert")
+    message = str(alert.get("message") or "")
+    return f"alert:{alert_type}:{ticker}:{message}"
+
+
+def _alert_event_type(alert: dict) -> str:
+    alert_type = str(alert.get("type") or "").lower()
+    if "价格" in alert_type or "price" in alert_type:
+        return "price"
+    if "成交量" in alert_type or "volume" in alert_type:
+        return "volume"
+    if "新闻" in alert_type or "news" in alert_type:
+        return "news"
+    return "news"
