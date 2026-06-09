@@ -83,6 +83,29 @@ class ResearchProgressReporterTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("NVDA", rendered)
         self.assertIn("盘前成交放大", rendered)
 
+    async def test_finish_splits_multiple_tables_into_consecutive_cards(self):
+        adapter = FakeProgressAdapter()
+        reporter = ResearchProgressReporter(cast(BotAdapter, adapter), "chat-1", "root-msg")
+        result = (
+            "前言\n\n"
+            "| 指标 | 数值 |\n| --- | --- |\n| 成交量 | 放大 |\n\n"
+            "中段\n\n"
+            "| 公司 | 变化 |\n| --- | --- |\n| RKLB | +12% |\n\n"
+            "尾段\n\n"
+            "| 风险 | 说明 |\n| --- | --- |\n| 波动 | 较高 |"
+        )
+
+        result_id = await reporter.finish(result)
+
+        self.assertEqual(result_id, "result-card")
+        self.assertEqual(len(adapter.thread_cards), 3)
+        self.assertEqual(adapter.thread_cards[0][2]["title"], "Reveal · 研究结果 1/3")
+        self.assertEqual(adapter.thread_cards[1][2]["title"], "Reveal · 研究结果 2/3")
+        self.assertEqual(adapter.thread_cards[2][2]["title"], "Reveal · 研究结果 3/3")
+        for _, message_id, card in adapter.thread_cards:
+            self.assertEqual(message_id, "root-msg")
+            self.assertLessEqual(str(card["elements"]).count("| --- | --- |"), 1)
+
     async def test_result_card_does_not_replace_long_body_with_truncation_notice(self):
         long_body = "\n\n".join(
             f"## 第 {index} 段\n\n这是第 {index} 段内容。" for index in range(30)
@@ -94,6 +117,18 @@ class ResearchProgressReporterTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("## 第 29 段", rendered)
         self.assertIn("这是第 29 段内容。", rendered)
         self.assertNotIn("内容较长，已截断", rendered)
+
+    async def test_error_sends_failure_reason_card(self):
+        adapter = FakeProgressAdapter()
+        reporter = ResearchProgressReporter(cast(BotAdapter, adapter), "chat-1", "root-msg")
+
+        await reporter.error("Agent 处理失败: Reached maximum number of turns (20)")
+
+        self.assertEqual(len(adapter.thread_cards), 1)
+        error_card = adapter.thread_cards[0][2]
+        self.assertEqual(error_card["title"], "Reveal · 处理失败")
+        rendered = str(error_card["elements"])
+        self.assertIn("失败原因: Agent 处理失败: Reached maximum number of turns (20)", rendered)
 
 
 if __name__ == "__main__":

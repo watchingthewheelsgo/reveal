@@ -19,17 +19,34 @@ class DummyFeishuResponse:
         return True
 
 
+class DummyFeishuErrorResponse:
+    code = 230099
+    msg = "Failed to create card content, ext=ErrCode: 11310; ErrMsg: card table number over limit"
+    data = None
+
+    def success(self) -> bool:
+        return False
+
+
 class DummyFeishuMessageApi:
     def __init__(self):
         self.created = []
         self.replied = []
 
-    def create(self, request):
+    def create(self, request) -> Any:
         self.created.append(request)
         return DummyFeishuResponse()
 
     def reply(self, request):
         self.replied.append(request)
+        return DummyFeishuResponse()
+
+
+class FallbackFeishuMessageApi(DummyFeishuMessageApi):
+    def create(self, request) -> Any:
+        self.created.append(request)
+        if request.request_body.msg_type == "interactive":
+            return DummyFeishuErrorResponse()
         return DummyFeishuResponse()
 
 
@@ -165,6 +182,39 @@ class FeishuEventTest(unittest.TestCase):
         self.assertFalse(_should_send_as_markdown_card("正在检查告警"))
         self.assertTrue(_should_send_as_markdown_card("**结论**: 继续观察"))
         self.assertTrue(_should_send_as_markdown_card("第一行\n第二行"))
+
+    def test_send_message_falls_back_to_text_when_markdown_card_fails(self):
+        bot = FeishuBot()
+        message_api = FallbackFeishuMessageApi()
+        bot.client = cast(
+            Any, SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(message=message_api)))
+        )
+
+        asyncio.run(
+            bot.send_message(
+                "chat-1",
+                "**结论**\n\n| 指标 | 数值 |\n| --- | --- |\n| 成交量 | 放大 |",
+            )
+        )
+
+        self.assertEqual(
+            [item.request_body.msg_type for item in message_api.created],
+            ["interactive", "text"],
+        )
+        text_payload = json.loads(message_api.created[-1].request_body.content)
+        self.assertIn("| 指标 | 数值 |", text_payload["text"])
+
+    def test_send_plain_text_bypasses_markdown_card(self):
+        bot = FeishuBot()
+        message_api = DummyFeishuMessageApi()
+        bot.client = cast(
+            Any, SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(message=message_api)))
+        )
+
+        asyncio.run(bot.send_plain_text("chat-1", "**结论**\n- 继续观察 NVDA"))
+
+        self.assertEqual(len(message_api.created), 1)
+        self.assertEqual(message_api.created[0].request_body.msg_type, "text")
 
 
 if __name__ == "__main__":

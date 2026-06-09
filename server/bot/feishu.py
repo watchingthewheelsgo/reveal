@@ -194,13 +194,24 @@ class FeishuBot(BotAdapter):
 
     async def send_message(self, chat_id: str, text: str, **kwargs) -> None:
         loop = asyncio.get_running_loop()
+        force_text = bool(kwargs.pop("force_text", False) or kwargs.pop("plain_text", False))
         max_len = 4000
         for i in range(0, len(text), max_len):
             chunk = text[i : i + max_len]
-            if _should_send_as_markdown_card(chunk):
-                await loop.run_in_executor(None, self._send_markdown_card_sync, chat_id, chunk)
+            if not force_text and _should_send_as_markdown_card(chunk):
+                try:
+                    await loop.run_in_executor(None, self._send_markdown_card_sync, chat_id, chunk)
+                except Exception as exc:
+                    logger.warning(
+                        "Feishu markdown card send failed; falling back to text: {}",
+                        exc,
+                    )
+                    await loop.run_in_executor(None, self._send_text_sync, chat_id, chunk)
             else:
                 await loop.run_in_executor(None, self._send_text_sync, chat_id, chunk)
+
+    async def send_plain_text(self, chat_id: str, text: str) -> None:
+        await self.send_message(chat_id, text, force_text=True)
 
     async def send_card(self, chat_id: str, card: dict) -> None:
         loop = asyncio.get_running_loop()
@@ -366,7 +377,13 @@ class FeishuBot(BotAdapter):
 
     def _send_text_returning_id_sync(self, chat_id: str, text: str) -> str | None:
         if _should_send_as_markdown_card(text):
-            return self._send_card_returning_id_sync(chat_id, _markdown_card(text))
+            try:
+                return self._send_card_returning_id_sync(chat_id, _markdown_card(text))
+            except Exception as exc:
+                logger.warning(
+                    "Feishu markdown card send with ID failed; falling back to text: {}",
+                    exc,
+                )
 
         request = (
             CreateMessageRequest.builder()
@@ -400,7 +417,11 @@ class FeishuBot(BotAdapter):
             logger.error("Feishu patch failed: {} - {}", response.code, response.msg)
 
     def _reply_in_thread_sync(self, message_id: str, text: str) -> str | None:
-        return self._reply_card_in_thread_sync(message_id, _markdown_card(text))
+        try:
+            return self._reply_card_in_thread_sync(message_id, _markdown_card(text))
+        except Exception as exc:
+            logger.warning("Feishu markdown thread reply failed; falling back to text: {}", exc)
+            return self._reply_text_in_thread_sync(message_id, text)
 
     def _reply_card_in_thread_sync(self, message_id: str, card: dict) -> str | None:
         payload = self._format_feishu_card(card)
@@ -419,6 +440,26 @@ class FeishuBot(BotAdapter):
         response = self.client.im.v1.message.reply(request)
         if not response.success():
             raise RuntimeError(f"Feishu card reply failed: {response.code} - {response.msg}")
+        if response.data and response.data.message_id:
+            return response.data.message_id
+        return None
+
+    def _reply_text_in_thread_sync(self, message_id: str, text: str) -> str | None:
+        request = (
+            ReplyMessageRequest.builder()
+            .message_id(message_id)
+            .request_body(
+                ReplyMessageRequestBody.builder()
+                .msg_type("text")
+                .content(json.dumps({"text": text}))
+                .reply_in_thread(True)
+                .build()
+            )
+            .build()
+        )
+        response = self.client.im.v1.message.reply(request)
+        if not response.success():
+            raise RuntimeError(f"Feishu text reply failed: {response.code} - {response.msg}")
         if response.data and response.data.message_id:
             return response.data.message_id
         return None

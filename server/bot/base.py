@@ -49,6 +49,10 @@ class BotAdapter(ABC):
         await self.send_message(chat_id, text)
         return None
 
+    async def send_plain_text(self, chat_id: str, text: str) -> None:
+        """Send plain text without adapter-specific rich formatting."""
+        await self.send_message(chat_id, text)
+
     async def send_card_returning_id(self, chat_id: str, card: dict) -> str | None:
         """Send a card and return its ID for later editing/thread replies."""
         await self.send_card(chat_id, card)

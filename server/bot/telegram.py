@@ -54,6 +54,8 @@ class TelegramBot(BotAdapter):
         await self._app.shutdown()
 
     async def send_message(self, chat_id: str, text: str, **kwargs) -> None:
+        kwargs.pop("force_text", None)
+        kwargs.pop("plain_text", None)
         max_len = 4000
         for i in range(0, len(text), max_len):
             chunk = text[i : i + max_len]
