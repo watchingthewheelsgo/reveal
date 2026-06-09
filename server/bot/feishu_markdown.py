@@ -3,7 +3,8 @@
 import re
 
 CARD_MARKDOWN_CHUNK_SIZE = 2800
-MAX_TABLES_PER_CARD = 1
+MAX_TABLES_PER_CARD = 3
+SAFE_TABLES_PER_CARD = 1
 
 _TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
 

@@ -8,10 +8,23 @@ from time import monotonic
 from loguru import logger
 
 from server.bot.base import BotAdapter
-from server.bot.feishu_markdown import markdown_to_card_elements, split_markdown_for_cards
+from server.bot.feishu_markdown import (
+    MAX_TABLES_PER_CARD,
+    SAFE_TABLES_PER_CARD,
+    markdown_to_card_elements,
+    split_markdown_for_cards,
+)
 
 ProgressCallback = Callable[[str, str], Awaitable[None]]
 HEARTBEAT_INTERVAL_SECONDS = 30.0
+
+
+class CardBatchDeliveryError(RuntimeError):
+    def __init__(self, message: str, *, cards: list[dict], failed_index: int, original: Exception):
+        super().__init__(message)
+        self.cards = cards
+        self.failed_index = failed_index
+        self.original = original
 
 
 class ResearchProgressReporter:
@@ -78,19 +91,24 @@ class ResearchProgressReporter:
         if self.status_message_id and getattr(self.adapter, "supports_message_edit", True):
             await self._publish_status(f"✅ 研究完成 ({self.step_count} 步)")
         anchor_message_id = self.reply_to_message_id or self.status_message_id
-        result_cards = _result_cards(result_text, self.step_count, elapsed)
         if anchor_message_id:
             try:
-                return await self._send_result_cards(result_cards, anchor_message_id)
+                return await self._send_result_cards_with_retry(
+                    result_text,
+                    elapsed,
+                    anchor_message_id,
+                )
             except Exception as exc:
                 logger.exception(
                     "Research result thread card reply failed; sending regular card: {}",
                     exc,
                 )
+                result_text = _remaining_text_from_error(exc) or result_text
         try:
-            return await self._send_result_cards(result_cards, None)
+            return await self._send_result_cards_with_retry(result_text, elapsed, None)
         except Exception as exc:
             logger.exception("Research result card send failed; falling back to text: {}", exc)
+            result_text = _remaining_text_from_error(exc) or result_text
         await _send_plain_text(self.adapter, self.chat_id, result_text)
         return None
 
@@ -120,21 +138,58 @@ class ResearchProgressReporter:
                 _error_text(error_text, step_count=self.step_count, elapsed_seconds=elapsed),
             )
 
+    async def _send_result_cards_with_retry(
+        self,
+        result_text: str,
+        elapsed_seconds: float,
+        anchor_message_id: str | None,
+    ) -> str | None:
+        cards = _result_cards(result_text, self.step_count, elapsed_seconds)
+        try:
+            return await self._send_result_cards(cards, anchor_message_id)
+        except CardBatchDeliveryError as exc:
+            if not _is_table_limit_error(exc.original):
+                raise
+            remaining_text = _remaining_text_from_error(exc)
+            logger.warning(
+                "Research result card hit Feishu table limit; retrying with safe split: "
+                "failed_index={} remaining_chars={}",
+                exc.failed_index,
+                len(remaining_text),
+            )
+            safe_cards = _result_cards(
+                remaining_text,
+                self.step_count,
+                elapsed_seconds,
+                max_tables_per_card=SAFE_TABLES_PER_CARD,
+            )
+            return await self._send_result_cards(safe_cards, anchor_message_id)
+
     async def _send_result_cards(
         self,
         cards: list[dict],
         anchor_message_id: str | None,
     ) -> str | None:
         result_message_id: str | None = None
-        for card in cards:
-            if anchor_message_id:
-                result_message_id = await self.adapter.reply_card_in_thread(
-                    self.chat_id,
-                    anchor_message_id,
-                    card,
-                )
-            else:
-                result_message_id = await self.adapter.send_card_returning_id(self.chat_id, card)
+        for index, card in enumerate(cards):
+            try:
+                if anchor_message_id:
+                    result_message_id = await self.adapter.reply_card_in_thread(
+                        self.chat_id,
+                        anchor_message_id,
+                        card,
+                    )
+                else:
+                    result_message_id = await self.adapter.send_card_returning_id(
+                        self.chat_id, card
+                    )
+            except Exception as exc:
+                raise CardBatchDeliveryError(
+                    f"Result card delivery failed at index {index}",
+                    cards=cards,
+                    failed_index=index,
+                    original=exc,
+                ) from exc
         return result_message_id
 
     async def _publish_status(self, text: str) -> None:
@@ -214,8 +269,17 @@ def _result_card(result_text: str, step_count: int, elapsed_seconds: float) -> d
     )
 
 
-def _result_cards(result_text: str, step_count: int, elapsed_seconds: float) -> list[dict]:
-    parts = split_markdown_for_cards(result_text)
+def _result_cards(
+    result_text: str,
+    step_count: int,
+    elapsed_seconds: float,
+    *,
+    max_tables_per_card: int | None = None,
+) -> list[dict]:
+    parts = split_markdown_for_cards(
+        result_text,
+        max_tables_per_card=max_tables_per_card or MAX_TABLES_PER_CARD,
+    )
     total_parts = len(parts)
     return [
         _result_card_part(
@@ -241,7 +305,7 @@ def _result_card_part(
     metadata = (
         f"{step_count} 个工具步骤 · {elapsed_seconds:.1f}s{part_label} · 继续回复本话题即可追问"
     )
-    title = "Reveal · 研究结果" + (f" {part_index}/{total_parts}" if total_parts > 1 else "")
+    title = "Reveal · 研究结果"
     elements: list[dict] = [
         {
             "tag": "note",
@@ -307,3 +371,19 @@ async def _send_plain_text(adapter: BotAdapter, chat_id: str, text: str) -> None
         await adapter.send_plain_text(chat_id, text)
         return
     await adapter.send_message(chat_id, text)
+
+
+def _is_table_limit_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "table number over limit" in text or "errorvalue: table" in text
+
+
+def _remaining_text_from_error(exc: Exception) -> str:
+    if not isinstance(exc, CardBatchDeliveryError):
+        return ""
+    remaining = []
+    for card in exc.cards[exc.failed_index :]:
+        sections = card.get("sections") if isinstance(card, dict) else None
+        if isinstance(sections, list) and sections:
+            remaining.append(str(sections[0]))
+    return "\n\n".join(part for part in remaining if part).strip()

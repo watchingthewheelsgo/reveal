@@ -32,6 +32,16 @@ class FakeProgressAdapter:
         self.edits.append((chat_id, message_id, text))
 
 
+class StrictTableLimitAdapter(FakeProgressAdapter):
+    async def reply_card_in_thread(self, chat_id: str, message_id: str, card: dict) -> str | None:
+        if str(card["elements"]).count("| --- | --- |") > 1:
+            raise RuntimeError(
+                "Feishu card reply failed: 230099 - Failed to create card content, "
+                "ext=ErrCode: 11310; ErrMsg: card table number over limit; ErrorValue: table;"
+            )
+        return await super().reply_card_in_thread(chat_id, message_id, card)
+
+
 class ResearchProgressReporterTest(unittest.IsolatedAsyncioTestCase):
     async def test_finish_replies_with_result_card(self):
         adapter = FakeProgressAdapter()
@@ -83,7 +93,7 @@ class ResearchProgressReporterTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("NVDA", rendered)
         self.assertIn("盘前成交放大", rendered)
 
-    async def test_finish_splits_multiple_tables_into_consecutive_cards(self):
+    async def test_finish_groups_multiple_tables_into_fewer_cards(self):
         adapter = FakeProgressAdapter()
         reporter = ResearchProgressReporter(cast(BotAdapter, adapter), "chat-1", "root-msg")
         result = (
@@ -98,12 +108,30 @@ class ResearchProgressReporterTest(unittest.IsolatedAsyncioTestCase):
         result_id = await reporter.finish(result)
 
         self.assertEqual(result_id, "result-card")
+        self.assertEqual(len(adapter.thread_cards), 1)
+        card = adapter.thread_cards[0][2]
+        self.assertEqual(card["title"], "Reveal · 研究结果")
+        self.assertEqual(str(card["elements"]).count("| --- | --- |"), 3)
+
+    async def test_finish_retries_with_safe_split_when_feishu_table_limit_fails(self):
+        adapter = StrictTableLimitAdapter()
+        reporter = ResearchProgressReporter(cast(BotAdapter, adapter), "chat-1", "root-msg")
+        result = (
+            "前言\n\n"
+            "| 指标 | 数值 |\n| --- | --- |\n| 成交量 | 放大 |\n\n"
+            "中段\n\n"
+            "| 公司 | 变化 |\n| --- | --- |\n| RKLB | +12% |\n\n"
+            "尾段\n\n"
+            "| 风险 | 说明 |\n| --- | --- |\n| 波动 | 较高 |"
+        )
+
+        result_id = await reporter.finish(result)
+
+        self.assertEqual(result_id, "result-card")
         self.assertEqual(len(adapter.thread_cards), 3)
-        self.assertEqual(adapter.thread_cards[0][2]["title"], "Reveal · 研究结果 1/3")
-        self.assertEqual(adapter.thread_cards[1][2]["title"], "Reveal · 研究结果 2/3")
-        self.assertEqual(adapter.thread_cards[2][2]["title"], "Reveal · 研究结果 3/3")
         for _, message_id, card in adapter.thread_cards:
             self.assertEqual(message_id, "root-msg")
+            self.assertEqual(card["title"], "Reveal · 研究结果")
             self.assertLessEqual(str(card["elements"]).count("| --- | --- |"), 1)
 
     async def test_result_card_does_not_replace_long_body_with_truncation_notice(self):
