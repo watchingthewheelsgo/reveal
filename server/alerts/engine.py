@@ -90,14 +90,27 @@ async def run_alert_cycle(adapter=None):
         if adapter:
             from server.delivery.service import send_alert_to_admin
             from server.events.types import AlertCandidate
+            from server.interactions.threading import get_or_create_thread_for_source
             from server.stock.watchlist import platform_for_adapter
 
             platform = platform_for_adapter(adapter)
+            event_key = _alert_event_key(alert)
+            event_type = _alert_event_type(alert)
+
+            async def thread_for_chat(chat_id: str) -> int:
+                thread = await get_or_create_thread_for_source(
+                    chat_id=chat_id,
+                    platform=platform,
+                    source_type=event_type,
+                    source_key=event_key,
+                )
+                return thread.id
+
             await send_alert_to_admin(
                 adapter,
                 AlertCandidate(
-                    event_key=_alert_event_key(alert),
-                    event_type=_alert_event_type(alert),
+                    event_key=event_key,
+                    event_type=event_type,
                     source_id=ticker,
                     title=f"{alert.get('type', '告警')} — {ticker}",
                     summary=str(alert.get("message") or ""),
@@ -105,7 +118,9 @@ async def run_alert_cycle(adapter=None):
                     payload=alert,
                 ),
                 text=text,
+                card=_alert_card(alert, event_key=event_key),
                 platform=platform,
+                thread_factory=thread_for_chat,
                 reason="intraday alert cycle",
             )
 
@@ -148,6 +163,29 @@ def _format_alert(alert: dict) -> str:
         lines.append(f"💰 现价: ${alert['price']:.2f}")
 
     return "\n".join(lines)
+
+
+def _alert_card(alert: dict, *, event_key: str) -> dict:
+    from server.bot.cards import EventCardData, event_alert_card
+
+    return event_alert_card(
+        EventCardData(
+            title=f"{alert.get('type', '告警')} — {alert.get('ticker', 'UNKNOWN')}",
+            summary=_alert_summary(alert),
+            source="intraday_alert_cycle",
+            event_id=event_key,
+            priority=str(alert.get("severity") or "info"),
+        )
+    )
+
+
+def _alert_summary(alert: dict) -> str:
+    parts = [str(alert.get("message") or "").strip()]
+    if alert.get("detail"):
+        parts.append(str(alert["detail"]).strip())
+    if alert.get("price"):
+        parts.append(f"现价: ${alert['price']:.2f}")
+    return "\n\n".join(part for part in parts if part)
 
 
 def _alert_event_key(alert: dict) -> str:

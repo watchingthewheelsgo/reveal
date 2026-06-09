@@ -3,7 +3,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from sqlalchemy import select
+
 from server.db import engine as db_engine
+from server.db.engine import get_session_factory
+from server.db.models import AlertDelivery, InteractionThread
+from server.events.feed import get_event_detail_for_thread
 from server.stock.watchlist import (
     add_stock_watch,
     format_stock_watch_list,
@@ -20,6 +25,16 @@ class DummyAdapter:
 
     async def send_message(self, chat_id: str, text: str) -> None:
         self.messages.append((chat_id, text))
+
+
+class TelegramCardAdapter(DummyAdapter):
+    def __init__(self):
+        super().__init__()
+        self.cards: list[tuple[str, dict]] = []
+
+    async def send_card_returning_id(self, chat_id: str, card: dict) -> str | None:
+        self.cards.append((chat_id, card))
+        return f"card-{len(self.cards)}"
 
 
 class StockWatchlistTest(unittest.IsolatedAsyncioTestCase):
@@ -77,6 +92,64 @@ class StockWatchlistTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(adapter.messages, [])
         payload = await get_stock_watch_list_payload("chat-1")
         self.assertEqual(payload["items"][0]["last_price"], 103.0)
+
+    async def test_each_stock_watch_alert_gets_its_own_thread(self):
+        with patch("server.stock.watchlist.get_current_price", return_value=100.0):
+            await add_stock_watch("AAPL", "chat-1", platform="telegram", threshold_pct=5.0)
+
+        adapter = TelegramCardAdapter()
+        with patch("server.stock.watchlist.get_current_price", return_value=106.0):
+            first_alerts = await run_stock_watch_price_cycle({"telegram": adapter})
+        with patch("server.stock.watchlist.get_current_price", return_value=112.0):
+            second_alerts = await run_stock_watch_price_cycle({"telegram": adapter})
+
+        self.assertEqual(len(first_alerts), 1)
+        self.assertEqual(len(second_alerts), 1)
+        self.assertEqual(len(adapter.cards), 2)
+
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            threads = (
+                (
+                    await session.execute(
+                        select(InteractionThread)
+                        .where(InteractionThread.source_type == "stock_watch")
+                        .order_by(InteractionThread.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            deliveries = (
+                (
+                    await session.execute(
+                        select(AlertDelivery)
+                        .where(AlertDelivery.event_type == "stock_watch")
+                        .order_by(AlertDelivery.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+        self.assertEqual(len(threads), 2)
+        self.assertEqual(len(deliveries), 2)
+        self.assertNotEqual(threads[0].source_key, threads[1].source_key)
+        self.assertEqual(threads[0].root_message_id, "card-1")
+        self.assertEqual(threads[1].root_message_id, "card-2")
+        self.assertEqual(
+            {delivery.thread_id for delivery in deliveries},
+            {thread.id for thread in threads},
+        )
+
+        first_detail = await get_event_detail_for_thread("stock_watch", None, threads[0].id)
+        second_detail = await get_event_detail_for_thread("stock_watch", None, threads[1].id)
+        self.assertIsNotNone(first_detail)
+        self.assertIsNotNone(second_detail)
+        assert first_detail is not None
+        assert second_detail is not None
+        self.assertIn("106.00", first_detail["record"]["event_key"])
+        self.assertIn("112.00", second_detail["record"]["event_key"])
 
 
 if __name__ == "__main__":

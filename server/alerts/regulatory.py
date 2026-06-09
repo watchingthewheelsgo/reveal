@@ -97,6 +97,7 @@ async def run_regulatory_alert_cycle(adapter=None) -> None:
                     payload=event,
                 ),
                 text=format_regulatory_alert(event),
+                card=_regulatory_alert_card(event),
                 platform=platform,
                 thread_factory=thread_for_chat,
                 reason="regulatory alert",
@@ -444,6 +445,21 @@ def format_regulatory_alert(event: dict[str, Any]) -> str:
     if event.get("url"):
         lines.append(str(event["url"]))
     return "\n".join(lines)
+
+
+def _regulatory_alert_card(event: dict[str, Any]) -> dict:
+    from server.bot.cards import EventCardData, event_alert_card
+
+    return event_alert_card(
+        EventCardData(
+            title=str(event.get("title") or event.get("message") or "Regulatory event"),
+            summary=str(event.get("detail") or event.get("message") or ""),
+            source=str(event.get("source") or "regulatory"),
+            event_id=str(event.get("event_id") or ""),
+            priority=str(event.get("severity") or "info"),
+            url=str(event["url"]) if event.get("url") else None,
+        )
+    )
 
 
 def _sec_headers(user_agent: str) -> dict[str, str]:

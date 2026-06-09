@@ -65,6 +65,7 @@ async def run_market_mover_alert_cycle(adapter=None) -> list[dict[str, Any]]:
                     payload=event,
                 ),
                 text=format_market_mover_alert(event),
+                card=_market_mover_alert_card(event),
                 platform=platform,
                 thread_factory=thread_for_chat,
                 reason="longbridge market mover",
@@ -240,6 +241,25 @@ def format_market_mover_alert(event: dict[str, Any]) -> str:
             lines.append(f"时间: {event_time}")
     lines.append("来源: Longbridge anomaly")
     return "\n".join(lines)
+
+
+def _market_mover_alert_card(event: dict[str, Any]) -> dict:
+    from server.bot.cards import EventCardData, event_alert_card
+
+    summary_parts = [
+        str(event.get("change_text") or "").strip(),
+        str(event.get("detail") or "").strip(),
+    ]
+    return event_alert_card(
+        EventCardData(
+            title=f"{event.get('ticker', 'UNKNOWN')} {event.get('event_type', '异动')}",
+            summary="\n\n".join(part for part in summary_parts if part),
+            source=str(event.get("source") or "longbridge"),
+            event_id=str(event.get("event_id") or ""),
+            priority="warning",
+            sentiment=str(event.get("direction") or ""),
+        )
+    )
 
 
 def format_market_mover_list(events: list[dict[str, Any]]) -> str:

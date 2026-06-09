@@ -46,6 +46,7 @@ class BotCardsTest(unittest.TestCase):
 
         self.assertEqual(card["title"], "Reveal · 市场事件")
         self.assertEqual(card["header"]["template"], "red")
+        self.assertIn("继续回复本话题即可追问", card["sections"][0])
         self.assertIn("SEC 8-K", rendered)
         self.assertIn("事件: sec:abc", rendered)
         self.assertIn("打开原文", rendered)

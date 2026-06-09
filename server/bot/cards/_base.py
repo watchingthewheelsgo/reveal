@@ -48,7 +48,19 @@ def _sections_text(elements: list[dict]) -> str:
     for element in elements:
         if element.get("tag") == "markdown":
             parts.append(str(element.get("content") or ""))
+        if element.get("tag") == "note":
+            parts.extend(_note_text_parts(element))
         text = element.get("text")
         if isinstance(text, dict):
             parts.append(str(text.get("content") or ""))
     return "\n\n".join(part for part in parts if part).strip()
+
+
+def _note_text_parts(element: dict) -> list[str]:
+    parts = []
+    for item in element.get("elements") or []:
+        if isinstance(item, dict):
+            content = item.get("content") or item.get("text")
+            if content:
+                parts.append(str(content))
+    return parts

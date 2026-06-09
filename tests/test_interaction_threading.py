@@ -58,6 +58,30 @@ class InteractionThreadingTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resolved.id, thread.id)
         self.assertEqual(resolved.source_type, "twitter")
 
+    async def test_source_binding_sets_missing_root_message_id(self):
+        thread = await get_or_create_thread_for_source(
+            chat_id="chat-1",
+            platform="feishu",
+            source_type="price",
+            source_key="price:NVDA:move",
+        )
+
+        await bind_message_to_thread(
+            chat_id="chat-1",
+            message_id="msg-source",
+            thread_id=thread.id,
+            platform="feishu",
+            role="source",
+            source_type="price",
+            source_id=None,
+        )
+
+        resolved = await resolve_thread_by_message("chat-1", "msg-source")
+
+        self.assertIsNotNone(resolved)
+        assert resolved is not None
+        self.assertEqual(resolved.root_message_id, "msg-source")
+
     async def test_agent_thread_can_attach_research_session(self):
         thread = await create_agent_thread(
             chat_id="chat-1",

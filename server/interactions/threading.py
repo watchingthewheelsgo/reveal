@@ -153,6 +153,14 @@ async def bind_message_to_thread(
                 )
             )
         await session.commit()
+        if role in {"root", "source"}:
+            thread = await session.get(InteractionThread, thread_id)
+            if thread is not None and not thread.root_message_id:
+                now = _utcnow()
+                thread.root_message_id = message_id
+                thread.last_activity_at = now
+                thread.updated_at = now
+                await session.commit()
 
 
 async def resolve_thread_by_message(

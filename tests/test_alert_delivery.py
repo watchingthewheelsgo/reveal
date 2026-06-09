@@ -4,7 +4,7 @@ from pathlib import Path
 
 from server.db import engine as db_engine
 from server.db.engine import get_session_factory
-from server.db.models import InteractionThread
+from server.db.models import AlertDelivery, InteractionThread
 from server.delivery.service import send_alert, send_alert_to_admin
 from server.events.types import AlertCandidate
 from server.interactions.threading import get_or_create_thread_for_source
@@ -22,6 +22,16 @@ class ReturnIdAdapter(DummyAdapter):
     async def send_message_returning_id(self, chat_id: str, text: str) -> str | None:
         await self.send_message(chat_id, text)
         return "msg-1"
+
+
+class CardReturnIdAdapter(DummyAdapter):
+    def __init__(self):
+        super().__init__()
+        self.cards: list[tuple[str, dict]] = []
+
+    async def send_card_returning_id(self, chat_id: str, card: dict) -> str | None:
+        self.cards.append((chat_id, card))
+        return "card-1"
 
 
 class AdminReturnIdAdapter(DummyAdapter):
@@ -95,6 +105,82 @@ class AlertDeliveryTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(delivery.message_id, "msg-1")
         self.assertEqual(delivery.status, "sent")
+
+    async def test_send_alert_prefers_card_when_available(self):
+        adapter = CardReturnIdAdapter()
+        candidate = AlertCandidate(
+            event_key="price:NVDA:move",
+            event_type="price",
+            title="NVDA moved",
+            summary="moved",
+        )
+        card = {"title": "Reveal · 市场事件", "sections": ["NVDA moved"]}
+
+        delivery = await send_alert(
+            adapter,
+            candidate,
+            chat_id="chat-1",
+            text="NVDA moved",
+            card=card,
+            platform="feishu",
+        )
+
+        self.assertEqual(delivery.message_id, "card-1")
+        self.assertEqual(adapter.cards, [("chat-1", card)])
+        self.assertEqual(adapter.messages, [])
+
+    async def test_retry_refreshes_existing_delivery_metadata(self):
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            session.add(
+                AlertDelivery(
+                    event_type="news",
+                    event_key="news:NVDA:headline",
+                    platform="feishu",
+                    chat_id="chat-1",
+                    status="failed",
+                    reason="old reason",
+                    severity="warning",
+                    payload={"headline": "old"},
+                    error="previous failure",
+                )
+            )
+            await session.commit()
+
+        thread = await get_or_create_thread_for_source(
+            chat_id="chat-1",
+            platform="feishu",
+            source_type="news",
+            source_key="news:NVDA:headline",
+        )
+        adapter = ReturnIdAdapter()
+        candidate = AlertCandidate(
+            event_key="news:NVDA:headline",
+            event_type="news",
+            source_id="NVDA",
+            title="NVDA headline",
+            summary="new",
+            severity="critical",
+            payload={"headline": "new"},
+        )
+
+        delivery = await send_alert(
+            adapter,
+            candidate,
+            chat_id="chat-1",
+            text="new headline",
+            platform="feishu",
+            thread_id=thread.id,
+            reason="retry after failure",
+        )
+
+        self.assertEqual(delivery.status, "sent")
+        self.assertEqual(delivery.thread_id, thread.id)
+        self.assertEqual(delivery.severity, "critical")
+        self.assertEqual(delivery.reason, "retry after failure")
+        self.assertEqual(delivery.payload, {"headline": "new"})
+        self.assertIsNone(delivery.error)
+        self.assertEqual(delivery.message_id, "msg-1")
 
     async def test_repeat_allowed_creates_multiple_delivery_rows(self):
         adapter = DummyAdapter()

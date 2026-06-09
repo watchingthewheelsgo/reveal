@@ -25,6 +25,7 @@ async def send_alert(
     *,
     chat_id: str,
     text: str,
+    card: dict | None = None,
     platform: str | None = None,
     thread_id: int | None = None,
     reason: str = "",
@@ -39,15 +40,23 @@ async def send_alert(
     else:
         candidate = replace(candidate, event_key=_repeat_event_key(candidate.event_key))
 
-    delivery = existing or await create_pending_delivery(
-        candidate,
-        chat_id=chat_id,
-        platform=normalized_platform,
-        thread_id=thread_id,
-        reason=reason,
-    )
+    if existing:
+        delivery = await refresh_delivery_attempt(
+            existing.id,
+            candidate,
+            thread_id=thread_id,
+            reason=reason,
+        )
+    else:
+        delivery = await create_pending_delivery(
+            candidate,
+            chat_id=chat_id,
+            platform=normalized_platform,
+            thread_id=thread_id,
+            reason=reason,
+        )
     try:
-        message_id = await _send_returning_id(adapter, chat_id, text)
+        message_id = await _send_returning_id(adapter, chat_id, text, card=card)
         await mark_delivery_sent(delivery.id, message_id=message_id)
         if thread_id and message_id:
             await bind_message_to_thread(
@@ -78,6 +87,7 @@ async def send_alert_to_admin(
     candidate: AlertCandidate,
     *,
     text: str,
+    card: dict | None = None,
     platform: str | None = None,
     thread_id: int | None = None,
     thread_factory: ThreadFactory | None = None,
@@ -96,6 +106,7 @@ async def send_alert_to_admin(
                 candidate,
                 chat_id=chat_id,
                 text=text,
+                card=card,
                 platform=platform,
                 thread_id=effective_thread_id,
                 reason=reason,
@@ -156,7 +167,12 @@ async def create_pending_delivery(
             await session.rollback()
             existing = await get_delivery(candidate.event_key, platform, chat_id)
             if existing is not None:
-                return existing
+                return await refresh_delivery_attempt(
+                    existing.id,
+                    candidate,
+                    thread_id=thread_id,
+                    reason=reason,
+                )
             raise
         await session.refresh(row)
         return row
@@ -175,6 +191,35 @@ async def mark_delivery_sent(delivery_id: int, *, message_id: str | None = None)
         row.updated_at = now
         row.error = None
         await session.commit()
+
+
+async def refresh_delivery_attempt(
+    delivery_id: int,
+    candidate: AlertCandidate,
+    *,
+    thread_id: int | None = None,
+    reason: str = "",
+) -> AlertDelivery:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        row = await session.get(AlertDelivery, delivery_id)
+        if row is None:
+            raise RuntimeError(f"Alert delivery not found: {delivery_id}")
+        now = _utcnow()
+        row.event_type = candidate.event_type
+        row.event_source_id = str(candidate.source_id) if candidate.source_id is not None else None
+        row.event_key = candidate.event_key
+        if thread_id is not None:
+            row.thread_id = thread_id
+        row.status = "pending"
+        row.reason = reason
+        row.severity = candidate.severity
+        row.payload = candidate.payload
+        row.error = None
+        row.updated_at = now
+        await session.commit()
+        await session.refresh(row)
+        return row
 
 
 async def mark_delivery_failed(delivery_id: int, error: str) -> None:
@@ -199,7 +244,18 @@ async def record_skipped_delivery(
 ) -> AlertDelivery:
     existing = await get_delivery(candidate.event_key, platform, chat_id)
     if existing:
-        return existing
+        if existing.status == "sent":
+            return existing
+        refreshed = await refresh_delivery_attempt(
+            existing.id,
+            candidate,
+            thread_id=thread_id,
+            reason=reason,
+        )
+        await mark_delivery_skipped(refreshed.id)
+        skipped = await get_delivery_by_id(refreshed.id)
+        assert skipped is not None
+        return skipped
     delivery = await create_pending_delivery(
         candidate,
         chat_id=chat_id,
@@ -229,12 +285,16 @@ async def record_sent_delivery(
 ) -> AlertDelivery:
     existing = await get_delivery(candidate.event_key, platform, chat_id)
     if existing:
-        if existing.status != "sent":
-            await mark_delivery_sent(existing.id, message_id=message_id)
-            refreshed = await get_delivery_by_id(existing.id)
-            assert refreshed is not None
-            return refreshed
-        return existing
+        refreshed = await refresh_delivery_attempt(
+            existing.id,
+            candidate,
+            thread_id=thread_id,
+            reason=reason,
+        )
+        await mark_delivery_sent(refreshed.id, message_id=message_id)
+        sent = await get_delivery_by_id(refreshed.id)
+        assert sent is not None
+        return sent
     delivery = await create_pending_delivery(
         candidate,
         chat_id=chat_id,
@@ -248,7 +308,30 @@ async def record_sent_delivery(
     return refreshed
 
 
-async def _send_returning_id(adapter: Any, chat_id: str, text: str) -> str | None:
+async def mark_delivery_skipped(delivery_id: int) -> None:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        row = await session.get(AlertDelivery, delivery_id)
+        if row is None:
+            return
+        row.status = "skipped"
+        row.updated_at = _utcnow()
+        await session.commit()
+
+
+async def _send_returning_id(
+    adapter: Any,
+    chat_id: str,
+    text: str,
+    *,
+    card: dict | None = None,
+) -> str | None:
+    if card is not None:
+        if hasattr(adapter, "send_card_returning_id"):
+            return await adapter.send_card_returning_id(chat_id, card)
+        if hasattr(adapter, "send_card"):
+            await adapter.send_card(chat_id, card)
+            return None
     if hasattr(adapter, "send_message_returning_id"):
         return await adapter.send_message_returning_id(chat_id, text)
     await adapter.send_message(chat_id, text)

@@ -274,18 +274,17 @@ async def _send_stock_watch_alert(
     for adapter in targets:
         try:
             platform = platform_for_adapter(adapter)
+            event_key = (
+                f"stock_watch:{watch.id}:{alert['previous_price']:.4f}:{alert['current_price']:.4f}"
+            )
             thread = await get_or_create_thread_for_source(
                 chat_id=watch.chat_id,
                 platform=platform,
                 source_type="stock_watch",
-                source_id=watch.id,
-                source_key=f"stock_watch:{watch.ticker}:{watch.chat_id}",
+                source_key=event_key,
             )
             candidate = AlertCandidate(
-                event_key=(
-                    f"stock_watch:{watch.id}:{alert['previous_price']:.4f}:"
-                    f"{alert['current_price']:.4f}"
-                ),
+                event_key=event_key,
                 event_type="stock_watch",
                 source_id=watch.id,
                 title=f"{watch.ticker} 股票观察提醒",
@@ -299,6 +298,7 @@ async def _send_stock_watch_alert(
                 candidate,
                 chat_id=watch.chat_id,
                 text=text,
+                card=_stock_watch_alert_card(alert),
                 platform=platform,
                 thread_id=thread.id,
                 reason="stock watch price move",
@@ -310,6 +310,22 @@ async def _send_stock_watch_alert(
                 watch.platform,
                 watch.chat_id,
             )
+
+
+def _stock_watch_alert_card(alert: dict[str, Any]) -> dict:
+    from server.bot.cards import StockAlertCardData, stock_watch_alert_card
+
+    return stock_watch_alert_card(
+        StockAlertCardData(
+            ticker=str(alert["ticker"]),
+            message=str(alert["message"]),
+            previous_price=_float_or_none(alert.get("previous_price")),
+            current_price=_float_or_none(alert.get("current_price")),
+            change_pct=_float_or_none(alert.get("change_pct")),
+            threshold_pct=_float_or_none(alert.get("threshold_pct")),
+            severity=str(alert.get("severity") or "warning"),
+        )
+    )
 
 
 def format_stock_watch_alert(alert: dict[str, Any]) -> str:
@@ -327,6 +343,13 @@ def format_stock_watch_alert(alert: dict[str, Any]) -> str:
 
 def _utcnow() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _dt(value: datetime | None) -> str | None:
