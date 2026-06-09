@@ -749,6 +749,11 @@ def _spawn_background_task(coro, label: str) -> None:
     task.add_done_callback(_log_result)
 
 
+def _failure_message(prefix: str, exc: Exception) -> str:
+    detail = str(exc).strip() or exc.__class__.__name__
+    return f"{prefix}: {detail}"
+
+
 async def _bind_research_session_message(
     chat_id: str,
     message_id: str | None,
@@ -898,7 +903,7 @@ async def _run_agent_message_job(
         await reporter.error(str(e))
     except Exception as e:
         logger.exception(f"Agent message failed: {e}")
-        await reporter.error("Agent 处理失败，请稍后重试。")
+        await reporter.error(_failure_message("Agent 处理失败", e))
 
 
 async def _run_deep_research_job(
@@ -929,7 +934,7 @@ async def _run_deep_research_job(
         await reporter.error(str(e))
     except Exception as e:
         logger.exception(f"Deep research failed: {e}")
-        await reporter.error("深挖失败，请稍后重试。")
+        await reporter.error(_failure_message("深挖失败", e))
 
 
 async def _run_research_ask_job(
@@ -948,7 +953,7 @@ async def _run_research_ask_job(
         await reporter.error(str(e))
     except Exception as e:
         logger.exception(f"Research ask failed: {e}")
-        await reporter.error("回答失败，请稍后重试。")
+        await reporter.error(_failure_message("回答失败", e))
 
 
 async def _run_topic_summary_job(chat_id: str, adapter, reply_to: str = "") -> None:
@@ -965,7 +970,7 @@ async def _run_topic_summary_job(chat_id: str, adapter, reply_to: str = "") -> N
         await reporter.error(str(e))
     except Exception as e:
         logger.exception(f"Topic summary failed: {e}")
-        await reporter.error("研究线程总结失败，请稍后重试。")
+        await reporter.error(_failure_message("研究线程总结失败", e))
 
 
 async def _run_topic_message_job(
@@ -1014,7 +1019,7 @@ async def _run_topic_message_job(
         await reporter.error(str(e))
     except Exception as e:
         logger.exception(f"Topic message handling failed: {e}")
-        await reporter.error("当前研究线程处理失败。")
+        await reporter.error(_failure_message("当前研究线程处理失败", e))
 
 
 async def _run_ticker_research_job(
@@ -1042,7 +1047,7 @@ async def _run_ticker_research_job(
         await reporter.error(str(e))
     except Exception as e:
         logger.exception(f"Ticker research failed: {e}")
-        await reporter.error("研究失败，请稍后重试。")
+        await reporter.error(_failure_message("研究失败", e))
 
 
 async def _run_freeform_research_job(chat_id: str, query: str, adapter, reply_to: str = "") -> None:
@@ -1068,7 +1073,7 @@ async def _run_freeform_research_job(chat_id: str, query: str, adapter, reply_to
         await reporter.error(str(e))
     except Exception as e:
         logger.exception(f"Freeform research failed: {e}")
-        await reporter.error("研究失败，请稍后重试。")
+        await reporter.error(_failure_message("研究失败", e))
 
 
 async def _run_twitter_check_job(

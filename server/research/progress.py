@@ -8,7 +8,7 @@ from time import monotonic
 from loguru import logger
 
 from server.bot.base import BotAdapter
-from server.bot.feishu_markdown import markdown_to_card_elements
+from server.bot.feishu_markdown import markdown_to_card_elements, split_markdown_for_cards
 
 ProgressCallback = Callable[[str, str], Awaitable[None]]
 HEARTBEAT_INTERVAL_SECONDS = 30.0
@@ -78,23 +78,25 @@ class ResearchProgressReporter:
         if self.status_message_id and getattr(self.adapter, "supports_message_edit", True):
             await self._publish_status(f"✅ 研究完成 ({self.step_count} 步)")
         anchor_message_id = self.reply_to_message_id or self.status_message_id
-        result_card = _result_card(result_text, self.step_count, elapsed)
+        result_cards = _result_cards(result_text, self.step_count, elapsed)
         if anchor_message_id:
             try:
-                return await self.adapter.reply_card_in_thread(
-                    self.chat_id, anchor_message_id, result_card
+                return await self._send_result_cards(result_cards, anchor_message_id)
+            except Exception as exc:
+                logger.exception(
+                    "Research result thread card reply failed; sending regular card: {}",
+                    exc,
                 )
-            except Exception:
-                logger.exception("Research result thread card reply failed; sending regular card")
         try:
-            return await self.adapter.send_card_returning_id(self.chat_id, result_card)
-        except Exception:
-            logger.exception("Research result card send failed; falling back to text")
-        await self.adapter.send_message(self.chat_id, result_text)
+            return await self._send_result_cards(result_cards, None)
+        except Exception as exc:
+            logger.exception("Research result card send failed; falling back to text: {}", exc)
+        await _send_plain_text(self.adapter, self.chat_id, result_text)
         return None
 
     async def error(self, error_text: str) -> None:
         await self._stop_heartbeat()
+        elapsed = monotonic() - self._started_at
         logger.info(
             "Research progress error: chat_id={} steps={} error={}",
             self.chat_id,
@@ -103,8 +105,37 @@ class ResearchProgressReporter:
         )
         if self.status_message_id:
             await self._publish_status(f"❌ {error_text}")
-        else:
-            await self.adapter.send_message(self.chat_id, f"❌ {error_text}")
+        error_card = _error_card(error_text, self.step_count, elapsed)
+        anchor_message_id = self.reply_to_message_id or self.status_message_id
+        try:
+            if anchor_message_id:
+                await self.adapter.reply_card_in_thread(self.chat_id, anchor_message_id, error_card)
+            else:
+                await self.adapter.send_card_returning_id(self.chat_id, error_card)
+        except Exception as exc:
+            logger.exception("Research error card send failed; falling back to text: {}", exc)
+            await _send_plain_text(
+                self.adapter,
+                self.chat_id,
+                _error_text(error_text, step_count=self.step_count, elapsed_seconds=elapsed),
+            )
+
+    async def _send_result_cards(
+        self,
+        cards: list[dict],
+        anchor_message_id: str | None,
+    ) -> str | None:
+        result_message_id: str | None = None
+        for card in cards:
+            if anchor_message_id:
+                result_message_id = await self.adapter.reply_card_in_thread(
+                    self.chat_id,
+                    anchor_message_id,
+                    card,
+                )
+            else:
+                result_message_id = await self.adapter.send_card_returning_id(self.chat_id, card)
+        return result_message_id
 
     async def _publish_status(self, text: str) -> None:
         anchor_message_id = self.reply_to_message_id or self.status_message_id
@@ -174,7 +205,43 @@ def _status_card(text: str) -> dict:
 
 
 def _result_card(result_text: str, step_count: int, elapsed_seconds: float) -> dict:
-    metadata = f"{step_count} 个工具步骤 · {elapsed_seconds:.1f}s · 继续回复本话题即可追问"
+    return _result_card_part(
+        result_text,
+        step_count,
+        elapsed_seconds,
+        part_index=1,
+        total_parts=1,
+    )
+
+
+def _result_cards(result_text: str, step_count: int, elapsed_seconds: float) -> list[dict]:
+    parts = split_markdown_for_cards(result_text)
+    total_parts = len(parts)
+    return [
+        _result_card_part(
+            part,
+            step_count,
+            elapsed_seconds,
+            part_index=index + 1,
+            total_parts=total_parts,
+        )
+        for index, part in enumerate(parts)
+    ]
+
+
+def _result_card_part(
+    result_text: str,
+    step_count: int,
+    elapsed_seconds: float,
+    *,
+    part_index: int,
+    total_parts: int,
+) -> dict:
+    part_label = f" · 第 {part_index}/{total_parts} 部分" if total_parts > 1 else ""
+    metadata = (
+        f"{step_count} 个工具步骤 · {elapsed_seconds:.1f}s{part_label} · 继续回复本话题即可追问"
+    )
+    title = "Reveal · 研究结果" + (f" {part_index}/{total_parts}" if total_parts > 1 else "")
     elements: list[dict] = [
         {
             "tag": "note",
@@ -193,12 +260,12 @@ def _result_card(result_text: str, step_count: int, elapsed_seconds: float) -> d
             elements.append({"tag": "hr"})
         elements.append(element)
     return {
-        "title": "Reveal · 研究结果",
+        "title": title,
         "sections": [result_text],
         "config": {"wide_screen_mode": True},
         "header": {
             "template": "green",
-            "title": {"tag": "plain_text", "content": "Reveal · 研究结果"},
+            "title": {"tag": "plain_text", "content": title},
         },
         "elements": elements,
     }
@@ -206,3 +273,37 @@ def _result_card(result_text: str, step_count: int, elapsed_seconds: float) -> d
 
 def _result_body_elements(text: str) -> list[dict]:
     return markdown_to_card_elements(text)
+
+
+def _error_card(error_text: str, step_count: int, elapsed_seconds: float) -> dict:
+    content = _error_text(error_text, step_count=step_count, elapsed_seconds=elapsed_seconds)
+    return {
+        "title": "Reveal · 处理失败",
+        "sections": [content],
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": "red",
+            "title": {"tag": "plain_text", "content": "Reveal · 处理失败"},
+        },
+        "elements": markdown_to_card_elements(content),
+    }
+
+
+def _error_text(
+    error_text: str,
+    *,
+    step_count: int | None = None,
+    elapsed_seconds: float | None = None,
+) -> str:
+    reason = str(error_text or "").strip() or "未知错误"
+    lines = ["**处理失败**", "", f"失败原因: {reason}"]
+    if step_count is not None and elapsed_seconds is not None:
+        lines.extend(["", f"工具步骤: {step_count}", f"耗时: {elapsed_seconds:.1f}s"])
+    return "\n".join(lines)
+
+
+async def _send_plain_text(adapter: BotAdapter, chat_id: str, text: str) -> None:
+    if hasattr(adapter, "send_plain_text"):
+        await adapter.send_plain_text(chat_id, text)
+        return
+    await adapter.send_message(chat_id, text)
