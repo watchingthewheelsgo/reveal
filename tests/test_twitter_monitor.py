@@ -77,6 +77,36 @@ class DummyProcessor:
         return "测试摘要"
 
 
+class MarketProcessor:
+    async def analyze(self, context: str, author: str = "") -> TweetAnalysis:
+        return TweetAnalysis(
+            summary=f"{author} 提到特朗普关税新闻可能影响市场。",
+            translation=None,
+            mentioned_tickers=["SPY"],
+            topics=["特朗普", "关税"],
+            sentiment="mixed",
+            urgency="medium",
+            urgency_reason="政治政策可能影响风险偏好。",
+            is_noteworthy=True,
+            attention_reason=f"{author} 认为关税变化会影响美股风险偏好。",
+        )
+
+
+class SocialOnlyProcessor:
+    async def analyze(self, context: str, author: str = "") -> TweetAnalysis:
+        return TweetAnalysis(
+            summary="作者庆祝粉丝增长。",
+            translation=None,
+            mentioned_tickers=[],
+            topics=["粉丝庆祝"],
+            sentiment="neutral",
+            urgency="low",
+            urgency_reason="无市场相关性。",
+            is_noteworthy=False,
+            attention_reason="",
+        )
+
+
 class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
@@ -422,6 +452,92 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(total, 0)
         self.assertEqual(adapter.messages, [])
         self.assertEqual(adapter.cards, [])
+
+    async def test_monitor_filters_irrelevant_social_updates(self):
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            session.add(TwitterState(username="alice", last_tweet_epoch=100))
+            await session.commit()
+
+        async def fake_fetch_user_tweets(username: str, count: int = 20, cursor: str | None = None):
+            return {
+                "screen_name": username,
+                "latest_tweets": [
+                    {
+                        "tweetID": "101",
+                        "date_epoch": 101,
+                        "text": "Thanks everyone for 700k followers. Huge milestone!",
+                    },
+                ],
+            }
+
+        adapter = DummyAdapter()
+        with patch("server.social.monitor.fetch_user_tweets", new=fake_fetch_user_tweets):
+            total = await run_twitter_monitor(["alice"], adapter, SocialOnlyProcessor())
+
+        self.assertEqual(total, 0)
+        self.assertEqual(adapter.cards, [])
+        self.assertEqual(adapter.messages, [])
+
+        async with session_factory() as session:
+            state = (
+                await session.execute(select(TwitterState).where(TwitterState.username == "alice"))
+            ).scalar_one()
+            post = (
+                await session.execute(select(SocialPost).where(SocialPost.tweet_id == "101"))
+            ).scalar_one()
+
+        self.assertEqual(state.last_tweet_epoch, 101)
+        self.assertFalse(post.is_pushed)
+
+    async def test_monitor_groups_similar_news_across_accounts(self):
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            session.add(TwitterState(username="alice", last_tweet_epoch=100))
+            session.add(TwitterState(username="bob", last_tweet_epoch=100))
+            await session.commit()
+
+        async def fake_fetch_user_tweets(username: str, count: int = 20, cursor: str | None = None):
+            tweet_id = "201" if username == "alice" else "202"
+            return {
+                "screen_name": username,
+                "latest_tweets": [
+                    {
+                        "tweetID": tweet_id,
+                        "date_epoch": int(tweet_id),
+                        "text": f"{username} on Trump tariff headline and market risk",
+                        "expanded_urls": [
+                            {
+                                "expanded_url": (
+                                    "https://example.com/news/trump-tariff?utm_source=x&ref=twitter"
+                                )
+                            }
+                        ],
+                    },
+                ],
+            }
+
+        adapter = DummyAdapter()
+        with patch("server.social.monitor.fetch_user_tweets", new=fake_fetch_user_tweets):
+            total = await run_twitter_monitor(["alice", "bob"], adapter, MarketProcessor())
+
+        self.assertEqual(total, 2)
+        self.assertEqual(len(adapter.cards), 1)
+        card = adapter.cards[0][1]
+        pushed = "\n".join([card["title"], *card["sections"]])
+        self.assertIn("X Topic", card["title"])
+        self.assertIn("@alice", pushed)
+        self.assertIn("@bob", pushed)
+        self.assertIn("关税", pushed)
+        self.assertIn("alice 认为关税变化", pushed)
+        self.assertIn("bob 认为关税变化", pushed)
+
+        async with session_factory() as session:
+            pushed_count = await session.scalar(
+                select(func.count()).select_from(SocialPost).where(SocialPost.is_pushed.is_(True))
+            )
+
+        self.assertEqual(pushed_count, 2)
 
 
 if __name__ == "__main__":

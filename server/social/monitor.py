@@ -2,8 +2,10 @@
 
 import asyncio
 import re
+from collections import Counter
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 from loguru import logger
@@ -27,6 +29,226 @@ CARD_SUMMARY_LIMIT = 360
 CARD_BODY_LIMIT = 900
 CARD_BODY_WITH_SUMMARY_LIMIT = 420
 CARD_TRANSLATION_LIMIT = 450
+SOCIAL_TOPIC_GROUP_MIN_POSTS = 2
+
+SOCIAL_RELEVANCE_KEYWORDS = frozenset(
+    {
+        "$",
+        "10-k",
+        "10-q",
+        "after-hours",
+        "ai capex",
+        "attack",
+        "bank",
+        "banking",
+        "bitcoin",
+        "bond",
+        "bonds",
+        "btc",
+        "buyback",
+        "cbo",
+        "ceasefire",
+        "central bank",
+        "ceo",
+        "china",
+        "congress",
+        "cpi",
+        "crypto",
+        "defense",
+        "department of defense",
+        "dollar",
+        "dow",
+        "drone",
+        "earnings",
+        "economy",
+        "election",
+        "equities",
+        "equity",
+        "executive order",
+        "export control",
+        "fed",
+        "fda",
+        "fomc",
+        "forex",
+        "futures",
+        "gaza",
+        "gdp",
+        "gold",
+        "guidance",
+        "inflation",
+        "ipo",
+        "iran",
+        "israel",
+        "jobs report",
+        "market",
+        "merger",
+        "military",
+        "missile",
+        "nasdaq",
+        "nato",
+        "oil",
+        "options",
+        "opec",
+        "palestine",
+        "payrolls",
+        "pce",
+        "pentagon",
+        "policy",
+        "politics",
+        "powell",
+        "president",
+        "ppi",
+        "premarket",
+        "rate cut",
+        "rate hike",
+        "recession",
+        "regulation",
+        "revenue",
+        "russia",
+        "s&p",
+        "sanction",
+        "sanctions",
+        "sec",
+        "senate",
+        "shares",
+        "sp500",
+        "stock",
+        "stocks",
+        "strike",
+        "supreme court",
+        "taiwan",
+        "tariff",
+        "tariffs",
+        "treasury",
+        "trump",
+        "ukraine",
+        "unemployment",
+        "vix",
+        "war",
+        "white house",
+        "yield",
+        "yields",
+        "上证",
+        "下跌",
+        "个股",
+        "中东",
+        "以色列",
+        "企业",
+        "估值",
+        "俄乌",
+        "俄罗斯",
+        "停火",
+        "关税",
+        "军事",
+        "军工",
+        "制裁",
+        "加息",
+        "北约",
+        "升息",
+        "原油",
+        "台海",
+        "国会",
+        "国债",
+        "国防",
+        "地缘",
+        "失业",
+        "总统",
+        "战争",
+        "指数",
+        "收益率",
+        "政策",
+        "政治",
+        "无人机",
+        "日本央行",
+        "暴涨",
+        "暴跌",
+        "期权",
+        "期货",
+        "板块",
+        "欧洲央行",
+        "比特币",
+        "油价",
+        "法案",
+        "港股",
+        "白宫",
+        "监管",
+        "石油",
+        "美国大选",
+        "美债",
+        "美军",
+        "美股",
+        "美元",
+        "联储",
+        "股价",
+        "股市",
+        "股票",
+        "英伟达",
+        "营收",
+        "衰退",
+        "议会",
+        "财报",
+        "财政",
+        "贸易",
+        "通胀",
+        "选举",
+        "道指",
+        "金融",
+        "降息",
+        "非农",
+        "韩国央行",
+        "预期",
+        "黄金",
+    }
+)
+
+SOCIAL_TOPIC_STOPWORDS = frozenset(
+    {
+        "about",
+        "after",
+        "again",
+        "also",
+        "because",
+        "before",
+        "being",
+        "could",
+        "from",
+        "have",
+        "into",
+        "just",
+        "market",
+        "markets",
+        "more",
+        "news",
+        "over",
+        "said",
+        "says",
+        "stock",
+        "stocks",
+        "than",
+        "that",
+        "their",
+        "there",
+        "this",
+        "today",
+        "trump",
+        "were",
+        "with",
+        "would",
+    }
+)
+
+TRACKING_QUERY_PARAMS = frozenset(
+    {
+        "fbclid",
+        "gclid",
+        "igshid",
+        "mc_cid",
+        "mc_eid",
+        "ref",
+        "ref_src",
+        "s",
+    }
+)
 
 
 async def list_active_twitter_accounts(configured_accounts: list[str] | None = None) -> list[str]:
@@ -235,6 +457,7 @@ async def check_and_notify(
     adapter: BotAdapter | None = None,
     llm_processor=None,
     notify_no_updates: bool = False,
+    push_notifications: bool = True,
 ):
     """Check for new tweets from a user and push notifications."""
     account_key = username.strip().lstrip("@")
@@ -337,23 +560,21 @@ async def check_and_notify(
         await session.commit()
 
     # Push notifications
-    successful_tweet_ids: list[str] = []
+    pushed_tweet_ids: list[str] = []
     push_failed = False
-    if adapter and posts_to_push:
+    if adapter and posts_to_push and push_notifications:
         try:
             pushed_posts = await push_tweet_cards(posts_to_push, adapter, is_backfill=first_check)
-            successful_tweet_ids = [post.tweet_id for post in pushed_posts]
-            push_failed = len(successful_tweet_ids) != len(posts_to_push)
+            pushed_tweet_ids = [post.tweet_id for post in pushed_posts]
+            push_failed = len(pushed_tweet_ids) != len(posts_to_push)
         except Exception:
             push_failed = True
             logger.exception("Tweet card push failed for @{}", account_key)
-    elif not adapter:
-        successful_tweet_ids = [post.tweet_id for post in posts_to_push]
 
     async with session_factory() as session:
-        if successful_tweet_ids and adapter:
+        if pushed_tweet_ids:
             result = await session.execute(
-                select(SocialPost).where(SocialPost.tweet_id.in_(successful_tweet_ids))
+                select(SocialPost).where(SocialPost.tweet_id.in_(pushed_tweet_ids))
             )
             for post in result.scalars().all():
                 post.is_pushed = True
@@ -380,7 +601,10 @@ async def check_and_notify(
         await session.commit()
 
     if posts_to_push:
-        logger.info(f"@{account_key}: {len(successful_tweet_ids)} tweets notified")
+        if push_notifications:
+            logger.info(f"@{account_key}: {len(pushed_tweet_ids)} tweets notified")
+        else:
+            logger.info(f"@{account_key}: {len(posts_to_push)} tweet candidates collected")
     elif adapter and notify_no_updates:
         await adapter.push_to_admin(f"@{display_username} 没有新的更新。")
 
@@ -536,6 +760,71 @@ async def push_tweet_cards(
     return pushed_posts
 
 
+async def push_relevant_tweet_cards(
+    posts: list[SocialPost],
+    adapter: BotAdapter,
+) -> list[SocialPost]:
+    """Filter social updates and push only market-relevant cards, grouped by story."""
+    if not posts:
+        return []
+
+    relevant_posts = [post for post in posts if _is_relevant_social_post(post)]
+    skipped = len(posts) - len(relevant_posts)
+    if skipped:
+        logger.info(
+            "Twitter relevance filter skipped {} of {} candidates",
+            skipped,
+            len(posts),
+        )
+    if not relevant_posts:
+        return []
+
+    cross_ref = await _cross_reference_posts(relevant_posts)
+    grouped_posts = _group_similar_social_posts(relevant_posts)
+    pushed_posts: list[SocialPost] = []
+    for group in grouped_posts:
+        try:
+            if len(group) >= SOCIAL_TOPIC_GROUP_MIN_POSTS:
+                await push_tweet_topic_card(group, adapter, cross_ref=cross_ref)
+                pushed_posts.extend(group)
+                continue
+
+            post = group[0]
+            await push_tweet_card(post, adapter, cross_ref=cross_ref.get(post.id))
+            pushed_posts.append(post)
+        except Exception:
+            logger.exception(
+                "Tweet grouped push failed for posts={}",
+                [post.id or post.tweet_id for post in group],
+            )
+    return pushed_posts
+
+
+async def push_tweet_topic_card(
+    posts: list[SocialPost],
+    adapter: BotAdapter,
+    cross_ref: dict[int, dict] | None = None,
+) -> None:
+    """Push a single story-centered card for multiple related tweets."""
+    ordered_posts = sorted(posts, key=lambda post: post.posted_at)
+    card = _build_tweet_topic_card(ordered_posts, cross_ref=cross_ref or {})
+    sent_messages = await _push_card_to_admin(adapter, card)
+    await _bind_sent_messages(sent_messages, ordered_posts[-1].id)
+
+
+async def mark_tweet_posts_pushed(posts: list[SocialPost]) -> None:
+    tweet_ids = [post.tweet_id for post in posts if post.tweet_id]
+    if not tweet_ids:
+        return
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        result = await session.execute(select(SocialPost).where(SocialPost.tweet_id.in_(tweet_ids)))
+        for post in result.scalars().all():
+            post.is_pushed = True
+        await session.commit()
+
+
 async def push_tweet_digest(
     posts: list[SocialPost],
     adapter: BotAdapter,
@@ -575,12 +864,18 @@ async def run_twitter_monitor(
 
     logger.info(f"Checking {len(usernames)} Twitter accounts...")
     tasks = [
-        check_and_notify(u, adapter, llm_processor, notify_no_updates=notify_no_updates)
+        check_and_notify(
+            u,
+            adapter,
+            llm_processor,
+            notify_no_updates=notify_no_updates,
+            push_notifications=False,
+        )
         for u in usernames
     ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    total = 0
+    candidates: list[SocialPost] = []
     for username, r in zip(usernames, results, strict=False):
         if isinstance(r, Exception):
             logger.opt(exception=r).error(
@@ -591,8 +886,25 @@ async def run_twitter_monitor(
             )
             continue
         if isinstance(r, list):
-            total += len(r)
-    logger.info(f"Twitter monitor: {total} new tweets across {len(usernames)} accounts")
+            candidates.extend(r)
+
+    pushed_posts: list[SocialPost] = []
+    if adapter and candidates:
+        pushed_posts = await push_relevant_tweet_cards(candidates, adapter)
+        await mark_tweet_posts_pushed(pushed_posts)
+
+    if adapter and notify_no_updates and candidates and not pushed_posts:
+        await adapter.push_to_admin(
+            "本轮 X 监控有新更新，但没有符合股市/金融/经济/政治/军事条件的内容。"
+        )
+
+    total = len(pushed_posts) if adapter else len(candidates)
+    logger.info(
+        "Twitter monitor: {} pushed from {} new candidates across {} accounts",
+        total,
+        len(candidates),
+        len(usernames),
+    )
     return total
 
 
@@ -616,6 +928,184 @@ def _seconds_since(dt: datetime | None) -> float | None:
 
 def _epoch_or_zero(value: int | None) -> int:
     return value or 0
+
+
+def _is_relevant_social_post(post: SocialPost) -> bool:
+    if post.mentioned_tickers:
+        return True
+
+    search_text = _social_post_search_text(post)
+    if _contains_relevance_keyword(search_text):
+        return True
+
+    if post.is_noteworthy or post.urgency == "high":
+        topic_text = " ".join(str(topic) for topic in (post.topics or []))
+        if _contains_relevance_keyword(topic_text):
+            return True
+
+    return False
+
+
+def _contains_relevance_keyword(text: str) -> bool:
+    normalized = text.lower()
+    if re.search(r"\$[A-Z]{1,6}\b", text):
+        return True
+    return any(_keyword_in_text(normalized, keyword) for keyword in SOCIAL_RELEVANCE_KEYWORDS)
+
+
+def _social_post_search_text(post: SocialPost) -> str:
+    parts: list[str] = [
+        post.content or "",
+        post.summary or "",
+        post.attention_reason or "",
+        " ".join(str(topic) for topic in (post.topics or [])),
+        " ".join(str(ticker) for ticker in (post.mentioned_tickers or [])),
+    ]
+    for reference in post.referenced_tweets or []:
+        parts.append(str(reference.get("text") or ""))
+        parts.append(str(reference.get("url") or ""))
+    parts.extend(str(link) for link in (post.links or []))
+    return "\n".join(part for part in parts if part)
+
+
+def _group_similar_social_posts(posts: list[SocialPost]) -> list[list[SocialPost]]:
+    groups: list[dict[str, Any]] = []
+    for post in sorted(posts, key=lambda item: item.posted_at):
+        fingerprint = _story_fingerprint(post)
+        matched_group: dict[str, Any] | None = None
+        for group in groups:
+            if _is_similar_story(fingerprint, group):
+                matched_group = group
+                break
+        if matched_group is None:
+            groups.append(
+                {
+                    "posts": [post],
+                    "keys": set(fingerprint["keys"]),
+                    "tokens": set(fingerprint["tokens"]),
+                }
+            )
+            continue
+        matched_group["posts"].append(post)
+        matched_group["keys"].update(fingerprint["keys"])
+        matched_group["tokens"].update(fingerprint["tokens"])
+
+    grouped = [group["posts"] for group in groups]
+    return sorted(grouped, key=lambda group: group[-1].posted_at)
+
+
+def _is_similar_story(fingerprint: dict[str, set[str]], group: dict[str, Any]) -> bool:
+    keys = fingerprint["keys"]
+    if keys and keys & group["keys"]:
+        return True
+
+    tokens = fingerprint["tokens"]
+    group_tokens = group["tokens"]
+    if not tokens or not group_tokens:
+        return False
+
+    overlap = tokens & group_tokens
+    if len(overlap) >= 3:
+        return True
+    if len(overlap) >= 2:
+        denominator = max(len(tokens | group_tokens), 1)
+        return len(overlap) / denominator >= 0.4
+    return False
+
+
+def _story_fingerprint(post: SocialPost) -> dict[str, set[str]]:
+    keys: set[str] = set()
+    tokens: set[str] = set()
+
+    for link in post.links or []:
+        canonical_link = _canonical_story_url(str(link))
+        if canonical_link:
+            keys.add(f"link:{canonical_link}")
+            tokens.update(_tokenize_story_text(canonical_link.replace("/", " ")))
+
+    for reference in post.referenced_tweets or []:
+        url = str(reference.get("url") or "")
+        if url:
+            keys.add(f"ref:{_normalize_x_url(url)}")
+        if text := reference.get("text"):
+            tokens.update(_tokenize_story_text(str(text)))
+
+    for ticker in post.mentioned_tickers or []:
+        ticker_text = str(ticker).strip().upper()
+        if ticker_text:
+            tokens.add(f"ticker:{ticker_text}")
+
+    for topic in post.topics or []:
+        topic_text = str(topic).strip().lower()
+        if topic_text:
+            tokens.add(f"topic:{topic_text}")
+
+    tokens.update(_tokenize_story_text(_social_post_search_text(post)))
+    return {"keys": keys, "tokens": tokens}
+
+
+def _tokenize_story_text(text: str) -> set[str]:
+    tokens: set[str] = set()
+    normalized = text.lower()
+    for keyword in SOCIAL_RELEVANCE_KEYWORDS:
+        if (
+            len(keyword) >= 3
+            and _keyword_in_text(normalized, keyword)
+            and keyword not in SOCIAL_TOPIC_STOPWORDS
+        ):
+            tokens.add(keyword)
+
+    for raw in re.findall(r"\$?[A-Za-z][A-Za-z0-9&.-]{2,}", text):
+        token = raw.strip("$").strip(".-").lower()
+        if len(token) < 3 or token in SOCIAL_TOPIC_STOPWORDS:
+            continue
+        tokens.add(token)
+
+    for raw in re.findall(r"[\u4e00-\u9fff]{2,8}", text):
+        if raw in SOCIAL_RELEVANCE_KEYWORDS:
+            tokens.add(raw)
+    return tokens
+
+
+def _keyword_in_text(normalized_text: str, keyword: str) -> bool:
+    if keyword == "$":
+        return "$" in normalized_text
+    if re.fullmatch(r"[a-z0-9&.-]+", keyword):
+        pattern = rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])"
+        return re.search(pattern, normalized_text) is not None
+    return keyword in normalized_text
+
+
+def _canonical_story_url(url: str) -> str:
+    normalized = _normalize_x_url(url.rstrip(".,;:"))
+    try:
+        parts = urlsplit(normalized)
+    except ValueError:
+        return normalized
+    if not parts.netloc:
+        return normalized
+
+    scheme = parts.scheme.lower() or "https"
+    netloc = parts.netloc.lower()
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+    path = parts.path.rstrip("/") or "/"
+    query_items = []
+    for key, value in parse_qsl(parts.query, keep_blank_values=True):
+        clean_key = key.lower()
+        if clean_key.startswith("utm_") or clean_key in TRACKING_QUERY_PARAMS:
+            continue
+        query_items.append((key, value))
+    query = urlencode(query_items)
+    return urlunsplit((scheme, netloc, path, query, ""))
+
+
+def _is_x_url(url: str) -> bool:
+    try:
+        host = urlsplit(_normalize_x_url(url)).netloc.lower()
+    except ValueError:
+        return False
+    return host in {"x.com", "twitter.com", "www.x.com", "www.twitter.com"}
 
 
 def _normalize_timeline_data(data: dict[str, Any], username: str) -> dict[str, Any]:
@@ -999,6 +1489,199 @@ async def _build_tweet_card(
     return card
 
 
+def _build_tweet_topic_card(
+    posts: list[SocialPost],
+    cross_ref: dict[int, dict] | None = None,
+) -> dict:
+    latest_post = posts[-1]
+    label = _topic_label_for_group(posts)
+    title = f"X Topic · {label}"
+    elements: list[dict[str, Any]] = []
+    sections: list[str] = []
+
+    metadata = _topic_metadata_text(posts)
+    elements.append(_md_div(metadata))
+    sections.append(metadata)
+
+    lead = _topic_lead_text(posts)
+    if lead:
+        lead_section = f"**主题**\n{lead}"
+        elements.extend([{"tag": "hr"}, _md_div(lead_section)])
+        sections.append(lead_section)
+
+    viewpoint = _topic_viewpoint_text(posts, cross_ref or {})
+    elements.extend([{"tag": "hr"}, _md_div(viewpoint)])
+    sections.append(viewpoint)
+
+    reference_text = _topic_reference_text(posts)
+    if reference_text:
+        elements.extend([{"tag": "hr"}, _md_div(reference_text)])
+        sections.append(reference_text)
+
+    elements.extend([{"tag": "hr"}, _note_text("回复这张卡片并 @Reveal，可基于这个主题继续研究。")])
+
+    card: dict[str, Any] = {
+        "title": title,
+        "sections": sections,
+        "footer": "同一主题由多个 X 账号提到；回复这张卡片并 @Reveal，可继续研究。",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": _tweet_topic_card_template(posts),
+            "title": {"tag": "plain_text", "content": title},
+        },
+        "elements": elements,
+    }
+    if link := _topic_card_link(posts):
+        card["card_link"] = {
+            "url": link,
+            "pc_url": link,
+            "ios_url": link,
+            "android_url": link,
+        }
+    elif latest_post.tweet_url:
+        card["card_link"] = {
+            "url": latest_post.tweet_url,
+            "pc_url": latest_post.tweet_url,
+            "ios_url": latest_post.tweet_url,
+            "android_url": latest_post.tweet_url,
+        }
+    return card
+
+
+def _topic_metadata_text(posts: list[SocialPost]) -> str:
+    latest_post = posts[-1]
+    usernames = list(dict.fromkeys(post.username for post in posts))
+    lines = [
+        (
+            f"{len(posts)} 条相关更新 · {len(usernames)} 位博主提到 · "
+            f"最近 {_time_ago(latest_post.posted_at)}"
+        )
+    ]
+
+    tickers = _common_values(post.mentioned_tickers for post in posts)
+    topics = _common_values(post.topics for post in posts)
+    tag_parts: list[str] = []
+    if tickers:
+        tag_parts.append("Ticker: " + ", ".join(tickers[:8]))
+    if topics:
+        tag_parts.append("Topic: " + " · ".join(topics[:5]))
+    if any(post.is_noteworthy or post.urgency == "high" for post in posts):
+        tag_parts.append("标记: 重点关注")
+    if tag_parts:
+        lines.append(" · ".join(tag_parts))
+    return "\n".join(lines)
+
+
+def _topic_lead_text(posts: list[SocialPost]) -> str:
+    summaries = [post.summary for post in posts if post.summary]
+    if summaries:
+        return _trim_text(summaries[-1], 280)
+    return _trim_text(posts[-1].content or "", 280)
+
+
+def _topic_viewpoint_text(posts: list[SocialPost], cross_ref: dict[int, dict]) -> str:
+    lines = ["**博主与观点**"]
+    for post in posts:
+        author = f"@{post.username}"
+        if post.tweet_url:
+            author = f"[@{post.username}]({post.tweet_url})"
+        view = post.attention_reason or post.summary or post.content or "（无正文）"
+        suffix_parts: list[str] = []
+        if sentiment := _sentiment_label(post.sentiment):
+            suffix_parts.append(f"情绪: {sentiment}")
+        if post.urgency:
+            suffix_parts.append(f"优先级: {post.urgency}")
+        if post.id and (match := cross_ref.get(post.id)):
+            if match.get("matches"):
+                suffix_parts.append(f"关联: {match['matches']}")
+        suffix = f" ({' · '.join(suffix_parts)})" if suffix_parts else ""
+        lines.append(f"- {author}: {_trim_text(view, 180)}{suffix}")
+    return "\n".join(lines)
+
+
+def _topic_reference_text(posts: list[SocialPost]) -> str:
+    links: list[str] = []
+    references: list[dict[str, Any]] = []
+    tweet_links: list[str] = []
+    for post in posts:
+        for link in post.links or []:
+            if link not in links:
+                links.append(str(link))
+        for reference in post.referenced_tweets or []:
+            if reference not in references:
+                references.append(reference)
+        if post.tweet_url and post.tweet_url not in tweet_links:
+            tweet_links.append(post.tweet_url)
+
+    lines: list[str] = []
+    if links:
+        lines.append("外链: " + " · ".join(f"[{_display_url(link)}]({link})" for link in links[:5]))
+    if references:
+        ref_parts = []
+        for reference in references[:MAX_CARD_REFERENCES]:
+            label = _reference_type_label(str(reference.get("type") or "reference"))
+            username = reference.get("username")
+            url = str(reference.get("url") or "")
+            title = label if not username else f"{label} @{username}"
+            ref_parts.append(f"[{title}]({url})" if url else title)
+        lines.append("引用: " + " · ".join(ref_parts))
+    if tweet_links:
+        lines.append(
+            "原文: "
+            + " · ".join(
+                f"[@{post.username}]({post.tweet_url})" for post in posts if post.tweet_url
+            )
+        )
+    if not lines:
+        return ""
+    return "**参考**\n" + "\n".join(lines)
+
+
+def _topic_card_link(posts: list[SocialPost]) -> str | None:
+    for post in posts:
+        for link in post.links or []:
+            if not _is_x_url(str(link)):
+                return str(link)
+    for post in posts:
+        if post.tweet_url:
+            return post.tweet_url
+    return None
+
+
+def _tweet_topic_card_template(posts: list[SocialPost]) -> str:
+    if any(post.is_noteworthy or post.urgency == "high" for post in posts):
+        return "orange"
+    if any(post.urgency == "medium" for post in posts):
+        return "blue"
+    return "green"
+
+
+def _topic_label_for_group(posts: list[SocialPost]) -> str:
+    topics = _common_values(post.topics for post in posts)
+    tickers = _common_values(post.mentioned_tickers for post in posts)
+    label_parts: list[str] = []
+    if tickers:
+        label_parts.append(", ".join(tickers[:3]))
+    if topics:
+        label_parts.append(" · ".join(topics[:3]))
+    if label_parts:
+        return _trim_text(" · ".join(label_parts), 80)
+    if link := _topic_card_link(posts):
+        return _display_url(link)
+    return _trim_text(posts[-1].summary or posts[-1].content or "相关更新", 80)
+
+
+def _common_values(value_lists) -> list[str]:
+    counter: Counter[str] = Counter()
+    for values in value_lists:
+        if not values:
+            continue
+        for value in values:
+            if isinstance(value, str) and value.strip():
+                counter[value.strip()] += 1
+    return [value for value, _count in counter.most_common()]
+
+
 def _tweet_card_title(post: SocialPost, is_backfill: bool = False) -> str:
     if post.is_noteworthy:
         prefix = "重点关注"
@@ -1236,9 +1919,14 @@ async def _cross_reference_posts(posts: list[SocialPost]) -> dict[int, dict]:
     except Exception:
         logger.exception("Cross-reference tracked tickers fetch failed")
 
-    from server.stock.scanner import DEFAULT_WATCHLIST
+    watchlist: set[str] = set()
+    try:
+        from server.stock.scanner import DEFAULT_WATCHLIST
 
-    watchlist = set(DEFAULT_WATCHLIST)
+        watchlist = set(DEFAULT_WATCHLIST)
+    except Exception:
+        logger.exception("Cross-reference default watchlist fetch failed")
+
     user_tickers = held_tickers | tracked_tickers | watchlist
 
     result: dict[int, dict] = {}
