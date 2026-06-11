@@ -27,6 +27,7 @@ def _build_tools() -> list[SdkMcpTool[Any]]:
         ("stock_news", reveal_mcp.stock_news),
         ("portfolio", reveal_mcp.portfolio),
         ("research_history", reveal_mcp.research_history),
+        ("market_skill_catalog", reveal_mcp.market_skill_catalog),
         ("stock_score", reveal_mcp.stock_score),
         ("tracking_report", reveal_mcp.tracking_report),
         ("stock_watch_list", reveal_mcp.stock_watch_list),
@@ -44,6 +45,9 @@ def _build_tools() -> list[SdkMcpTool[Any]]:
         ("pnl_summary", reveal_mcp.pnl_summary),
         ("alert_status", reveal_mcp.alert_status),
         ("daily_briefing", reveal_mcp.daily_briefing),
+        ("scheduled_task_create", reveal_mcp.scheduled_task_create),
+        ("scheduled_task_list", reveal_mcp.scheduled_task_list),
+        ("scheduled_task_cancel", reveal_mcp.scheduled_task_cancel),
     ]
     return [_sdk_tool(name, handler) for name, handler in handlers]
 

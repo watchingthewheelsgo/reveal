@@ -2,7 +2,7 @@
 
 import json
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, cast
 
@@ -30,6 +30,7 @@ from server.capabilities.registry import (
     agent_mcp_tool_names,
     format_agent_tool_catalog,
 )
+from server.research.agent_plan import AgentRunPlan, new_agent_run_plan
 from server.research.sdk_mcp import build_reveal_sdk_mcp_server
 
 REVEAL_MCP_TOOLS = agent_mcp_tool_names()
@@ -42,6 +43,7 @@ ProgressCallback = Callable[[str, str], Awaitable[None]]
 class AgentRunResult:
     answer: str
     agent_session_id: str | None = None
+    plan: AgentRunPlan = field(default_factory=lambda: new_agent_run_plan(""))
 
 
 class AgentRuntimeError(RuntimeError):
@@ -61,8 +63,11 @@ async def run_agent(
     _retrying_pseudo_tools: bool = False,
 ) -> AgentRunResult:
     settings = get_settings()
+    plan = new_agent_run_plan(prompt, resume=resume, allowed_tools=AGENT_ALLOWED_TOOLS)
+    plan.start()
     token = settings.get_agent_auth_token()
     if not token:
+        plan.fail("Claude Agent SDK runtime is not configured")
         raise AgentConfigurationError(
             "Claude Agent SDK runtime requires ANTHROPIC_AUTH_TOKEN or DEEPSEEK_API_KEY.",
             "研究 Agent 未配置 DeepSeek API Key。请设置 ANTHROPIC_AUTH_TOKEN 或 DEEPSEEK_API_KEY。",
@@ -146,6 +151,8 @@ async def run_agent(
                 for block in message.content:
                     if isinstance(block, ToolUseBlock):
                         tool_use_count += 1
+                        input_data = block.input if isinstance(block.input, dict) else {}
+                        plan.record_tool_use(block.name or "", input_data)
                         detail = _format_tool_progress(block)
                         logger.info("Research agent tool use: {}", detail)
                         if on_progress:
@@ -156,6 +163,7 @@ async def run_agent(
                     observation = _tool_result_observation(block)
                     if observation:
                         observation_parts.append(observation)
+                        plan.record_observation(observation)
             elif isinstance(message, ResultMessage):
                 if message.session_id:
                     agent_session_id = message.session_id
@@ -167,12 +175,14 @@ async def run_agent(
                     result_answer = message.result
     except CLINotFoundError as exc:
         logger.exception("Claude Agent SDK CLI was not found")
+        plan.fail(str(exc))
         raise AgentConfigurationError(
             str(exc),
             "研究 Agent 未找到 Claude Code CLI。请先安装或修复 claude-agent-sdk 的 bundled CLI。",
         ) from exc
     except (CLIConnectionError, ProcessError, ClaudeSDKError) as exc:
         logger.exception("Claude Agent SDK execution failed")
+        plan.fail(str(exc))
         raise AgentRuntimeError(str(exc), _user_message_for_exception(exc)) from exc
     except Exception as exc:
         if _is_max_turns_error(str(exc)):
@@ -181,8 +191,10 @@ async def run_agent(
                 observation_parts,
                 tool_use_count,
                 agent_session_id,
+                plan,
             )
         logger.exception("Claude Agent SDK execution failed unexpectedly")
+        plan.fail(str(exc))
         raise AgentRuntimeError(str(exc), _user_message_for_exception(exc)) from exc
 
     if result_error:
@@ -192,12 +204,15 @@ async def run_agent(
                 observation_parts,
                 tool_use_count,
                 agent_session_id,
+                plan,
             )
         logger.error("Research agent result error: {}", result_error)
+        plan.fail(result_error)
         raise AgentRuntimeError(result_error, _user_message_for_text(result_error))
 
     answer = result_answer or "\n".join(answer_parts).strip()
     if not answer:
+        plan.fail("Agent SDK returned no answer.")
         raise AgentRuntimeError(
             "Agent SDK returned no answer.",
             "研究 Agent 没有返回内容，请稍后重试。",
@@ -222,6 +237,7 @@ async def run_agent(
                 on_progress=on_progress,
                 _retrying_pseudo_tools=True,
             )
+        plan.fail("Agent returned pseudo tool-call JSON instead of executing tools.")
         raise AgentRuntimeError(
             "Agent returned pseudo tool-call JSON instead of executing tools.",
             "研究 Agent 没有真正执行工具调用，请稍后重试或换用更强模型。",
@@ -232,7 +248,11 @@ async def run_agent(
         len(answer),
         tool_use_count,
     )
-    return AgentRunResult(answer=answer, agent_session_id=agent_session_id)
+    return AgentRunResult(
+        answer=answer,
+        agent_session_id=agent_session_id,
+        plan=plan.complete(answer),
+    )
 
 
 def _format_tool_progress(block: ToolUseBlock) -> str:
@@ -293,6 +313,7 @@ def _max_turns_result(
     observation_parts: list[str],
     tool_use_count: int,
     agent_session_id: str | None = None,
+    plan: AgentRunPlan | None = None,
 ) -> AgentRunResult:
     partial_answer = _partial_answer_from_max_turns(answer_parts, observation_parts, tool_use_count)
     logger.warning(
@@ -302,7 +323,13 @@ def _max_turns_result(
         len(partial_answer),
         tool_use_count,
     )
-    return AgentRunResult(answer=partial_answer, agent_session_id=agent_session_id)
+    if plan is None:
+        plan = new_agent_run_plan("")
+    return AgentRunResult(
+        answer=partial_answer,
+        agent_session_id=agent_session_id,
+        plan=plan.partial(partial_answer),
+    )
 
 
 def _partial_answer_from_max_turns(

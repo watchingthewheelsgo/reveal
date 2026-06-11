@@ -240,6 +240,31 @@ class BotMessageBinding(Base):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# User Scheduled Tasks
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class ScheduledTask(Base):
+    __tablename__ = "scheduled_tasks"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    chat_id: Mapped[str] = mapped_column(String(100), index=True)
+    platform: Mapped[str] = mapped_column(String(20), default="auto")
+    created_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    source_message_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    task_type: Mapped[str] = mapped_column(String(50), default="agent_research")
+    prompt: Mapped[str] = mapped_column(Text)
+    run_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    timezone: Mapped[str] = mapped_column(String(64), default="UTC")
+    status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Scoring Weights (dynamic, updated by feedback)
 # ═══════════════════════════════════════════════════════════════════════════════
 

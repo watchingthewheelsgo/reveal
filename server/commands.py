@@ -943,6 +943,88 @@ async def cmd_twatch(ctx: BotContext, adapter):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Scheduled Task Commands
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+async def cmd_task(ctx: BotContext, adapter):
+    """Manage user-created one-shot scheduled tasks."""
+    from server.stock.watchlist import platform_for_adapter
+    from server.tasks.scheduled import (
+        cancel_scheduled_task,
+        create_scheduled_task,
+        format_scheduled_task_created,
+        format_scheduled_task_list,
+        list_scheduled_tasks,
+        split_schedule_command_body,
+    )
+
+    action = ctx.args[0].lower() if ctx.args else "list"
+    if action in {"list", "ls"}:
+        include_done = len(ctx.args) > 1 and ctx.args[1].lower() in {"all", "done", "history"}
+        await adapter.send_message(
+            ctx.chat_id,
+            format_scheduled_task_list(
+                await list_scheduled_tasks(chat_id=ctx.chat_id, include_done=include_done)
+            ),
+        )
+        return
+
+    if action in {"cancel", "del", "delete", "remove", "rm"}:
+        if len(ctx.args) < 2 or not ctx.args[1].isdigit():
+            await adapter.send_message(ctx.chat_id, "用法: /task cancel TASK_ID")
+            return
+        result = await cancel_scheduled_task(int(ctx.args[1]), chat_id=ctx.chat_id)
+        prefix = "✅ " if result["cancelled"] else "ℹ️ "
+        await adapter.send_message(ctx.chat_id, prefix + result["message"])
+        return
+
+    if action in {"add", "at", "in", "create"}:
+        body = " ".join(ctx.args[1:]).strip()
+        if action in {"at", "in"}:
+            body = f"{action} {body}".strip()
+        if action == "in" and body.lower().startswith("in "):
+            body = body[3:].strip()
+        elif action == "at" and body.lower().startswith("at "):
+            body = body[3:].strip()
+        split = split_schedule_command_body(body)
+        if split is None:
+            await adapter.send_message(
+                ctx.chat_id,
+                "用法:\n"
+                "/task list\n"
+                "/task add 2小时后 | 推送 CPI 数据新闻\n"
+                "/task add 今晚7点 | 推送 CPI 数据新闻\n"
+                "/task cancel TASK_ID",
+            )
+            return
+        run_at_text, prompt = split
+        try:
+            payload = await create_scheduled_task(
+                chat_id=ctx.chat_id,
+                platform=platform_for_adapter(adapter),
+                run_at_text=run_at_text,
+                prompt=prompt,
+                created_by=ctx.user_id,
+                source_message_id=ctx.message_id,
+            )
+        except ValueError as exc:
+            await adapter.send_message(ctx.chat_id, f"❌ {exc}")
+            return
+        await adapter.send_message(ctx.chat_id, format_scheduled_task_created(payload))
+        return
+
+    await adapter.send_message(
+        ctx.chat_id,
+        "用法:\n"
+        "/task list\n"
+        "/task add 2小时后 | 推送 CPI 数据新闻\n"
+        "/task add 今晚7点 | 推送 CPI 数据新闻\n"
+        "/task cancel TASK_ID",
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Alert Commands
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1168,6 +1250,9 @@ def register_all_commands(router, adapter):
             "pnl": lambda ctx: cmd_pnl(ctx, adapter),
             "x": lambda ctx: cmd_twatch(ctx, adapter),
             "twatch": lambda ctx: cmd_twatch(ctx, adapter),
+            "task": lambda ctx: cmd_task(ctx, adapter),
+            "schedule": lambda ctx: cmd_task(ctx, adapter),
+            "remind": lambda ctx: cmd_task(ctx, adapter),
             "alert": lambda ctx: cmd_alert(ctx, adapter),
             "movers": lambda ctx: cmd_movers(ctx, adapter),
             "briefing": lambda ctx: cmd_briefing(ctx, adapter),

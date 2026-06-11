@@ -101,6 +101,14 @@ async def research_history(ticker: str, limit: int = 5) -> str:
 
 
 @mcp.tool()
+async def market_skill_catalog() -> str:
+    """查看 Reveal 内置 MarketSkill 分析视角和显式 bias。"""
+    from server.capabilities.market_skills import get_market_skill_catalog_payload
+
+    return json.dumps(get_market_skill_catalog_payload(), ensure_ascii=False)
+
+
+@mcp.tool()
 async def stock_score(ticker: str) -> str:
     """对股票进行多因子评分：技术面、基本面、新闻情绪、板块强度。"""
     from server.capabilities.market import get_stock_score_payload
@@ -285,6 +293,62 @@ async def daily_briefing() -> str:
 
     await _ensure_database()
     return await generate_daily_briefing()
+
+
+@mcp.tool()
+async def scheduled_task_create(
+    chat_id: str,
+    run_at_text: str,
+    prompt: str,
+    platform: str = "auto",
+    timezone: str = "",
+) -> str:
+    """创建一次性定时任务；到时间后运行 Agent 并把结果推回 chat_id。"""
+    from server.tasks.scheduled import create_scheduled_task
+
+    await _ensure_database()
+    return json.dumps(
+        await create_scheduled_task(
+            chat_id=chat_id,
+            platform=platform,
+            run_at_text=run_at_text,
+            prompt=prompt,
+            timezone=timezone or None,
+        ),
+        ensure_ascii=False,
+    )
+
+
+@mcp.tool()
+async def scheduled_task_list(
+    chat_id: str = "",
+    include_done: bool = False,
+    limit: int = 20,
+) -> str:
+    """查看未来定时任务；chat_id 为空时查看全部会话。"""
+    from server.tasks.scheduled import list_scheduled_tasks
+
+    await _ensure_database()
+    return json.dumps(
+        await list_scheduled_tasks(
+            chat_id=chat_id or None,
+            include_done=include_done,
+            limit=limit,
+        ),
+        ensure_ascii=False,
+    )
+
+
+@mcp.tool()
+async def scheduled_task_cancel(task_id: int, chat_id: str = "") -> str:
+    """取消一个尚未完成的一次性定时任务。"""
+    from server.tasks.scheduled import cancel_scheduled_task
+
+    await _ensure_database()
+    return json.dumps(
+        await cancel_scheduled_task(task_id, chat_id=chat_id or None),
+        ensure_ascii=False,
+    )
 
 
 async def _run() -> None:

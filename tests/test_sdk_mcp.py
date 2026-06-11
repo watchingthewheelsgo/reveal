@@ -1,6 +1,9 @@
+import json
 import unittest
 from typing import Any, cast
+from unittest.mock import patch
 
+from server.mcp import market_skill_catalog
 from server.research.sdk_mcp import _build_tools
 
 
@@ -13,6 +16,10 @@ class SdkMcpAdapterTest(unittest.TestCase):
         self.assertIn("twitter_search", tools)
         self.assertIn("stock_quote", tools)
         self.assertIn("stock_watch_add", tools)
+        self.assertIn("market_skill_catalog", tools)
+        self.assertIn("scheduled_task_create", tools)
+        self.assertIn("scheduled_task_list", tools)
+        self.assertIn("scheduled_task_cancel", tools)
         self.assertIn("market_movers_check", tools)
         self.assertIn("market_movers_recent", tools)
 
@@ -35,6 +42,16 @@ class SdkMcpAdapterTest(unittest.TestCase):
         self.assertEqual(stock_watch_add_schema["required"], ["ticker", "chat_id"])
         self.assertEqual(stock_watch_add_schema["properties"]["threshold_pct"]["default"], 5.0)
         self.assertEqual(market_movers_check_schema["properties"]["count"]["default"], 50)
+
+
+class MarketSkillCatalogMcpTest(unittest.IsolatedAsyncioTestCase):
+    async def test_market_skill_catalog_does_not_require_database(self):
+        with patch("server.mcp._ensure_database", side_effect=RuntimeError("db unavailable")):
+            payload = json.loads(await market_skill_catalog())
+
+        self.assertIn("skills", payload)
+        skill_ids = {skill["id"] for skill in payload["skills"]}
+        self.assertIn("macro_policy", skill_ids)
 
 
 if __name__ == "__main__":

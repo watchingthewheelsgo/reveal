@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from loguru import logger
 
@@ -47,6 +48,25 @@ class Scheduler:
         )
         suffix = ", immediate first run" if run_immediately else ""
         logger.info(f"Interval job registered: {name} (every {seconds}s{suffix})")
+
+    def register_date(self, name: str, func: JobFunc, run_at: datetime):
+        trigger = DateTrigger(run_date=run_at)
+        self._scheduler.add_job(
+            func,
+            trigger,
+            id=name,
+            name=name,
+            replace_existing=True,
+        )
+        logger.info("Date job registered: {} ({})", name, run_at.isoformat())
+
+    def remove_job(self, name: str) -> bool:
+        job = self._scheduler.get_job(name)
+        if job is None:
+            return False
+        self._scheduler.remove_job(name)
+        logger.info("Job removed: {}", name)
+        return True
 
     def start(self):
         self._scheduler.start()

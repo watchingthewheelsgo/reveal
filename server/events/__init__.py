@@ -1,0 +1,1 @@
+"""Canonical event model package."""

@@ -86,8 +86,14 @@ async def lifespan(app: FastAPI):
 
     # Init scheduler with real jobs
     from server.scheduler import Scheduler
+    from server.tasks.scheduled import configure_scheduled_task_runtime
 
     scheduler = Scheduler()
+    bot_adapters = {
+        "telegram": telegram_bot,
+        "feishu": feishu_bot,
+    }
+    configure_scheduled_task_runtime(scheduler, bot_adapters)
 
     # Daily stock pick
     async def daily_pick_job():
@@ -246,6 +252,11 @@ async def lifespan(app: FastAPI):
             market_mover_alert_job,
             settings.longbridge_movers_interval_seconds,
         )
+
+    # User-created one-shot tasks.
+    from server.tasks.scheduled import restore_pending_scheduled_tasks
+
+    await restore_pending_scheduled_tasks(scheduler, bot_adapters)
 
     scheduler.start()
     logger.info("Scheduler started")

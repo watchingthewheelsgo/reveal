@@ -7,6 +7,7 @@ from claude_agent_sdk import (
     SystemMessage,
     TextBlock,
     ToolResultBlock,
+    ToolUseBlock,
 )
 
 from config import settings as settings_module
@@ -119,6 +120,46 @@ class ClaudeSdkRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(options.env["ANTHROPIC_AUTH_TOKEN"], "native-token")
         self.assertEqual(options.env["ANTHROPIC_MODEL"], "native-model")
         self.assertEqual(options.env["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "native-haiku")
+
+    async def test_run_agent_records_plan_trace(self):
+        async def fake_query(prompt, options):
+            yield AssistantMessage(
+                content=[
+                    ToolUseBlock(
+                        id="tool-1",
+                        name="mcp__reveal__stock_quote",
+                        input={"ticker": "NVDA"},
+                    )
+                ],
+                model="test-model",
+            )
+            yield AssistantMessage(
+                content=[
+                    ToolResultBlock(
+                        tool_use_id="tool-1",
+                        content='{"ticker":"NVDA","price":100}',
+                    )
+                ],
+                model="test-model",
+            )
+            yield ResultMessage(
+                subtype="success",
+                duration_ms=1,
+                duration_api_ms=1,
+                is_error=False,
+                num_turns=1,
+                session_id="result-session",
+                result="agent answer",
+            )
+
+        with patch("server.research.claude_sdk_runtime.query", new=fake_query):
+            result = await run_agent("research NVDA")
+
+        self.assertEqual(result.plan.status, "complete")
+        self.assertEqual(result.plan.final_answer, "agent answer")
+        self.assertEqual(result.plan.steps[0].tool_name, "mcp__reveal__stock_quote")
+        self.assertEqual(result.plan.steps[0].input, {"ticker": "NVDA"})
+        self.assertIn("NVDA", result.plan.steps[0].observation or "")
 
     async def test_run_agent_requires_token(self):
         settings_module.global_settings.openai_api_key = ""

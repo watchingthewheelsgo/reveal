@@ -40,6 +40,11 @@ class ResearchServiceTest(unittest.IsolatedAsyncioTestCase):
         tweet_id: str = "101",
         username: str = "alice",
         content: str = "AI infra update https://example.com/report",
+        summary: str | None = None,
+        topics: list[str] | None = None,
+        mentioned_tickers: list[str] | None = None,
+        urgency: str | None = None,
+        is_noteworthy: bool = False,
     ) -> int:
         session_factory = get_session_factory()
         async with session_factory() as session:
@@ -48,6 +53,7 @@ class ResearchServiceTest(unittest.IsolatedAsyncioTestCase):
                 tweet_id=tweet_id,
                 tweet_url=f"https://x.com/{username}/status/{tweet_id}",
                 content=content,
+                summary=summary,
                 links=["https://example.com/report"],
                 referenced_tweets=[
                     {
@@ -59,6 +65,10 @@ class ResearchServiceTest(unittest.IsolatedAsyncioTestCase):
                 media=[],
                 raw_json={},
                 posted_at=datetime.now(UTC),
+                mentioned_tickers=mentioned_tickers,
+                topics=topics,
+                urgency=urgency,
+                is_noteworthy=is_noteworthy,
                 is_pushed=True,
             )
             session.add(post)
@@ -101,6 +111,36 @@ class ResearchServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(research_session.status, "active")
         self.assertEqual(research_session.agent_runtime, "claude_sdk")
         self.assertEqual(research_session.agent_session_id, "agent-session-1")
+
+    async def test_tweet_research_prompt_includes_source_event_and_market_skills(self):
+        post_id = await self.create_post(
+            content="Trump tariff headline could hit chip supply chains and market risk.",
+            summary="特朗普关税新闻可能影响芯片供应链。",
+            topics=["tariff", "policy"],
+            mentioned_tickers=["NVDA"],
+            urgency="high",
+            is_noteworthy=True,
+        )
+        calls: list[tuple[str, str | None]] = []
+
+        async def fake_run_agent(
+            prompt: str,
+            resume: str | None = None,
+            on_progress=None,
+        ) -> AgentRunResult:
+            calls.append((prompt, resume))
+            return AgentRunResult("agent answer", "agent-session-market-skill")
+
+        with patch("server.research.service.run_agent", new=fake_run_agent):
+            await run_deep_research("chat-1", str(post_id), "impact")
+
+        self.assertEqual(len(calls), 1)
+        prompt = calls[0][0]
+        self.assertIn("canonical_source_event", prompt)
+        self.assertIn("Market skills to consider", prompt)
+        self.assertIn("macro_policy", prompt)
+        self.assertIn("bear_case", prompt)
+        self.assertIn("facts", prompt.lower())
 
     async def test_active_topic_accepts_plain_followup_message(self):
         post_id = await self.create_post()
