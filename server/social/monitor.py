@@ -5,6 +5,7 @@ import re
 from collections import Counter
 from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 from loguru import logger
@@ -35,6 +36,7 @@ CARD_SUMMARY_LIMIT = 360
 CARD_BODY_LIMIT = 900
 CARD_BODY_WITH_SUMMARY_LIMIT = 420
 CARD_TRANSLATION_LIMIT = 450
+BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 
 
 async def list_active_twitter_accounts(configured_accounts: list[str] | None = None) -> list[str]:
@@ -692,16 +694,10 @@ async def run_twitter_monitor(
     return total
 
 
-def _time_ago(dt: datetime) -> str:
-    """Format relative time."""
-    diff = datetime.now(UTC) - assume_utc(dt)
-    if diff.days > 0:
-        return f"{diff.days}天前"
-    if diff.seconds >= 3600:
-        return f"{diff.seconds // 3600}小时前"
-    if diff.seconds >= 60:
-        return f"{diff.seconds // 60}分钟前"
-    return "刚刚"
+def _format_beijing_time(dt: datetime) -> str:
+    """Format a stored UTC timestamp for human-readable notification cards."""
+    local_dt = assume_utc(dt).astimezone(BEIJING_TZ)
+    return f"北京时间 {local_dt:%Y-%m-%d %H:%M}"
 
 
 def _seconds_since(dt: datetime | None) -> float | None:
@@ -1159,7 +1155,7 @@ def _topic_metadata_text(posts: list[SocialPost]) -> str:
     usernames = list(dict.fromkeys(post.username for post in posts))
     lines = [
         f"{len(posts)} 条市场相关更新 · {len(usernames)} 位博主提到 · "
-        f"最近 {_time_ago(latest_post.posted_at)}"
+        f"最新 {_format_beijing_time(latest_post.posted_at)}"
     ]
 
     tickers = _common_values(post.mentioned_tickers for post in posts)
@@ -1311,7 +1307,7 @@ def _tweet_card_template(post: SocialPost) -> str:
 
 def _tweet_metadata_text(post: SocialPost) -> str:
     user_url = f"https://x.com/{post.username}"
-    parts = [f"[@{post.username}]({user_url})", _time_ago(post.posted_at)]
+    parts = [f"[@{post.username}]({user_url})", _format_beijing_time(post.posted_at)]
     if labels := _post_type_label(post):
         parts.append(labels.strip(" ()"))
     if post.id:
@@ -1614,7 +1610,7 @@ def _compact_metadata(post: SocialPost) -> str:
 def _format_digest_section(index: int, post: SocialPost, cross_ref: dict | None = None) -> str:
     flags = _post_type_label(post)
     urgency_icon = {"high": "🔴", "medium": "🟡"}.get(post.urgency or "", "")
-    header = f"{index}. {urgency_icon}#{post.id} {_time_ago(post.posted_at)}{flags}"
+    header = f"{index}. {urgency_icon}#{post.id} {_format_beijing_time(post.posted_at)}{flags}"
 
     preview = _compact_text(post.summary or post.content or "（无正文）", 220)
     lines = [header, preview]

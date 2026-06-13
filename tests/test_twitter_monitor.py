@@ -312,6 +312,7 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(adapter.cards), 1)
         pushed = "\n".join([adapter.cards[0][1]["title"], *adapter.cards[0][1]["sections"]])
         self.assertIn("重点关注 · @alice", pushed)
+        self.assertIn("北京时间 1970-01-01 08:01", pushed)
         self.assertIn("出现明确催化", pushed)
         self.assertIn("测试摘要", pushed)
         self.assertIn("hello https://example.com/report", pushed)
@@ -565,6 +566,7 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
         card = adapter.cards[0][1]
         pushed = "\n".join([card["title"], *card["sections"]])
         self.assertIn("X Signal", card["title"])
+        self.assertIn("最新 北京时间 1970-01-01 08:03", pushed)
         self.assertIn("**事实**", pushed)
         self.assertIn("**博主与观点**", pushed)
         self.assertIn("@alice", pushed)
