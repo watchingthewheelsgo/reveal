@@ -1,14 +1,14 @@
-"""Adapters from persisted social data to canonical SourceEvent."""
+"""Adapters from persisted social data to typed runtime events."""
 
 from __future__ import annotations
 
 from server.db.models import SocialPost
-from server.events.types import SourceEvent, SourceEventSeverity, SourceRef
+from server.events.types import EventRef, EventSeverity, XPostEvent
 
 
-def source_event_from_social_post(post: SocialPost) -> SourceEvent:
+def event_from_social_post(post: SocialPost) -> XPostEvent:
     refs = [
-        SourceRef(
+        EventRef(
             source="x",
             external_id=post.tweet_id,
             url=post.tweet_url,
@@ -21,7 +21,7 @@ def source_event_from_social_post(post: SocialPost) -> SourceEvent:
         if not external_id:
             continue
         refs.append(
-            SourceRef(
+            EventRef(
                 source="x",
                 external_id=external_id,
                 url=reference.get("url"),
@@ -30,7 +30,7 @@ def source_event_from_social_post(post: SocialPost) -> SourceEvent:
             )
         )
 
-    return SourceEvent(
+    return XPostEvent(
         id=f"x:{post.tweet_id}",
         kind="social",
         source="x",
@@ -39,19 +39,22 @@ def source_event_from_social_post(post: SocialPost) -> SourceEvent:
         occurred_at=post.posted_at,
         severity=_social_event_severity(post),
         tickers=[str(ticker).upper() for ticker in (post.mentioned_tickers or [])],
-        topics=[str(topic) for topic in (post.topics or [])],
-        sentiment=post.sentiment,
         links=[str(link) for link in (post.links or [])],
         refs=refs,
-        metadata={
-            "username": post.username,
-            "is_quote": bool(post.is_quote),
-            "is_repost": bool(post.is_repost),
-            "is_reply": bool(post.is_reply),
-            "urgency": post.urgency,
-            "is_noteworthy": bool(post.is_noteworthy),
-            "attention_reason": post.attention_reason,
-        },
+        raw=post.raw_json,
+        username=post.username,
+        tweet_id=post.tweet_id,
+        tweet_url=post.tweet_url,
+        media=post.media or [],
+        referenced_tweets=post.referenced_tweets or [],
+        topics=[str(topic) for topic in (post.topics or [])],
+        sentiment=post.sentiment,
+        urgency=post.urgency,
+        is_noteworthy=bool(post.is_noteworthy),
+        attention_reason=post.attention_reason,
+        is_quote=bool(post.is_quote),
+        is_reply=bool(post.is_reply),
+        is_repost=bool(post.is_repost),
     )
 
 
@@ -62,7 +65,7 @@ def _social_event_title(post: SocialPost) -> str:
     return content[:120] if content else f"@{post.username} X update"
 
 
-def _social_event_severity(post: SocialPost) -> SourceEventSeverity:
+def _social_event_severity(post: SocialPost) -> EventSeverity:
     if post.is_noteworthy or post.urgency == "high":
         return "high"
     if post.urgency == "medium":
@@ -70,3 +73,6 @@ def _social_event_severity(post: SocialPost) -> SourceEventSeverity:
     if post.urgency == "low":
         return "low"
     return "info"
+
+
+source_event_from_social_post = event_from_social_post

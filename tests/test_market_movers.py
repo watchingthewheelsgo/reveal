@@ -7,11 +7,13 @@ from config.settings import get_settings
 from server.alerts.market_movers import (
     format_market_mover_alert,
     get_recent_market_movers,
+    market_mover_event_from_payload,
     normalize_market_mover_event,
     persist_new_market_mover_events,
     run_market_mover_alert_cycle,
 )
 from server.db import engine as db_engine
+from server.events.types import MarketMoverSignalEvent
 
 
 class DummyAdminAdapter:
@@ -70,6 +72,13 @@ class MarketMoversTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event["symbol"], "VIAV.US")
         self.assertEqual(event["direction"], "bullish")
         self.assertIn("VIAV", format_market_mover_alert(event))
+
+        typed = market_mover_event_from_payload(event)
+        self.assertIsInstance(typed, MarketMoverSignalEvent)
+        self.assertEqual(typed.kind, "market_mover")
+        self.assertEqual(typed.source, "longbridge_anomaly")
+        self.assertEqual(typed.ticker, "VIAV")
+        self.assertEqual(typed.tickers, ["VIAV"])
 
     async def test_persist_new_market_mover_events_dedupes_by_event_id(self):
         event = normalize_market_mover_event(

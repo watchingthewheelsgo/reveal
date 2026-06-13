@@ -6,6 +6,7 @@ from datetime import UTC
 
 from loguru import logger
 
+from server.events.types import NewsEvent, normalize_event_severity
 from server.stock.data import fetch_news
 
 
@@ -91,3 +92,21 @@ async def check_news_alerts(tickers: list[str]) -> list[dict]:
             logger.exception("News alert check failed for {}", ticker)
 
     return alerts
+
+
+def news_event_from_alert_payload(alert: dict) -> NewsEvent:
+    """Convert a news-alert payload into a typed runtime event."""
+
+    ticker = str(alert.get("ticker") or "")
+    headline = str(alert.get("message") or alert.get("title") or "")
+    return NewsEvent(
+        id=f"news_alert:{ticker}:{headline[:80]}",
+        kind="news",
+        source="finnhub_news",
+        title=f"{ticker} 突发新闻".strip(),
+        summary=headline,
+        severity=normalize_event_severity(alert.get("severity")),
+        tickers=[ticker] if ticker else [],
+        ticker=ticker,
+        headline=headline,
+    )

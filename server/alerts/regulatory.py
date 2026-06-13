@@ -19,6 +19,12 @@ from sqlalchemy import select
 from config.settings import get_settings
 from server.db.engine import get_session_factory
 from server.db.models import RegulatoryEvent
+from server.events.types import (
+    EventRef,
+    FDARecallEvent,
+    SECFilingEvent,
+    normalize_event_severity,
+)
 
 SEC_COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SEC_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
@@ -329,6 +335,125 @@ async def record_new_regulatory_events(events: list[dict[str, Any]]) -> list[dic
         await session.commit()
 
     return new_events
+
+
+def regulatory_event_from_payload(event: dict[str, Any]) -> SECFilingEvent | FDARecallEvent:
+    """Convert a normalized SEC/FDA payload into a typed runtime event."""
+
+    source = str(event.get("source") or "").lower()
+    if source == "sec":
+        return sec_filing_event_from_payload(event)
+    if source == "fda":
+        return fda_recall_event_from_payload(event)
+    raise ValueError(f"unsupported regulatory event source: {source or '-'}")
+
+
+def sec_filing_event_from_payload(event: dict[str, Any]) -> SECFilingEvent:
+    raw_value = event.get("raw")
+    raw: dict[str, Any] = raw_value if isinstance(raw_value, dict) else {}
+    event_id = str(event.get("event_id") or "")
+    accession = str(raw.get("accession") or _event_id_tail(event_id))
+    form = str(raw.get("form") or "")
+    ticker = str(event.get("ticker") or "")
+    event_date = event.get("event_date")
+    url = str(event.get("url") or "") or None
+    return SECFilingEvent(
+        id=event_id,
+        kind="regulatory",
+        source="sec",
+        title=str(event.get("title") or event.get("message") or event_id),
+        summary=str(event.get("detail") or ""),
+        occurred_at=event_date if isinstance(event_date, datetime) else None,
+        severity=normalize_event_severity(event.get("severity")),
+        tickers=[ticker] if ticker else [],
+        links=[url] if url else [],
+        refs=[
+            EventRef(
+                source="sec",
+                external_id=event_id,
+                url=url,
+                author=str(raw.get("company") or "") or None,
+                raw=raw,
+            )
+        ],
+        raw=raw,
+        cik=str(raw.get("cik") or ""),
+        accession=accession,
+        form=form,
+        company=str(raw.get("company") or "") or None,
+        filing_date=str(raw.get("filing_date") or "") or None,
+        report_date=str(raw.get("report_date") or "") or None,
+        primary_document=str(raw.get("primary_document") or "") or None,
+    )
+
+
+def fda_recall_event_from_payload(event: dict[str, Any]) -> FDARecallEvent:
+    raw_value = event.get("raw")
+    raw: dict[str, Any] = raw_value if isinstance(raw_value, dict) else {}
+    event_id = str(event.get("event_id") or "")
+    recall_number = str(raw.get("recall_number") or _event_id_tail(event_id))
+    ticker = str(event.get("ticker") or "")
+    event_date = event.get("event_date")
+    url = str(event.get("url") or "") or None
+    return FDARecallEvent(
+        id=event_id,
+        kind="regulatory",
+        source="fda",
+        title=str(event.get("title") or event.get("message") or event_id),
+        summary=str(event.get("detail") or ""),
+        occurred_at=event_date if isinstance(event_date, datetime) else None,
+        severity=normalize_event_severity(event.get("severity")),
+        tickers=[ticker] if ticker else [],
+        links=[url] if url else [],
+        refs=[
+            EventRef(
+                source="fda",
+                external_id=event_id,
+                url=url,
+                author=str(raw.get("recalling_firm") or "") or None,
+                raw=raw,
+            )
+        ],
+        raw=raw,
+        category=str(raw.get("category") or _event_id_middle(event_id)),
+        recall_number=recall_number,
+        classification=str(raw.get("classification") or ""),
+        status=raw.get("status"),
+        recalling_firm=str(raw.get("recalling_firm") or "") or None,
+        product_description=str(raw.get("product_description") or "") or None,
+        reason_for_recall=str(raw.get("reason_for_recall") or "") or None,
+        matched_keyword=str(raw.get("matched_keyword") or "") or None,
+    )
+
+
+def regulatory_event_from_record(row: RegulatoryEvent) -> SECFilingEvent | FDARecallEvent:
+    """Convert a persisted regulatory row into a typed runtime event."""
+
+    return regulatory_event_from_payload(
+        {
+            "source": row.source,
+            "event_id": row.event_id,
+            "ticker": row.ticker,
+            "type": row.event_type,
+            "severity": row.severity,
+            "title": row.title,
+            "message": row.title,
+            "detail": row.detail,
+            "url": row.url,
+            "event_date": row.event_date,
+            "raw": row.raw_json,
+        }
+    )
+
+
+def _event_id_tail(event_id: str) -> str:
+    parts = event_id.split(":")
+    return parts[-1] if parts else ""
+
+
+def _event_id_middle(event_id: str) -> str:
+    parts = event_id.split(":")
+    return parts[1] if len(parts) > 2 else ""
 
 
 async def fetch_sec_company_tickers() -> dict[str, dict[str, str]]:

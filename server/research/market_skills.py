@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from server.events.types import SourceEvent
+from server.events.types import Event
 
 MarketSkillBias = Literal[
     "neutral",
@@ -42,7 +42,7 @@ class MarketSkillSpec:
 @dataclass(frozen=True)
 class SkillRunRequest:
     skill_id: str
-    source_event_id: str
+    event_id: str
     reason: str
     input_snapshot: str
 
@@ -50,7 +50,7 @@ class SkillRunRequest:
 @dataclass
 class SkillRunResult:
     skill_id: str
-    source_event_id: str
+    event_id: str
     observations: list[str] = field(default_factory=list)
     result: str = ""
     confidence: float | None = None
@@ -178,9 +178,10 @@ def list_market_skills() -> list[MarketSkillSpec]:
     return list(MARKET_SKILLS)
 
 
-def select_market_skills(event: SourceEvent, limit: int = 4) -> list[MarketSkillSpec]:
+def select_market_skills(event: Event, limit: int = 4) -> list[MarketSkillSpec]:
     """Select relevant skill perspectives for an event."""
-    topic_text = " ".join([*event.topics, event.title, event.summary]).lower()
+    topics = [str(topic) for topic in getattr(event, "topics", [])]
+    topic_text = " ".join([*topics, event.title, event.summary]).lower()
     scored: list[tuple[int, MarketSkillSpec]] = []
     for skill in MARKET_SKILLS:
         score = 0
@@ -203,14 +204,14 @@ def select_market_skills(event: SourceEvent, limit: int = 4) -> list[MarketSkill
     return selected
 
 
-def build_skill_run_requests(event: SourceEvent, limit: int = 4) -> list[SkillRunRequest]:
+def build_skill_run_requests(event: Event, limit: int = 4) -> list[SkillRunRequest]:
     event_snapshot = _event_snapshot(event)
     requests: list[SkillRunRequest] = []
     for skill in select_market_skills(event, limit=limit):
         requests.append(
             SkillRunRequest(
                 skill_id=skill.id,
-                source_event_id=event.id,
+                event_id=event.id,
                 reason=_selection_reason(skill, event),
                 input_snapshot=event_snapshot,
             )
@@ -218,7 +219,7 @@ def build_skill_run_requests(event: SourceEvent, limit: int = 4) -> list[SkillRu
     return requests
 
 
-def market_skill_prompt_context(event: SourceEvent, limit: int = 4) -> str:
+def market_skill_prompt_context(event: Event, limit: int = 4) -> str:
     """Render selected market skills for a research prompt."""
     selected = select_market_skills(event, limit=limit)
     if not selected:
@@ -239,7 +240,8 @@ def market_skill_prompt_context(event: SourceEvent, limit: int = 4) -> str:
     return "\n".join(lines)
 
 
-def _event_snapshot(event: SourceEvent) -> str:
+def _event_snapshot(event: Event) -> str:
+    topics = [str(topic) for topic in getattr(event, "topics", [])]
     return "\n".join(
         [
             f"id={event.id}",
@@ -247,12 +249,12 @@ def _event_snapshot(event: SourceEvent) -> str:
             f"source={event.source}",
             f"title={event.title}",
             f"tickers={','.join(event.tickers)}",
-            f"topics={','.join(event.topics)}",
+            f"topics={','.join(topics)}",
         ]
     )
 
 
-def _selection_reason(skill: MarketSkillSpec, event: SourceEvent) -> str:
+def _selection_reason(skill: MarketSkillSpec, event: Event) -> str:
     if event.kind in skill.trigger_event_kinds:
         return f"event kind {event.kind} matches {skill.id}"
     return f"event topics/title may match {skill.id}"

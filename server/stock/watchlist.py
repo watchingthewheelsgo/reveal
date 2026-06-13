@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from server.db.engine import get_session_factory
 from server.db.models import StockWatch
+from server.events.types import PriceAlertEvent, normalize_event_severity
 from server.stock.data import get_current_price
 
 DEFAULT_STOCK_WATCH_THRESHOLD_PCT = 5.0
@@ -254,6 +255,31 @@ def _build_price_alert(watch: StockWatch, current_price: float) -> dict[str, Any
             f"${previous_price:.2f} → ${current_price:.2f}"
         ),
     }
+
+
+def stock_watch_price_event_from_payload(alert: dict[str, Any]) -> PriceAlertEvent:
+    """Convert a manual stock-watch alert payload into a typed runtime event."""
+
+    ticker = str(alert.get("ticker") or "")
+    change_pct = float(alert.get("change_pct") or 0.0)
+    current_price = alert.get("current_price")
+    previous_price = alert.get("previous_price")
+    threshold_pct = alert.get("threshold_pct")
+    return PriceAlertEvent(
+        id=f"stock_watch:{alert.get('platform') or 'auto'}:{alert.get('chat_id') or ''}:"
+        f"{ticker}:{change_pct:.4f}",
+        kind="market_price",
+        source="stock_watch",
+        title=f"{ticker} 股票观察异动".strip(),
+        summary=str(alert.get("message") or ""),
+        severity=normalize_event_severity(alert.get("severity")),
+        tickers=[ticker] if ticker else [],
+        ticker=ticker,
+        current_price=float(current_price) if isinstance(current_price, int | float) else None,
+        previous_price=float(previous_price) if isinstance(previous_price, int | float) else None,
+        change_pct=change_pct,
+        threshold_pct=float(threshold_pct) if isinstance(threshold_pct, int | float) else None,
+    )
 
 
 async def _send_stock_watch_alert(

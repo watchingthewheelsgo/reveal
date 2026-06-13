@@ -112,7 +112,7 @@ class ResearchServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(research_session.agent_runtime, "claude_sdk")
         self.assertEqual(research_session.agent_session_id, "agent-session-1")
 
-    async def test_tweet_research_prompt_includes_source_event_and_market_skills(self):
+    async def test_tweet_research_prompt_includes_typed_event_and_market_skills(self):
         post_id = await self.create_post(
             content="Trump tariff headline could hit chip supply chains and market risk.",
             summary="特朗普关税新闻可能影响芯片供应链。",
@@ -136,7 +136,9 @@ class ResearchServiceTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(calls), 1)
         prompt = calls[0][0]
-        self.assertIn("canonical_source_event", prompt)
+        self.assertIn("canonical_event", prompt)
+        self.assertIn("source_specific_fields", prompt)
+        self.assertIn("tweet_id", prompt)
         self.assertIn("Market skills to consider", prompt)
         self.assertIn("macro_policy", prompt)
         self.assertIn("bear_case", prompt)

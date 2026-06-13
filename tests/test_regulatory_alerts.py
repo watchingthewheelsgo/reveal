@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from config import settings as settings_module
 from server.alerts import regulatory
+from server.events.types import FDARecallEvent, SECFilingEvent
 
 
 class FakeResponse:
@@ -88,6 +89,12 @@ class RegulatoryAlertsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[0]["event_id"], "sec:0000320193:0000320193-26-000001")
         self.assertEqual(events[0]["severity"], "critical")
         self.assertIn("aapl-8k.htm", events[0]["url"])
+        typed = regulatory.regulatory_event_from_payload(events[0])
+        self.assertIsInstance(typed, SECFilingEvent)
+        assert isinstance(typed, SECFilingEvent)
+        self.assertEqual(typed.form, "8-K")
+        self.assertEqual(typed.cik, "0000320193")
+        self.assertEqual(typed.tickers, ["AAPL"])
 
     async def test_fda_enforcement_events_match_keywords_and_classification(self):
         self.settings.fda_alert_enabled = True
@@ -129,6 +136,12 @@ class RegulatoryAlertsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[0]["event_id"], "fda:drug:D-1234-2026")
         self.assertEqual(events[0]["severity"], "critical")
         self.assertIn("Acme injectable product", events[0]["detail"])
+        typed = regulatory.regulatory_event_from_payload(events[0])
+        self.assertIsInstance(typed, FDARecallEvent)
+        assert isinstance(typed, FDARecallEvent)
+        self.assertEqual(typed.category, "drug")
+        self.assertEqual(typed.recall_number, "D-1234-2026")
+        self.assertEqual(typed.classification, "Class I")
 
 
 if __name__ == "__main__":

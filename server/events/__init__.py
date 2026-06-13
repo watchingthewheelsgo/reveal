@@ -1,1 +1,41 @@
-"""Canonical event model package."""
+"""Typed runtime event schemas and source adapters."""
+
+from server.events.types import (
+    Event,
+    EventKind,
+    EventRef,
+    EventSeverity,
+    FDARecallEvent,
+    MarketMoverSignalEvent,
+    NewsEvent,
+    PriceAlertEvent,
+    SECFilingEvent,
+    SourceEvent,
+    SourceEventKind,
+    SourceEventSeverity,
+    SourceRef,
+    VolumeAlertEvent,
+    XPostEvent,
+    compact_event_context,
+    normalize_event_severity,
+)
+
+__all__ = [
+    "Event",
+    "EventKind",
+    "EventRef",
+    "EventSeverity",
+    "FDARecallEvent",
+    "MarketMoverSignalEvent",
+    "NewsEvent",
+    "PriceAlertEvent",
+    "SECFilingEvent",
+    "SourceEvent",
+    "SourceEventKind",
+    "SourceEventSeverity",
+    "SourceRef",
+    "VolumeAlertEvent",
+    "XPostEvent",
+    "compact_event_context",
+    "normalize_event_severity",
+]

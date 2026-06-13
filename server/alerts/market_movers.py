@@ -11,6 +11,7 @@ from sqlalchemy import desc, select
 from config.settings import get_settings
 from server.db.engine import get_session_factory
 from server.db.models import MarketMoverEvent
+from server.events.types import MarketMoverSignalEvent
 from server.stock.longbridge import (
     fetch_quote_anomalies,
     longbridge_ticker_from_symbol,
@@ -163,6 +164,48 @@ def normalize_market_mover_event(raw: dict[str, Any], market: str) -> dict[str, 
         "event_time": alert_time,
         "raw": raw,
     }
+
+
+def market_mover_event_from_payload(event: dict[str, Any]) -> MarketMoverSignalEvent:
+    """Convert a normalized Longbridge anomaly payload into a typed runtime event."""
+
+    ticker = str(event.get("ticker") or "")
+    event_type = str(event.get("event_type") or "异动")
+    detail = str(event.get("detail") or ticker)
+    direction = event.get("direction")
+    event_time = event.get("event_time")
+    title = f"{ticker} {event_type}".strip()
+    change_text = event.get("change_text")
+    summary_parts = [detail]
+    if change_text:
+        summary_parts.append(str(change_text))
+    if direction:
+        summary_parts.append(f"direction={direction}")
+    return MarketMoverSignalEvent(
+        id=str(event.get("event_id") or ""),
+        kind="market_mover",
+        source="longbridge_anomaly",
+        title=title or event_type,
+        summary=" | ".join(part for part in summary_parts if part),
+        occurred_at=event_time if isinstance(event_time, datetime) else None,
+        severity="medium",
+        tickers=[ticker] if ticker else [],
+        raw=event.get("raw") if isinstance(event.get("raw"), dict) else None,
+        market=str(event.get("market") or ""),
+        symbol=str(event.get("symbol") or ""),
+        ticker=ticker,
+        event_type=event_type,
+        direction=str(direction) if direction else None,
+        price=event.get("price") if isinstance(event.get("price"), int | float) else None,
+        change_text=str(change_text) if change_text else None,
+        detail=detail,
+    )
+
+
+def market_mover_event_from_record(row: MarketMoverEvent) -> MarketMoverSignalEvent:
+    """Convert a persisted Longbridge anomaly row into a typed runtime event."""
+
+    return market_mover_event_from_payload(market_mover_payload(row) | {"raw": row.raw_json})
 
 
 def market_mover_payload(row: MarketMoverEvent) -> dict[str, Any]:

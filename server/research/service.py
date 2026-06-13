@@ -16,7 +16,7 @@ from server.research.claude_sdk_runtime import (
     run_agent,
 )
 from server.research.market_skills import market_skill_prompt_context
-from server.social.events import source_event_from_social_post
+from server.social.events import event_from_social_post
 
 
 class ResearchError(ValueError):
@@ -600,7 +600,7 @@ def _topic_prompt(post: SocialPost, message: str) -> str:
 
 
 def _post_context(post: SocialPost) -> str:
-    source_event = source_event_from_social_post(post)
+    event = event_from_social_post(post)
     lines = [
         f"post_id: {post.id}",
         f"author: @{post.username}",
@@ -626,8 +626,8 @@ def _post_context(post: SocialPost) -> str:
         lines.append("referenced:")
         for ref in post.referenced_tweets[:3]:
             lines.append(f"- {ref.get('type')}: {ref.get('url')} {ref.get('text', '')}")
-    lines.extend(["", "canonical_source_event:", compact_event_context(source_event)])
-    if skill_context := market_skill_prompt_context(source_event):
+    lines.extend(["", "canonical_event:", compact_event_context(event)])
+    if skill_context := market_skill_prompt_context(event):
         lines.extend(["", skill_context])
     return "\n".join(lines)
 
