@@ -181,7 +181,7 @@ async def lifespan(app: FastAPI):
                 await tg.push_to_admin("当前没有 Twitter 关注列表。")
             return
         processor = TweetProcessor()
-        await run_twitter_monitor(accounts, tg, processor, notify_no_updates=True)
+        await run_twitter_monitor(accounts, tg, processor, notify_no_updates=False)
 
     scheduler.register_interval(
         "twitter_monitor",

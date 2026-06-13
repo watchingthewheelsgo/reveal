@@ -13,6 +13,7 @@ from sqlalchemy import desc, select
 from server.db.engine import get_session_factory
 from server.db.models import ConversationMessage, ResearchSession, SocialPost, TwitterState
 from server.research.service import ResearchError, ask_about_post, run_deep_research
+from server.social.relevance import agent_market_relevance
 
 WEB_CHAT_ID = "web"
 STATIC_DIR = Path(__file__).parent / "static"
@@ -173,6 +174,7 @@ def _post_summary(post: SocialPost, research: ResearchSession | None) -> dict[st
         "link_count": len(post.links or []),
         "media_count": len(post.media or []),
         "reference_count": len(post.referenced_tweets or []),
+        "is_market_relevant": agent_market_relevance(post),
         "is_noteworthy": post.is_noteworthy,
         "attention_reason": post.attention_reason,
         "research": _research_summary(research) if research else None,

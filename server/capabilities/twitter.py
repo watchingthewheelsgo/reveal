@@ -10,6 +10,7 @@ from config.settings import get_settings
 from server.db.engine import get_session_factory
 from server.db.models import SocialPost, TwitterState
 from server.db.time import to_naive_utc
+from server.social.relevance import agent_market_relevance
 
 
 async def get_twitter_watch_list_payload() -> dict[str, Any]:
@@ -171,6 +172,7 @@ def social_post_payload(post: SocialPost) -> dict[str, Any]:
         "topics": post.topics or [],
         "sentiment": post.sentiment,
         "urgency": post.urgency,
+        "is_market_relevant": agent_market_relevance(post),
         "is_noteworthy": bool(post.is_noteworthy),
         "attention_reason": post.attention_reason,
         "is_reply": bool(post.is_reply),

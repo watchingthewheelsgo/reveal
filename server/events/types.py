@@ -59,6 +59,7 @@ class XPostEvent(Event):
     topics: list[str] = Field(default_factory=list)
     sentiment: str | None = None
     urgency: str | None = None
+    is_market_relevant: bool | None = None
     is_noteworthy: bool = False
     attention_reason: str | None = None
     is_quote: bool = False

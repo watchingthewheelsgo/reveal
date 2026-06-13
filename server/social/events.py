@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from server.db.models import SocialPost
 from server.events.types import EventRef, EventSeverity, XPostEvent
+from server.social.relevance import agent_market_relevance
 
 
 def event_from_social_post(post: SocialPost) -> XPostEvent:
@@ -50,6 +51,7 @@ def event_from_social_post(post: SocialPost) -> XPostEvent:
         topics=[str(topic) for topic in (post.topics or [])],
         sentiment=post.sentiment,
         urgency=post.urgency,
+        is_market_relevant=agent_market_relevance(post),
         is_noteworthy=bool(post.is_noteworthy),
         attention_reason=post.attention_reason,
         is_quote=bool(post.is_quote),

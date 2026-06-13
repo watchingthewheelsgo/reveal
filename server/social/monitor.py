@@ -17,6 +17,7 @@ from server.db.engine import get_session_factory
 from server.db.models import SocialPost, TwitterState
 from server.db.time import assume_utc, to_naive_utc, utc_now_naive
 from server.social.relevance import (
+    agent_market_relevance,
     group_similar_social_posts,
     is_relevant_social_post,
     is_x_url,
@@ -34,7 +35,6 @@ CARD_SUMMARY_LIMIT = 360
 CARD_BODY_LIMIT = 900
 CARD_BODY_WITH_SUMMARY_LIMIT = 420
 CARD_TRANSLATION_LIMIT = 450
-SOCIAL_TOPIC_GROUP_MIN_POSTS = 2
 
 
 async def list_active_twitter_accounts(configured_accounts: list[str] | None = None) -> list[str]:
@@ -191,13 +191,24 @@ async def _upsert_social_post(
         try:
             analysis = await llm_processor.analyze(llm_context, display_username)
             if analysis:
+                tweet["reveal_analysis"] = {
+                    "summary": analysis.summary,
+                    "mentioned_tickers": analysis.mentioned_tickers,
+                    "topics": analysis.topics,
+                    "sentiment": analysis.sentiment,
+                    "urgency": analysis.urgency,
+                    "urgency_reason": analysis.urgency_reason,
+                    "is_market_relevant": analysis.is_market_relevant,
+                    "is_noteworthy": analysis.is_noteworthy,
+                    "attention_reason": analysis.attention_reason,
+                }
                 summary = analysis.summary
                 translated = analysis.translation
                 post_tickers = analysis.mentioned_tickers or None
                 post_topics = analysis.topics or None
                 post_sentiment = analysis.sentiment
                 post_urgency = analysis.urgency
-                post_is_noteworthy = bool(analysis.is_noteworthy or analysis.urgency == "high")
+                post_is_noteworthy = bool(analysis.is_noteworthy)
                 post_attention_reason = analysis.attention_reason or analysis.urgency_reason or None
         except Exception:
             logger.exception("LLM processing failed for @{}", display_username)
@@ -391,8 +402,6 @@ async def check_and_notify(
             logger.info(f"@{account_key}: {len(pushed_tweet_ids)} tweets notified")
         else:
             logger.info(f"@{account_key}: {len(posts_to_push)} tweet candidates collected")
-    elif adapter and notify_no_updates:
-        await adapter.push_to_admin(f"@{display_username} 没有新的更新。")
 
     return posts_to_push
 
@@ -570,14 +579,8 @@ async def push_relevant_tweet_cards(
     pushed_posts: list[SocialPost] = []
     for group in grouped_posts:
         try:
-            if len(group) >= SOCIAL_TOPIC_GROUP_MIN_POSTS:
-                await push_tweet_topic_card(group, adapter, cross_ref=cross_ref)
-                pushed_posts.extend(group)
-                continue
-
-            post = group[0]
-            await push_tweet_card(post, adapter, cross_ref=cross_ref.get(post.id))
-            pushed_posts.append(post)
+            await push_tweet_topic_card(group, adapter, cross_ref=cross_ref)
+            pushed_posts.extend(group)
         except Exception:
             logger.exception(
                 "Tweet grouped push failed for posts={}",
@@ -678,11 +681,6 @@ async def run_twitter_monitor(
     if adapter and candidates:
         pushed_posts = await push_relevant_tweet_cards(candidates, adapter)
         await mark_tweet_posts_pushed(pushed_posts)
-
-    if adapter and notify_no_updates and candidates and not pushed_posts:
-        await adapter.push_to_admin(
-            "本轮 X 监控有新更新，但没有符合股市/金融/经济/政治/军事条件的内容。"
-        )
 
     total = len(pushed_posts) if adapter else len(candidates)
     logger.info(
@@ -1103,7 +1101,7 @@ def _build_tweet_topic_card(
 ) -> dict:
     latest_post = posts[-1]
     label = _topic_label_for_group(posts)
-    title = f"X Topic · {label}"
+    title = f"X Signal · {label}"
     elements: list[dict[str, Any]] = []
     sections: list[str] = []
 
@@ -1113,7 +1111,7 @@ def _build_tweet_topic_card(
 
     lead = _topic_lead_text(posts)
     if lead:
-        lead_section = f"**主题**\n{lead}"
+        lead_section = f"**事实**\n{lead}"
         elements.extend([{"tag": "hr"}, _md_div(lead_section)])
         sections.append(lead_section)
 
@@ -1160,10 +1158,8 @@ def _topic_metadata_text(posts: list[SocialPost]) -> str:
     latest_post = posts[-1]
     usernames = list(dict.fromkeys(post.username for post in posts))
     lines = [
-        (
-            f"{len(posts)} 条相关更新 · {len(usernames)} 位博主提到 · "
-            f"最近 {_time_ago(latest_post.posted_at)}"
-        )
+        f"{len(posts)} 条市场相关更新 · {len(usernames)} 位博主提到 · "
+        f"最近 {_time_ago(latest_post.posted_at)}"
     ]
 
     tickers = _common_values(post.mentioned_tickers for post in posts)
@@ -1175,6 +1171,8 @@ def _topic_metadata_text(posts: list[SocialPost]) -> str:
         tag_parts.append("Topic: " + " · ".join(topics[:5]))
     if any(post.is_noteworthy or post.urgency == "high" for post in posts):
         tag_parts.append("标记: 重点关注")
+    if all(agent_market_relevance(post) is True for post in posts):
+        tag_parts.append("Agent: market relevant")
     if tag_parts:
         lines.append(" · ".join(tag_parts))
     return "\n".join(lines)

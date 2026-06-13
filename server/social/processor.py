@@ -20,6 +20,7 @@ _ANALYZE_SYSTEM_PROMPT = """你是一个市场信息分析助手。分析以下 
   "sentiment": "bullish 或 bearish 或 neutral 或 mixed",
   "urgency": "high 或 medium 或 low",
   "urgency_reason": "判定理由，一句话",
+  "is_market_relevant": true,
   "is_noteworthy": true,
   "attention_reason": "如果非常值得关注，用一句话说明原因；否则为空字符串"
 }
@@ -28,13 +29,13 @@ _ANALYZE_SYSTEM_PROMPT = """你是一个市场信息分析助手。分析以下 
 - mentioned_tickers: 提取推文提到的美股 ticker 或公司名对应 ticker（如 Nvidia→NVDA）
 - topics: 提取 2-5 个关键话题标签，优先使用事件本身，例如“关税”“FOMC”“中东冲突”
 - sentiment: 对股市/投资或宏观风险偏好的情绪倾向；无法判断时为 neutral
-- 只把股市、金融、经济、政治、军事、地缘冲突、监管政策相关内容标为值得推送。
-  纯社交互动、粉丝增长、娱乐八卦、生活感想、无市场含义的 meme 或广告都不是重点。
+- is_market_relevant: 只有股市、金融、经济、政治、军事、地缘冲突、监管政策相关内容才为 true。
+  NBA/体育、电影娱乐、粉丝增长、生活感想、无市场含义的 meme 或广告都必须为 false。
 - urgency 判定:
   - high: 涉及政策变化、重大事件、财报意外、CEO 离职、并购等对股价有即时影响的信息
   - medium: 宏观数据、行业趋势、监管动态、政治军事进展、分析师观点等有参考价值的信息
   - low: 日常讨论、个人观点、非相关内容，或相关但没有新增事实的信息
-- is_noteworthy: 只有当信息属于上述可推送领域，且值得用户立即停下来关注时才为 true，例如会
+- is_noteworthy: 只有当 is_market_relevant 为 true，且值得用户立即停下来关注时才为 true，例如会
   显著影响持仓/关注标的、揭示重大催化、出现异常市场信号、政策/军事事件升级，或包含可行动
   的新事实。普通观点、复述、涨跌感想不要标为 true。
 - attention_reason: 写清“这是什么事件/新闻，以及为什么值得关注”；非重点则为空字符串。"""
@@ -49,6 +50,7 @@ class TweetAnalysis:
     sentiment: str = "neutral"
     urgency: str = "low"
     urgency_reason: str = ""
+    is_market_relevant: bool = False
     is_noteworthy: bool = False
     attention_reason: str = ""
 
@@ -129,6 +131,7 @@ def _parse_analysis(raw: str) -> TweetAnalysis:
         sentiment=str(data.get("sentiment") or "neutral"),
         urgency=str(data.get("urgency") or "low"),
         urgency_reason=str(data.get("urgency_reason") or ""),
+        is_market_relevant=_parse_market_relevance(data, normalized_tickers),
         is_noteworthy=_parse_bool(data.get("is_noteworthy")),
         attention_reason=str(data.get("attention_reason") or ""),
     )
@@ -140,6 +143,12 @@ def _parse_bool(value) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"true", "yes", "1", "是"}
     return bool(value)
+
+
+def _parse_market_relevance(data: dict, normalized_tickers: list[str]) -> bool:
+    if "is_market_relevant" in data:
+        return _parse_bool(data.get("is_market_relevant"))
+    return bool(data.get("is_noteworthy") or normalized_tickers)
 
 
 def _is_auth_error(error: Exception) -> bool:

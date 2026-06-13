@@ -230,19 +230,58 @@ TRACKING_QUERY_PARAMS = frozenset(
 
 
 def is_relevant_social_post(post: SocialPost) -> bool:
-    if post.mentioned_tickers:
+    """Return whether Agent analysis judged the post market relevant."""
+
+    return agent_market_relevance(post) is True
+
+
+def agent_market_relevance(post: SocialPost) -> bool | None:
+    """Return the persisted Agent market-relevance verdict.
+
+    New rows store the explicit verdict in raw_json.reveal_analysis. Older rows
+    did not have that field, so we infer only from Agent-derived structured
+    fields, never from the raw tweet body.
+    """
+
+    analysis = _raw_agent_analysis(post)
+    if analysis and "is_market_relevant" in analysis:
+        return bool(analysis.get("is_market_relevant"))
+
+    if not _has_legacy_agent_analysis(post):
+        return None
+
+    if post.is_noteworthy or post.mentioned_tickers:
         return True
 
-    search_text = social_post_search_text(post)
-    if contains_relevance_keyword(search_text):
+    agent_text = " ".join(
+        [
+            post.summary or "",
+            post.attention_reason or "",
+            " ".join(str(topic) for topic in (post.topics or [])),
+        ]
+    )
+    if post.urgency in {"high", "medium"} and contains_relevance_keyword(agent_text):
         return True
-
-    if post.is_noteworthy or post.urgency == "high":
-        topic_text = " ".join(str(topic) for topic in (post.topics or []))
-        if contains_relevance_keyword(topic_text):
-            return True
-
     return False
+
+
+def _raw_agent_analysis(post: SocialPost) -> dict[str, Any] | None:
+    raw = post.raw_json if isinstance(post.raw_json, dict) else {}
+    analysis = raw.get("reveal_analysis")
+    return analysis if isinstance(analysis, dict) else None
+
+
+def _has_legacy_agent_analysis(post: SocialPost) -> bool:
+    return bool(
+        post.summary
+        or post.translated_content
+        or post.mentioned_tickers
+        or post.topics
+        or post.sentiment
+        or post.urgency
+        or post.attention_reason
+        or post.is_noteworthy
+    )
 
 
 def contains_relevance_keyword(text: str) -> bool:

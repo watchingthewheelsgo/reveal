@@ -65,6 +65,7 @@ class DummyProcessor:
             sentiment="neutral",
             urgency="high",
             urgency_reason="测试",
+            is_market_relevant=True,
             is_noteworthy=True,
             attention_reason="出现明确催化，值得立即关注。",
         )
@@ -87,6 +88,7 @@ class MarketProcessor:
             sentiment="mixed",
             urgency="medium",
             urgency_reason="政治政策可能影响风险偏好。",
+            is_market_relevant=True,
             is_noteworthy=True,
             attention_reason=f"{author} 认为关税变化会影响美股风险偏好。",
         )
@@ -102,6 +104,7 @@ class SocialOnlyProcessor:
             sentiment="neutral",
             urgency="low",
             urgency_reason="无市场相关性。",
+            is_market_relevant=False,
             is_noteworthy=False,
             attention_reason="",
         )
@@ -135,6 +138,7 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
               "sentiment": "bullish",
               "urgency": "high",
               "urgency_reason": "可能影响股价",
+              "is_market_relevant": true,
               "is_noteworthy": true,
               "attention_reason": "新增订单金额超预期"
             }
@@ -347,6 +351,8 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(post.links, ["https://example.com/report"])
         self.assertEqual(references[0]["text"], "quoted context")
         self.assertTrue(post.is_noteworthy)
+        assert post.raw_json is not None
+        self.assertTrue(post.raw_json["reveal_analysis"]["is_market_relevant"])
         self.assertEqual(post.attention_reason, "出现明确催化，值得立即关注。")
         self.assertEqual(quoted_post.username, "bob")
         self.assertEqual(quoted_post.content, "quoted context")
@@ -428,7 +434,7 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(total, 0)
-        self.assertEqual(adapter.messages, [("admin", "@alice 没有新的更新。")])
+        self.assertEqual(adapter.messages, [])
         self.assertEqual(adapter.cards, [])
 
     async def test_monitor_keeps_no_update_notifications_opt_in(self):
@@ -490,6 +496,39 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.last_tweet_epoch, 101)
         self.assertFalse(post.is_pushed)
 
+    async def test_monitor_does_not_push_keyword_match_without_agent_relevance(self):
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            session.add(TwitterState(username="alice", last_tweet_epoch=100))
+            await session.commit()
+
+        async def fake_fetch_user_tweets(username: str, count: int = 20, cursor: str | None = None):
+            return {
+                "screen_name": username,
+                "latest_tweets": [
+                    {
+                        "tweetID": "101",
+                        "date_epoch": 101,
+                        "text": "Trump joins an NBA movie premiere with no market implications.",
+                    },
+                ],
+            }
+
+        adapter = DummyAdapter()
+        with patch("server.social.monitor.fetch_user_tweets", new=fake_fetch_user_tweets):
+            total = await run_twitter_monitor(["alice"], adapter, llm_processor=None)
+
+        self.assertEqual(total, 0)
+        self.assertEqual(adapter.cards, [])
+        self.assertEqual(adapter.messages, [])
+
+        async with session_factory() as session:
+            post = (
+                await session.execute(select(SocialPost).where(SocialPost.tweet_id == "101"))
+            ).scalar_one()
+
+        self.assertFalse(post.is_pushed)
+
     async def test_monitor_groups_similar_news_across_accounts(self):
         session_factory = get_session_factory()
         async with session_factory() as session:
@@ -525,7 +564,9 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(adapter.cards), 1)
         card = adapter.cards[0][1]
         pushed = "\n".join([card["title"], *card["sections"]])
-        self.assertIn("X Topic", card["title"])
+        self.assertIn("X Signal", card["title"])
+        self.assertIn("**事实**", pushed)
+        self.assertIn("**博主与观点**", pushed)
         self.assertIn("@alice", pushed)
         self.assertIn("@bob", pushed)
         self.assertIn("关税", pushed)
