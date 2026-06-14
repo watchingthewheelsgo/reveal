@@ -3,6 +3,7 @@
 import asyncio
 import re
 from collections import Counter
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -19,7 +20,6 @@ from server.db.models import SocialPost, TwitterState
 from server.db.time import assume_utc, to_naive_utc, utc_now_naive
 from server.social.impact import build_personal_impact_lines
 from server.social.relevance import (
-    agent_market_relevance,
     group_similar_social_posts,
     is_relevant_social_post,
     is_x_url,
@@ -29,14 +29,10 @@ from server.social.urls import normalize_x_url
 
 TWITTER_STATUS_URL_RE = re.compile(r"https?://(?:www\.)?(?:twitter|x)\.com/([^/\s]+)/status/(\d+)")
 URL_RE = re.compile(r"https?://[^\s<>)\]]+")
-MAX_PUSHED_MEDIA = 4
 INITIAL_WATCH_BACKFILL_LIMIT = 10
-MAX_CARD_IMAGES = 4
 MAX_CARD_REFERENCES = 3
-CARD_SUMMARY_LIMIT = 360
-CARD_BODY_LIMIT = 900
-CARD_BODY_WITH_SUMMARY_LIMIT = 420
-CARD_TRANSLATION_LIMIT = 450
+CARD_SIGNAL_FACT_LIMIT = 1000
+CARD_SIGNAL_VIEW_LIMIT = 240
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 
 
@@ -599,7 +595,7 @@ async def push_tweet_topic_card(
 ) -> None:
     """Push a single story-centered card for multiple related tweets."""
     ordered_posts = sorted(posts, key=lambda post: post.posted_at)
-    card = _build_tweet_topic_card(ordered_posts, cross_ref=cross_ref or {})
+    card = await _build_tweet_signal_card(ordered_posts, cross_ref=cross_ref or {})
     sent_messages = await _push_card_to_admin(adapter, card)
     await _bind_sent_messages(sent_messages, ordered_posts[-1].id)
 
@@ -980,172 +976,62 @@ def _llm_context(
     return "\n".join(lines).strip()
 
 
-def _format_reference_lines(references: list[dict[str, Any]]) -> list[str]:
-    lines = ["关联推文:"]
-    for reference in references[:3]:
-        label = _reference_type_label(str(reference.get("type") or "reference"))
-        url = reference.get("url") or ""
-        text = reference.get("text") or ""
-        preview = f" — {text[:120]}" if text else ""
-        lines.append(f"- {label}: {url}{preview}")
-    if len(references) > 3:
-        lines.append(f"- 还有 {len(references) - 3} 条关联推文")
-    return lines
-
-
-def _format_media_lines(media: list[dict[str, Any]]) -> list[str]:
-    lines = ["媒体:"]
-    for item in media[:MAX_PUSHED_MEDIA]:
-        media_type = item.get("type") or "media"
-        alt_text = item.get("alt_text")
-        suffix = f" ({alt_text[:80]})" if alt_text else ""
-        lines.append(f"- {media_type}: {item.get('url')}{suffix}")
-    if len(media) > MAX_PUSHED_MEDIA:
-        lines.append(f"- 还有 {len(media) - MAX_PUSHED_MEDIA} 个媒体")
-    return lines
-
-
-def _format_link_lines(links: list[str]) -> list[str]:
-    lines = ["链接:"]
-    lines.extend(f"- {link}" for link in links[:5])
-    if len(links) > 5:
-        lines.append(f"- 还有 {len(links) - 5} 个链接")
-    return lines
-
-
 async def _build_tweet_card(
     post: SocialPost,
-    adapter: BotAdapter,
+    _adapter: BotAdapter,
     cross_ref: dict | None = None,
     is_backfill: bool = False,
 ) -> dict:
-    title = _tweet_card_title(post, is_backfill=is_backfill)
-    elements: list[dict[str, Any]] = []
-    sections: list[str] = []
-
-    metadata = _tweet_metadata_text(post)
-    elements.append(_md_div(metadata))
-    sections.append(metadata)
-
-    if post.is_noteworthy:
-        alert = "**重点关注**"
-        if post.attention_reason:
-            alert += f"\n{_trim_text(post.attention_reason, 240)}"
-        elements.extend([{"tag": "hr"}, _md_div(alert)])
-        sections.append(alert)
-
-    if post.summary:
-        summary = f"**摘要**\n{_trim_text(post.summary, CARD_SUMMARY_LIMIT)}"
-        elements.extend([{"tag": "hr"}, _md_div(summary)])
-        sections.append(summary)
-
-    body_limit = CARD_BODY_WITH_SUMMARY_LIMIT if post.summary else CARD_BODY_LIMIT
-    body = f"**正文**\n{_trim_text(post.content or '（无正文）', body_limit)}"
-    elements.extend([{"tag": "hr"}, _md_div(body)])
-    sections.append(body)
-
-    if post.translated_content and (not post.summary or post.is_noteworthy):
-        translated = _trim_text(
-            _display_translation_text(post.translated_content), CARD_TRANSLATION_LIMIT
-        )
-        translation = f"**译文**\n{translated}"
-        elements.extend([{"tag": "hr"}, _md_div(translation)])
-        sections.append(translation)
-
-    if cross_ref and cross_ref.get("matches"):
-        match_text = f"**关联持仓/关注**\n{cross_ref['matches']}"
-        elements.extend([{"tag": "hr"}, _md_div(match_text)])
-        sections.append(match_text)
-
-        impact_lines = cross_ref.get("impact_lines") or []
-        if impact_lines:
-            impact_text = "**对持仓/关注的影响**\n" + "\n".join(str(line) for line in impact_lines)
-            elements.extend([{"tag": "hr"}, _md_div(impact_text)])
-            sections.append(impact_text)
-
-    if post.media:
-        media_elements, media_section = await _tweet_media_card_elements(post.media, adapter)
-        if media_elements:
-            elements.extend([{"tag": "hr"}, *media_elements])
-        if media_section:
-            sections.append(media_section)
-
-    reference_text = _reference_footer_text(post.referenced_tweets or [], post.links or [])
-    if reference_text:
-        elements.extend([{"tag": "hr"}, _md_div(reference_text)])
-        sections.append(reference_text)
-
-    elements.extend([{"tag": "hr"}, _note_text("回复这张卡片并 @Reveal，可基于这条更新继续研究。")])
-
-    card: dict[str, Any] = {
-        "title": title,
-        "sections": sections,
-        "footer": "回复这张卡片并 @Reveal，可以基于这条更新继续研究。",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "template": _tweet_card_template(post),
-            "title": {"tag": "plain_text", "content": title},
-        },
-        "elements": elements,
-    }
-    if post.tweet_url:
-        card["card_link"] = {
-            "url": post.tweet_url,
-            "pc_url": post.tweet_url,
-            "ios_url": post.tweet_url,
-            "android_url": post.tweet_url,
-        }
-    return card
+    normalized_cross_ref = {post.id: cross_ref} if post.id and cross_ref else {}
+    return await _build_tweet_signal_card(
+        [post],
+        cross_ref=normalized_cross_ref,
+        is_backfill=is_backfill,
+    )
 
 
-def _build_tweet_topic_card(
+async def _build_tweet_signal_card(
     posts: list[SocialPost],
     cross_ref: dict[int, dict] | None = None,
+    is_backfill: bool = False,
 ) -> dict:
-    latest_post = posts[-1]
-    label = _topic_label_for_group(posts)
-    title = f"X Signal · {label}"
+    ordered_posts = sorted(posts, key=lambda post: post.posted_at)
+    latest_post = ordered_posts[-1]
+    cross_ref = cross_ref or {}
+    title = _tweet_signal_card_title(ordered_posts, is_backfill=is_backfill)
     elements: list[dict[str, Any]] = []
     sections: list[str] = []
 
-    metadata = _topic_metadata_text(posts)
-    elements.append(_md_div(metadata))
-    sections.append(metadata)
-
-    lead = _topic_lead_text(posts)
-    if lead:
-        lead_section = f"**事实**\n{lead}"
-        elements.extend([{"tag": "hr"}, _md_div(lead_section)])
-        sections.append(lead_section)
-
-    viewpoint = _topic_viewpoint_text(posts, cross_ref or {})
-    elements.extend([{"tag": "hr"}, _md_div(viewpoint)])
-    sections.append(viewpoint)
-
-    impact_text = _topic_impact_text(posts, cross_ref or {})
-    if impact_text:
-        elements.extend([{"tag": "hr"}, _md_div(impact_text)])
-        sections.append(impact_text)
-
-    reference_text = _topic_reference_text(posts)
-    if reference_text:
-        elements.extend([{"tag": "hr"}, _md_div(reference_text)])
-        sections.append(reference_text)
+    section_builders = [
+        _tweet_signal_time_text(ordered_posts),
+        _tweet_signal_market_text(ordered_posts, cross_ref),
+        _tweet_signal_fact_text(ordered_posts),
+        _tweet_signal_viewpoint_text(ordered_posts, cross_ref),
+        _tweet_signal_impact_advice_text(ordered_posts, cross_ref),
+        _tweet_signal_reference_text(ordered_posts),
+    ]
+    for section in section_builders:
+        if not section:
+            continue
+        if elements:
+            elements.append({"tag": "hr"})
+        elements.append(_md_div(section))
+        sections.append(section)
 
     elements.extend([{"tag": "hr"}, _note_text("回复这张卡片并 @Reveal，可基于这个主题继续研究。")])
 
     card: dict[str, Any] = {
         "title": title,
         "sections": sections,
-        "footer": "同一主题由多个 X 账号提到；回复这张卡片并 @Reveal，可继续研究。",
+        "footer": "回复这张卡片并 @Reveal，可以基于这个主题继续研究。",
         "config": {"wide_screen_mode": True},
         "header": {
-            "template": _tweet_topic_card_template(posts),
+            "template": _tweet_signal_card_template(ordered_posts),
             "title": {"tag": "plain_text", "content": title},
         },
         "elements": elements,
     }
-    if link := _topic_card_link(posts):
+    if link := _topic_card_link(ordered_posts):
         card["card_link"] = {
             "url": link,
             "pc_url": link,
@@ -1162,39 +1048,65 @@ def _build_tweet_topic_card(
     return card
 
 
-def _topic_metadata_text(posts: list[SocialPost]) -> str:
-    latest_post = posts[-1]
-    usernames = list(dict.fromkeys(post.username for post in posts))
-    lines = [
-        f"{len(posts)} 条市场相关更新 · {len(usernames)} 位博主提到 · "
-        f"最新 {_format_beijing_time(latest_post.posted_at)}"
-    ]
+def _tweet_signal_card_title(posts: list[SocialPost], is_backfill: bool = False) -> str:
+    label = _trim_text(_topic_label_for_group(posts), 72)
+    authors = _tweet_signal_author_list(posts)
+    prefix = "Twitter Backfill · " if is_backfill else ""
+    return _trim_text(f"{prefix}{label} · {authors} 提到", 120)
 
-    tickers = _common_values(post.mentioned_tickers for post in posts)
-    topics = _common_values(post.topics for post in posts)
-    tag_parts: list[str] = []
-    if tickers:
-        tag_parts.append("Ticker: " + ", ".join(tickers[:8]))
-    if topics:
-        tag_parts.append("Topic: " + " · ".join(topics[:5]))
-    if any(post.is_noteworthy or post.urgency == "high" for post in posts):
-        tag_parts.append("标记: 重点关注")
-    if all(agent_market_relevance(post) is True for post in posts):
-        tag_parts.append("Agent: market relevant")
-    if tag_parts:
-        lines.append(" · ".join(tag_parts))
+
+def _tweet_signal_author_list(posts: list[SocialPost], limit: int = 4) -> str:
+    usernames = list(dict.fromkeys(post.username for post in posts if post.username))
+    if not usernames:
+        return "@unknown"
+    visible = ", ".join(f"@{username}" for username in usernames[:limit])
+    if len(usernames) > limit:
+        visible += f" 等 {len(usernames)} 人"
+    return visible
+
+
+def _tweet_signal_time_text(posts: list[SocialPost]) -> str:
+    latest_post = posts[-1]
+    lines = ["**时间**", _format_beijing_time(latest_post.posted_at)]
+    if len(posts) > 1:
+        usernames = list(dict.fromkeys(post.username for post in posts if post.username))
+        lines.append(f"{len(posts)} 条更新 · {len(usernames)} 位博主提到")
     return "\n".join(lines)
 
 
-def _topic_lead_text(posts: list[SocialPost]) -> str:
-    summaries = [post.summary for post in posts if post.summary]
-    if summaries:
-        return _trim_text(summaries[-1], 280)
-    return _trim_text(posts[-1].content or "", 280)
+def _tweet_signal_market_text(posts: list[SocialPost], cross_ref: dict[int, dict]) -> str:
+    lines = ["**市场**"]
+    tickers = _common_values(post.mentioned_tickers for post in posts)
+    topics = _common_values(post.topics for post in posts)
+    matched = _tweet_signal_cross_ref_matches(posts, cross_ref)
+
+    if topics:
+        lines.append("相关领域: " + " · ".join(topics[:6]))
+    if tickers:
+        lines.append("相关股票: " + ", ".join(tickers[:8]))
+    if matched:
+        lines.append("关注/持仓: " + " · ".join(matched[:8]))
+    if len(lines) == 1:
+        lines.append("相关领域: 市场消息")
+    return "\n".join(lines)
 
 
-def _topic_viewpoint_text(posts: list[SocialPost], cross_ref: dict[int, dict]) -> str:
-    lines = ["**博主与观点**"]
+def _tweet_signal_fact_text(posts: list[SocialPost]) -> str:
+    candidates = [post.summary for post in posts if post.summary]
+    if not candidates:
+        candidates = [post.content for post in posts if post.content]
+    facts = _unique_compact_texts(candidates, limit=4)
+    if not facts:
+        fact_text = "暂无明确事实摘要。"
+    elif len(facts) == 1:
+        fact_text = facts[0]
+    else:
+        fact_text = "；".join(facts)
+    return "**事实**\n" + _trim_text(fact_text, CARD_SIGNAL_FACT_LIMIT)
+
+
+def _tweet_signal_viewpoint_text(posts: list[SocialPost], cross_ref: dict[int, dict]) -> str:
+    lines = ["**观点**"]
     for post in posts:
         author = f"@{post.username}"
         if post.tweet_url:
@@ -1202,32 +1114,136 @@ def _topic_viewpoint_text(posts: list[SocialPost], cross_ref: dict[int, dict]) -
         view = post.attention_reason or post.summary or post.content or "（无正文）"
         suffix_parts: list[str] = []
         if sentiment := _sentiment_label(post.sentiment):
-            suffix_parts.append(f"情绪: {sentiment}")
-        if post.urgency:
-            suffix_parts.append(f"优先级: {post.urgency}")
+            if sentiment != "中性":
+                suffix_parts.append(sentiment)
         if post.id and (match := cross_ref.get(post.id)):
             if match.get("matches"):
-                suffix_parts.append(f"关联: {match['matches']}")
-        suffix = f" ({' · '.join(suffix_parts)})" if suffix_parts else ""
-        lines.append(f"- {author}: {_trim_text(view, 180)}{suffix}")
+                suffix_parts.append(str(match["matches"]))
+        suffix = f"（{' · '.join(suffix_parts)}）" if suffix_parts else ""
+        lines.append(f"- {author}: {_trim_text(view, CARD_SIGNAL_VIEW_LIMIT)}{suffix}")
     return "\n".join(lines)
 
 
-def _topic_impact_text(posts: list[SocialPost], cross_ref: dict[int, dict]) -> str:
-    lines = ["**对持仓/关注的影响**"]
-    seen: set[str] = set()
+def _tweet_signal_impact_advice_text(posts: list[SocialPost], cross_ref: dict[int, dict]) -> str:
+    lines = ["**影响和建议**"]
+    impact_lines = _tweet_signal_impact_lines(posts, cross_ref)
+    if impact_lines:
+        lines.extend(impact_lines[:5])
+    else:
+        reason = _tweet_signal_primary_reason(posts)
+        if reason:
+            lines.append("影响: " + _trim_text(reason, 260))
+        else:
+            tickers = _common_values(post.mentioned_tickers for post in posts)
+            topics = _common_values(post.topics for post in posts)
+            targets = ", ".join(tickers[:6]) or " · ".join(topics[:4])
+            if targets:
+                lines.append(f"影响: 可能影响 {targets} 相关预期或风险偏好。")
+            else:
+                lines.append("影响: 市场影响暂不明确。")
+
+    if _tweet_signal_has_personal_match(posts, cross_ref) and _tweet_signal_is_high_priority(posts):
+        lines.append("强提醒: 与你的持仓/关注相关，先核验来源和量价反应，再决定是否调整交易计划。")
+    elif _tweet_signal_is_high_priority(posts):
+        lines.append("建议: 优先核验原始来源与后续价格、成交量反应，再决定是否行动。")
+    else:
+        lines.append("建议: 暂不形成明确操作信号，继续观察官方确认和市场反应。")
+    return "\n".join(lines)
+
+
+def _tweet_signal_reference_text(posts: list[SocialPost]) -> str:
+    return _topic_reference_text(posts)
+
+
+def _tweet_signal_card_template(posts: list[SocialPost]) -> str:
+    if _tweet_signal_is_high_priority(posts):
+        return "orange"
+    if any(post.urgency == "medium" for post in posts):
+        return "blue"
+    return "green"
+
+
+def _tweet_signal_is_high_priority(posts: list[SocialPost]) -> bool:
+    return any(post.is_noteworthy or post.urgency == "high" for post in posts)
+
+
+def _tweet_signal_cross_ref_matches(
+    posts: list[SocialPost],
+    cross_ref: dict[int, dict],
+) -> list[str]:
+    matches: list[str] = []
+    for post in posts:
+        if not post.id:
+            continue
+        match = cross_ref.get(post.id) or {}
+        raw_items = match.get("items")
+        items = raw_items if isinstance(raw_items, list) else []
+        for item in items:
+            if not isinstance(item, dict) or item.get("relation") == "default_watchlist":
+                continue
+            detail = str(item.get("detail") or "").strip()
+            if detail:
+                matches.append(detail)
+        if items:
+            continue
+        value = str(match.get("matches") or "").strip()
+        if value:
+            matches.append(value)
+    return _unique_compact_texts(matches, limit=12)
+
+
+def _tweet_signal_impact_lines(
+    posts: list[SocialPost],
+    cross_ref: dict[int, dict],
+) -> list[str]:
+    lines: list[str] = []
     for post in posts:
         if not post.id:
             continue
         match = cross_ref.get(post.id) or {}
         for line in match.get("impact_lines") or []:
-            if line in seen:
-                continue
-            seen.add(line)
             lines.append(str(line))
-    if len(lines) == 1:
+    return _unique_compact_texts(lines, limit=8)
+
+
+def _tweet_signal_has_personal_match(posts: list[SocialPost], cross_ref: dict[int, dict]) -> bool:
+    return bool(_tweet_signal_cross_ref_matches(posts, cross_ref))
+
+
+def _tweet_signal_primary_reason(posts: list[SocialPost]) -> str:
+    for post in posts:
+        if post.attention_reason:
+            return post.attention_reason
+    for post in posts:
+        reason = _tweet_signal_stored_urgency_reason(post)
+        if reason:
+            return reason
+    return ""
+
+
+def _tweet_signal_stored_urgency_reason(post: SocialPost) -> str:
+    raw = post.raw_json if isinstance(post.raw_json, dict) else {}
+    analysis = raw.get("reveal_analysis")
+    if not isinstance(analysis, dict):
         return ""
-    return "\n".join(lines)
+    return str(analysis.get("urgency_reason") or "")
+
+
+def _unique_compact_texts(values: Sequence[str | None], limit: int) -> list[str]:
+    seen: set[str] = set()
+    results: list[str] = []
+    for value in values:
+        text = " ".join(str(value or "").split())
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(text)
+        if len(results) >= limit:
+            break
+    return results
 
 
 def _topic_reference_text(posts: list[SocialPost]) -> str:
@@ -1279,14 +1295,6 @@ def _topic_card_link(posts: list[SocialPost]) -> str | None:
     return None
 
 
-def _tweet_topic_card_template(posts: list[SocialPost]) -> str:
-    if any(post.is_noteworthy or post.urgency == "high" for post in posts):
-        return "orange"
-    if any(post.urgency == "medium" for post in posts):
-        return "blue"
-    return "green"
-
-
 def _topic_label_for_group(posts: list[SocialPost]) -> str:
     topics = _common_values(post.topics for post in posts)
     tickers = _common_values(post.mentioned_tickers for post in posts)
@@ -1297,9 +1305,11 @@ def _topic_label_for_group(posts: list[SocialPost]) -> str:
         label_parts.append(" · ".join(topics[:3]))
     if label_parts:
         return _trim_text(" · ".join(label_parts), 80)
+    if fallback := posts[-1].summary or posts[-1].content:
+        return _trim_text(fallback, 80)
     if link := _topic_card_link(posts):
         return _display_url(link)
-    return _trim_text(posts[-1].summary or posts[-1].content or "相关更新", 80)
+    return "相关更新"
 
 
 def _common_values(value_lists) -> list[str]:
@@ -1313,175 +1323,12 @@ def _common_values(value_lists) -> list[str]:
     return [value for value, _count in counter.most_common()]
 
 
-def _tweet_card_title(post: SocialPost, is_backfill: bool = False) -> str:
-    if post.is_noteworthy:
-        prefix = "重点关注"
-    else:
-        prefix = "Twitter Backfill" if is_backfill else "Twitter Update"
-    flags = _post_type_label(post)
-    return f"{prefix} · @{post.username}{flags}"
-
-
-def _tweet_card_template(post: SocialPost) -> str:
-    if post.is_noteworthy or post.urgency == "high":
-        return "orange"
-    if post.urgency == "medium":
-        return "blue"
-    if post.urgency == "low" and (
-        post.mentioned_tickers or post.topics or post.sentiment in {"bullish", "bearish", "mixed"}
-    ):
-        return "green"
-    return "grey"
-
-
-def _tweet_metadata_text(post: SocialPost) -> str:
-    user_url = f"https://x.com/{post.username}"
-    parts = [f"[@{post.username}]({user_url})", _format_beijing_time(post.posted_at)]
-    if labels := _post_type_label(post):
-        parts.append(labels.strip(" ()"))
-    if post.id:
-        parts.append(f"消息 ID #{post.id}")
-    if post.tweet_url:
-        parts.append(f"[原文]({post.tweet_url})")
-
-    tag_parts: list[str] = []
-    if post.mentioned_tickers:
-        tag_parts.append("Ticker: " + ", ".join(str(t) for t in post.mentioned_tickers[:8]))
-    if post.topics:
-        tag_parts.append("Topic: " + " · ".join(str(t) for t in post.topics[:5]))
-    if sentiment := _sentiment_label(post.sentiment):
-        tag_parts.append(f"情绪: {sentiment}")
-    if post.urgency:
-        tag_parts.append(f"优先级: {post.urgency}")
-    if post.is_noteworthy:
-        tag_parts.append("标记: 重点关注")
-
-    lines = [" · ".join(parts)]
-    if tag_parts:
-        lines.append(" · ".join(tag_parts))
-    return "\n".join(lines)
-
-
-async def _tweet_media_card_elements(
-    media: list[dict[str, Any]],
-    adapter: BotAdapter,
-) -> tuple[list[dict[str, Any]], str]:
-    elements: list[dict[str, Any]] = []
-    section_lines = ["**媒体**"]
-    image_count = 0
-    image_total = 0
-    video_lines: list[str] = []
-
-    for item in media[:MAX_PUSHED_MEDIA]:
-        media_type = str(item.get("type") or "media").lower()
-        display_url = str(item.get("video_url") or item.get("url") or "")
-        preview_url = _media_preview_url(item)
-        alt_text = str(item.get("alt_text") or media_type)
-
-        is_video = media_type.startswith(("video", "gif"))
-        if not is_video:
-            image_total += 1
-
-        image_key = None
-        if preview_url and image_count < MAX_CARD_IMAGES:
-            image_key = await _upload_card_image(adapter, preview_url, alt_text)
-        if image_key:
-            elements.append(
-                {
-                    "tag": "img",
-                    "img_key": image_key,
-                    "alt": {"tag": "plain_text", "content": _trim_text(alt_text, 80)},
-                }
-            )
-            image_count += 1
-
-        if is_video:
-            video_lines.append(f"- 视频: [{_display_url(display_url)}]({display_url})")
-
-    element_lines: list[str] = []
-    if image_count:
-        element_lines.append(f"{image_count} 张图片已展示")
-    elif image_total:
-        element_lines.append(f"{image_total} 张图片已缓存")
-    section_lines.extend(f"- {line}" for line in element_lines)
-    section_lines.extend(video_lines)
-
-    if len(media) > MAX_PUSHED_MEDIA:
-        section_lines.append(f"- 还有 {len(media) - MAX_PUSHED_MEDIA} 个媒体已缓存")
-        element_lines.append(f"还有 {len(media) - MAX_PUSHED_MEDIA} 个媒体已缓存")
-    if len(section_lines) > 1:
-        compact_lines = [f"- {line}" for line in element_lines]
-        compact_lines.extend(video_lines)
-        elements.append(_md_div("**媒体**\n" + "\n".join(compact_lines)))
-    return elements, "\n".join(section_lines)
-
-
-def _reference_footer_text(
-    references: list[dict[str, Any]],
-    links: list[str],
-) -> str:
-    lines: list[str] = []
-    if references:
-        ref_parts = []
-        for reference in references[:MAX_CARD_REFERENCES]:
-            label = _reference_type_label(str(reference.get("type") or "reference"))
-            username = reference.get("username")
-            url = str(reference.get("url") or "")
-            title = label if not username else f"{label} @{username}"
-            if url:
-                ref_parts.append(f"[{title}]({url})")
-            else:
-                ref_parts.append(title)
-        if len(references) > MAX_CARD_REFERENCES:
-            ref_parts.append(f"还有 {len(references) - MAX_CARD_REFERENCES} 条")
-        lines.append("引用: " + " · ".join(ref_parts))
-
-    if links:
-        link_parts = [f"[{_display_url(link)}]({link})" for link in links[:5]]
-        if len(links) > 5:
-            link_parts.append(f"还有 {len(links) - 5} 个")
-        lines.append("外链: " + " · ".join(link_parts))
-
-    if not lines:
-        return ""
-    return "**参考**\n" + "\n".join(lines)
-
-
-def _media_preview_url(item: dict[str, Any]) -> str | None:
-    media_type = str(item.get("type") or "").lower()
-    preview_url = item.get("preview_url")
-    if preview_url:
-        return str(preview_url)
-    url = str(item.get("url") or "")
-    if media_type.startswith("video") or url.lower().split("?", maxsplit=1)[0].endswith(".mp4"):
-        return None
-    return url or None
-
-
-async def _upload_card_image(
-    adapter: BotAdapter,
-    image_url: str,
-    alt_text: str | None = None,
-) -> str | None:
-    try:
-        return await adapter.upload_image(image_url, alt_text)
-    except Exception:
-        logger.exception("Card image upload failed: {}", image_url)
-        return None
-
-
 def _md_div(content: str) -> dict[str, Any]:
     return {"tag": "div", "text": {"tag": "lark_md", "content": content}}
 
 
 def _note_text(content: str) -> dict[str, Any]:
     return {"tag": "note", "elements": [{"tag": "plain_text", "content": content}]}
-
-
-def _display_translation_text(text: str) -> str:
-    context_prefixes = ("原文链接:", "外部链接:", "引用:", "回复:", "转发:")
-    lines = [line for line in text.splitlines() if not line.strip().startswith(context_prefixes)]
-    return "\n".join(lines).strip() or text
 
 
 def _trim_text(text: str, limit: int) -> str:
