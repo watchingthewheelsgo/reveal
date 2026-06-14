@@ -26,6 +26,8 @@ def _build_tools() -> list[SdkMcpTool[Any]]:
         ("technical_analysis", reveal_mcp.technical_analysis),
         ("stock_news", reveal_mcp.stock_news),
         ("portfolio", reveal_mcp.portfolio),
+        ("portfolio_holding_add", reveal_mcp.portfolio_holding_add),
+        ("portfolio_holding_remove", reveal_mcp.portfolio_holding_remove),
         ("research_history", reveal_mcp.research_history),
         ("market_skill_catalog", reveal_mcp.market_skill_catalog),
         ("stock_score", reveal_mcp.stock_score),

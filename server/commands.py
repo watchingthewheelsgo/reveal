@@ -3,6 +3,7 @@ Bot command handlers shared across Telegram and Feishu.
 """
 
 import asyncio
+import re
 
 from loguru import logger
 
@@ -16,12 +17,6 @@ async def cmd_help(ctx: BotContext, adapter):
     await adapter.send_message(ctx.chat_id, format_command_help())
 
 
-async def cmd_tools(ctx: BotContext, adapter):
-    from server.capabilities.registry import format_capability_catalog
-
-    await adapter.send_message(ctx.chat_id, format_capability_catalog())
-
-
 async def cmd_status(ctx: BotContext, adapter):
     from server.capabilities.system import format_system_status, get_system_status_payload
 
@@ -31,33 +26,6 @@ async def cmd_status(ctx: BotContext, adapter):
 # ═══════════════════════════════════════════════════════════════════════════════
 # Stock Commands
 # ═══════════════════════════════════════════════════════════════════════════════
-
-
-async def cmd_pick(ctx: BotContext, adapter):
-    """Manually trigger a daily pick."""
-    await adapter.send_message(ctx.chat_id, "🔍 正在扫描美股市场，寻找今日最佳标的...")
-    try:
-        from server.stock.scanner import format_pick_message, run_daily_pick
-
-        pick = await run_daily_pick()
-        if pick is None:
-            await adapter.send_message(ctx.chat_id, "❌ 选股失败，请稍后重试。")
-            return
-
-        text = format_pick_message(pick)
-        await adapter.send_message(ctx.chat_id, text)
-    except Exception:
-        logger.exception("Pick command failed")
-        await adapter.send_message(ctx.chat_id, "❌ 选股异常，请稍后重试。")
-
-
-async def cmd_track(ctx: BotContext, adapter):
-    """Show tracking report."""
-    ticker = ctx.args[0] if ctx.args else None
-    from server.stock.tracker import get_tracking_report
-
-    report = await get_tracking_report(ticker)
-    await adapter.send_message(ctx.chat_id, report)
 
 
 async def cmd_stock_watch(ctx: BotContext, adapter):
@@ -114,81 +82,6 @@ async def cmd_stock_watch(ctx: BotContext, adapter):
     )
 
 
-async def cmd_score(ctx: BotContext, adapter):
-    """Score a specific ticker."""
-    if not ctx.args:
-        await adapter.send_message(ctx.chat_id, "用法: /score AAPL")
-        return
-    ticker = ctx.args[0].upper()
-    await adapter.send_message(ctx.chat_id, f"🔍 正在分析 {ticker}...")
-
-    try:
-        from server.capabilities.market import format_stock_score, get_stock_score_payload
-
-        payload = await get_stock_score_payload(ticker)
-        await adapter.send_message(ctx.chat_id, format_stock_score(payload, ticker))
-    except Exception:
-        logger.exception("Score command failed")
-        await adapter.send_message(ctx.chat_id, "❌ 评分异常，请稍后重试。")
-
-
-async def cmd_quote(ctx: BotContext, adapter):
-    """Show real-time-ish quote for a ticker: /quote AAPL"""
-    if not ctx.args:
-        await adapter.send_message(ctx.chat_id, "用法: /quote AAPL")
-        return
-    ticker = ctx.args[0].upper()
-    try:
-        from server.capabilities.market import format_stock_quote, get_stock_quote_payload
-
-        await adapter.send_message(
-            ctx.chat_id,
-            format_stock_quote(await get_stock_quote_payload(ticker), ticker),
-        )
-    except Exception as e:
-        logger.exception(f"Quote command failed: {e}")
-        await adapter.send_message(ctx.chat_id, "❌ 报价查询失败，请稍后重试。")
-
-
-async def cmd_technical(ctx: BotContext, adapter):
-    """Show technical indicators for a ticker: /technical AAPL"""
-    if not ctx.args:
-        await adapter.send_message(ctx.chat_id, "用法: /technical AAPL")
-        return
-    ticker = ctx.args[0].upper()
-    try:
-        from server.capabilities.market import (
-            format_technical_analysis,
-            get_technical_analysis_payload,
-        )
-
-        await adapter.send_message(
-            ctx.chat_id,
-            format_technical_analysis(await get_technical_analysis_payload(ticker), ticker),
-        )
-    except Exception as e:
-        logger.exception(f"Technical command failed: {e}")
-        await adapter.send_message(ctx.chat_id, "❌ 技术指标查询失败，请稍后重试。")
-
-
-async def cmd_news(ctx: BotContext, adapter):
-    """Show recent company news: /news AAPL"""
-    if not ctx.args:
-        await adapter.send_message(ctx.chat_id, "用法: /news AAPL")
-        return
-    ticker = ctx.args[0].upper()
-    try:
-        from server.capabilities.market import format_stock_news, get_stock_news_payload
-
-        await adapter.send_message(
-            ctx.chat_id,
-            format_stock_news(await get_stock_news_payload(ticker, limit=8), ticker),
-        )
-    except Exception as e:
-        logger.exception(f"News command failed: {e}")
-        await adapter.send_message(ctx.chat_id, "❌ 新闻查询失败，请稍后重试。")
-
-
 async def cmd_portfolio(ctx: BotContext, adapter):
     """Show current open portfolio positions."""
     try:
@@ -200,193 +93,9 @@ async def cmd_portfolio(ctx: BotContext, adapter):
         await adapter.send_message(ctx.chat_id, "❌ 持仓查询失败，请稍后重试。")
 
 
-async def cmd_history(ctx: BotContext, adapter):
-    """Show past research for a ticker: /history AAPL"""
-    if not ctx.args:
-        await adapter.send_message(ctx.chat_id, "用法: /history AAPL")
-        return
-    ticker = ctx.args[0].upper()
-    try:
-        from server.capabilities.market import (
-            format_research_history,
-            get_research_history_payload,
-        )
-
-        await adapter.send_message(
-            ctx.chat_id,
-            format_research_history(await get_research_history_payload(ticker, limit=5), ticker),
-        )
-    except Exception as e:
-        logger.exception(f"History command failed: {e}")
-        await adapter.send_message(ctx.chat_id, "❌ 历史研究查询失败，请稍后重试。")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Journal Commands
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-async def cmd_log(ctx: BotContext, adapter):
-    """Record a trade: /log buy/sell TICKER PRICE [QTY]"""
-    from server.journal.service import add_note, add_trade, close_trade
-
-    if not ctx.args:
-        await adapter.send_message(
-            ctx.chat_id,
-            "用法:\n/log buy AAPL 150 100\n/log sell AAPL 155\n/log note AAPL 备注内容",
-        )
-        return
-
-    action = ctx.args[0].lower()
-
-    if action == "buy" and len(ctx.args) >= 3:
-        ticker = ctx.args[1].upper()
-        try:
-            price = float(ctx.args[2])
-            qty = int(ctx.args[3]) if len(ctx.args) > 3 else 100
-        except ValueError:
-            await adapter.send_message(ctx.chat_id, "价格和数量必须是数字。")
-            return
-        trade = await add_trade(ticker, "long", price, qty)
-        await adapter.send_message(
-            ctx.chat_id, f"✅ 买入记录: {trade.ticker} x{trade.quantity} @ ${trade.entry_price:.2f}"
-        )
-
-    elif action == "short" and len(ctx.args) >= 3:
-        ticker = ctx.args[1].upper()
-        try:
-            price = float(ctx.args[2])
-            qty = int(ctx.args[3]) if len(ctx.args) > 3 else 100
-        except ValueError:
-            await adapter.send_message(ctx.chat_id, "价格和数量必须是数字。")
-            return
-        trade = await add_trade(ticker, "short", price, qty)
-        await adapter.send_message(
-            ctx.chat_id, f"✅ 做空记录: {trade.ticker} x{trade.quantity} @ ${trade.entry_price:.2f}"
-        )
-
-    elif action == "sell" and len(ctx.args) >= 2:
-        ticker = ctx.args[1].upper()
-        try:
-            price = float(ctx.args[2]) if len(ctx.args) > 2 else 0
-        except ValueError:
-            await adapter.send_message(ctx.chat_id, "价格必须是数字。")
-            return
-        if price == 0:
-            await adapter.send_message(ctx.chat_id, "用法: /log sell TICKER PRICE")
-            return
-        trade = await close_trade(ticker, price)
-        if trade:
-            await adapter.send_message(
-                ctx.chat_id,
-                f"✅ 卖出记录: {trade.ticker} | PnL: ${trade.pnl:+.2f} | "
-                f"入场 ${trade.entry_price:.2f} → 出场 ${trade.exit_price:.2f}",
-            )
-        else:
-            await adapter.send_message(ctx.chat_id, f"❌ 找不到 {ticker} 的未平仓记录")
-
-    elif action == "note" and len(ctx.args) >= 2:
-        ticker = ctx.args[1].upper()
-        note = " ".join(ctx.args[2:]) if len(ctx.args) > 2 else ""
-        trade = await add_note(ticker, note)
-        if trade:
-            await adapter.send_message(ctx.chat_id, f"✅ 已添加备注到 {ticker}")
-        else:
-            await adapter.send_message(ctx.chat_id, f"❌ 找不到 {ticker} 的交易记录")
-
-    else:
-        await adapter.send_message(
-            ctx.chat_id,
-            "用法:\n/log buy TICKER PRICE QTY\n/log sell TICKER PRICE\n/log note TICKER 备注",
-        )
-
-
-async def cmd_journal(ctx: BotContext, adapter):
-    """View journal: /journal [today|week|month|year|all]"""
-    from server.journal.service import format_journal, get_trades_for_period
-
-    period = ctx.args[0].lower() if ctx.args else "today"
-    if period not in ("today", "week", "month", "year", "all"):
-        period = "today"
-
-    trades = await get_trades_for_period(period)
-    text = format_journal(trades, period)
-    await adapter.send_message(ctx.chat_id, text)
-
-    # For week/month, offer LLM analysis
-    if period in ("week", "month") and trades:
-        from server.llm.client import get_llm_client
-
-        llm = get_llm_client()
-        if llm and len([t for t in trades if t.pnl is not None]) >= 3:
-            await adapter.send_message(ctx.chat_id, "🤖 AI 分析中...")
-            if period == "week":
-                from server.journal.analyzer import generate_weekly_report
-
-                report = await generate_weekly_report()
-            else:
-                from server.journal.analyzer import generate_monthly_report
-
-                report = await generate_monthly_report()
-            if report:
-                await adapter.send_message(ctx.chat_id, f"*🤖 AI {period}度分析*\n\n{report}")
-
-
-async def cmd_pnl(ctx: BotContext, adapter):
-    """Quick P&L summary: /pnl [period]"""
-    from server.journal.service import format_pnl, get_pnl_summary
-
-    period = ctx.args[0].lower() if ctx.args else "month"
-    if period not in ("today", "week", "month", "year", "all"):
-        period = "month"
-
-    summary = await get_pnl_summary(period)
-    text = format_pnl(summary)
-
-    # Best/worst detail
-    if summary.get("best_trade"):
-        bt = summary["best_trade"]
-        text += f"\n最佳: {bt.ticker} ${bt.pnl:+.2f}"
-    if summary.get("worst_trade"):
-        wt = summary["worst_trade"]
-        text += f"\n最差: {wt.ticker} ${wt.pnl:+.2f}"
-
-    await adapter.send_message(ctx.chat_id, text)
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # Research Commands
 # ═══════════════════════════════════════════════════════════════════════════════
-
-
-async def cmd_deep(ctx: BotContext, adapter):
-    """Run deep research for a social post: /deep latest|POST_ID [focus]"""
-    if not ctx.args:
-        await adapter.send_message(
-            ctx.chat_id, "用法: /deep latest [研究重点] 或 /deep POST_ID [研究重点]"
-        )
-        return
-
-    post_ref = ctx.args[0]
-    focus = " ".join(ctx.args[1:]).strip()
-    _spawn_background_task(
-        _run_deep_research_job(ctx.chat_id, post_ref, focus, adapter, ctx.reply_to_message_id),
-        "deep research",
-    )
-
-
-async def cmd_ask(ctx: BotContext, adapter):
-    """Ask about a social post: /ask latest|POST_ID question"""
-    if len(ctx.args) < 2:
-        await adapter.send_message(ctx.chat_id, "用法: /ask latest 问题 或 /ask POST_ID 问题")
-        return
-
-    post_ref = ctx.args[0]
-    question = " ".join(ctx.args[1:]).strip()
-    _spawn_background_task(
-        _run_research_ask_job(ctx.chat_id, post_ref, question, adapter, ctx.reply_to_message_id),
-        "research ask",
-    )
 
 
 async def cmd_research(ctx: BotContext, adapter):
@@ -522,8 +231,7 @@ async def _start_research_topic(
         message_id = await adapter.send_message_returning_id(
             ctx.chat_id,
             f"✅ 已建立研究话题 #{topic.id}，绑定消息 #{topic.source_id}。\n"
-            "在这条消息下面回复即可继续追问；需要 Agent 主动深挖时使用 "
-            f"/deep {topic.source_id}。",
+            "在这条消息下面回复即可继续追问；需要汇总时使用 /topic summary。",
         )
         await _bind_research_session_message(ctx.chat_id, message_id, topic.id)
     except ResearchError as e:
@@ -544,6 +252,9 @@ async def handle_plain_message(ctx: BotContext, adapter):
             if routed:
                 return
 
+        if await _try_handle_lightweight_message(ctx, adapter, text):
+            return
+
         reply_anchor = ctx.reply_to_message_id or ctx.message_id
         _spawn_background_task(
             _run_agent_message_job(
@@ -559,6 +270,80 @@ async def handle_plain_message(ctx: BotContext, adapter):
     except Exception as e:
         logger.exception(f"Message handling failed: {e}")
         await adapter.send_message(ctx.chat_id, "❌ 消息处理失败。")
+
+
+async def _try_handle_lightweight_message(ctx: BotContext, adapter, text: str) -> bool:
+    normalized = text.lower().strip()
+    if normalized in {"help", "帮助", "命令", "怎么用"}:
+        await cmd_help(ctx, adapter)
+        return True
+    if _contains_any(normalized, {"状态", "系统状态", "服务状态", "status"}):
+        await cmd_status(ctx, adapter)
+        return True
+    if _contains_any(normalized, {"持仓", "仓位", "portfolio"}):
+        await cmd_portfolio(ctx, adapter)
+        return True
+
+    ticker = _extract_message_ticker(text)
+    if ticker is None:
+        return False
+    if _contains_any(normalized, {"现价", "价格", "多少钱", "报价", "quote", "price"}):
+        from server.capabilities.market import format_stock_quote, get_stock_quote_payload
+
+        await adapter.send_message(
+            ctx.chat_id,
+            format_stock_quote(await get_stock_quote_payload(ticker), ticker),
+        )
+        return True
+    if _contains_any(normalized, {"技术", "技术指标", "rsi", "均线", "macd", "technical"}):
+        from server.capabilities.market import (
+            format_technical_analysis,
+            get_technical_analysis_payload,
+        )
+
+        await adapter.send_message(
+            ctx.chat_id,
+            format_technical_analysis(await get_technical_analysis_payload(ticker), ticker),
+        )
+        return True
+    if _contains_any(normalized, {"新闻", "消息", "news"}) and not _contains_any(
+        normalized,
+        {"分析", "研究", "影响", "怎么看", "为什么", "research"},
+    ):
+        from server.capabilities.market import format_stock_news, get_stock_news_payload
+
+        await adapter.send_message(
+            ctx.chat_id,
+            format_stock_news(await get_stock_news_payload(ticker, limit=8), ticker),
+        )
+        return True
+    return False
+
+
+def _contains_any(text: str, tokens: set[str]) -> bool:
+    return any(token in text for token in tokens)
+
+
+def _extract_message_ticker(text: str) -> str | None:
+    stopwords = {
+        "HELP",
+        "STATUS",
+        "PORTFOLIO",
+        "PRICE",
+        "QUOTE",
+        "NEWS",
+        "TECH",
+        "TECHNICAL",
+        "ANALYSIS",
+        "RESEARCH",
+        "WATCH",
+        "LIST",
+    }
+    for token in re.findall(r"\$?[A-Za-z][A-Za-z0-9.\-]{0,9}", text):
+        ticker = token.upper().lstrip("$")
+        if ticker not in stopwords and _looks_like_ticker(ticker):
+            return ticker
+    return None
 
 
 async def _route_bound_reply(ctx: BotContext, adapter, text: str) -> bool:
@@ -694,56 +479,6 @@ async def _run_agent_message_job(
     except Exception as e:
         logger.exception(f"Agent message failed: {e}")
         await reporter.error(_failure_message("Agent 处理失败", e))
-
-
-async def _run_deep_research_job(
-    chat_id: str, post_ref: str, focus: str, adapter, reply_to: str = ""
-) -> None:
-    from server.research.progress import ResearchProgressReporter
-
-    reporter = ResearchProgressReporter(adapter, chat_id, reply_to)
-    try:
-        from server.research.service import run_deep_research
-
-        await reporter.start("开始深度研究...")
-        run = await run_deep_research(chat_id, post_ref, focus, on_progress=reporter.on_progress)
-        post_label = f" · 推文 #{run.post.id}" if run.post else ""
-        post_id = run.post.id if run.post else run.session_id
-        text = (
-            f"*研究线程 #{run.session_id}{post_label}*\n\n"
-            f"{run.answer}\n\n"
-            "继续追问请在这条结果下面回复，或使用:\n"
-            f"/ask {post_id} 你的问题\n"
-            "/topic summary\n"
-            "/topic stop"
-        )
-        result_message_id = await reporter.finish(text)
-        await _bind_research_session_message(chat_id, reporter.status_message_id, run.session_id)
-        await _bind_research_session_message(chat_id, result_message_id, run.session_id)
-    except ResearchError as e:
-        await reporter.error(str(e))
-    except Exception as e:
-        logger.exception(f"Deep research failed: {e}")
-        await reporter.error(_failure_message("深挖失败", e))
-
-
-async def _run_research_ask_job(
-    chat_id: str, post_ref: str, question: str, adapter, reply_to: str = ""
-) -> None:
-    from server.research.progress import ResearchProgressReporter
-
-    reporter = ResearchProgressReporter(adapter, chat_id, reply_to)
-    try:
-        from server.research.service import ask_about_post
-
-        await reporter.start("正在分析问题...")
-        answer = await ask_about_post(chat_id, post_ref, question, on_progress=reporter.on_progress)
-        await reporter.finish(answer)
-    except ResearchError as e:
-        await reporter.error(str(e))
-    except Exception as e:
-        logger.exception(f"Research ask failed: {e}")
-        await reporter.error(_failure_message("回答失败", e))
 
 
 async def _run_topic_summary_job(chat_id: str, adapter, reply_to: str = "") -> None:
@@ -937,8 +672,7 @@ async def cmd_twatch(ctx: BotContext, adapter):
             "/x check — 立即检查\n\n"
             "收到提醒后:\n"
             "/research latest [研究重点] — 建立研究话题\n"
-            "/deep latest [研究重点] — 让 Agent 主动深挖\n"
-            "/ask latest 问题 — 直接追问",
+            "也可以直接回复推送卡片继续追问。",
         )
 
 
@@ -1161,103 +895,20 @@ async def cmd_movers(ctx: BotContext, adapter):
         await adapter.send_message(ctx.chat_id, "❌ Longbridge 异动检查失败，请稍后重试。")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Briefing Command
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-async def cmd_briefing(ctx: BotContext, adapter):
-    """Manually trigger daily briefing."""
-    await adapter.send_message(ctx.chat_id, "📋 正在生成每日简报...")
-    from server.briefing import generate_daily_briefing
-
-    text = await generate_daily_briefing()
-    await adapter.send_message(ctx.chat_id, text)
-
-
-async def cmd_digest(ctx: BotContext, adapter):
-    """Twitter daily digest: /digest [days_ago]"""
-    days_ago = 1
-    if ctx.args and ctx.args[0].isdigit():
-        days_ago = max(1, min(30, int(ctx.args[0])))
-
-    label = "昨日" if days_ago == 1 else f"{days_ago} 天前"
-    await adapter.send_message(ctx.chat_id, f"📰 正在生成 {label} Twitter 关注日报...")
-    from server.social.digest import generate_twitter_digest
-
-    messages = await generate_twitter_digest(days_ago=days_ago)
-    if not messages:
-        await adapter.send_message(ctx.chat_id, f"❌ {label} 没有推文记录。")
-        return
-    for msg in messages:
-        await adapter.send_message(ctx.chat_id, msg)
-
-
-async def cmd_summary(ctx: BotContext, adapter):
-    """Per-account Twitter summary: /summary @username [YYYY-MM-DD]"""
-    if not ctx.args:
-        await adapter.send_message(
-            ctx.chat_id,
-            "用法:\n/summary @elonmusk — 查看昨日日报\n/summary @elonmusk 2025-06-01 — 指定日期",
-        )
-        return
-
-    username = ctx.args[0].lstrip("@")
-    target_date = None
-    if len(ctx.args) > 1:
-        try:
-            from datetime import date
-
-            target_date = date.fromisoformat(ctx.args[1])
-        except ValueError:
-            await adapter.send_message(ctx.chat_id, "❌ 日期格式错误，请使用 YYYY-MM-DD。")
-            return
-
-    date_label = str(target_date) if target_date else "昨日"
-    await adapter.send_message(ctx.chat_id, f"📰 正在生成 @{username} {date_label} 日报...")
-    from server.social.digest import generate_user_digest
-
-    text = await generate_user_digest(username, target_date)
-    if text is None:
-        await adapter.send_message(ctx.chat_id, f"❌ @{username} 在 {date_label} 没有推文记录。")
-        return
-    await adapter.send_message(ctx.chat_id, text)
-
-
 def register_all_commands(router, adapter):
     """Register all shared command handlers."""
     router.register_many(
         {
             "help": lambda ctx: cmd_help(ctx, adapter),
-            "tools": lambda ctx: cmd_tools(ctx, adapter),
             "status": lambda ctx: cmd_status(ctx, adapter),
-            "pick": lambda ctx: cmd_pick(ctx, adapter),
-            "quote": lambda ctx: cmd_quote(ctx, adapter),
-            "technical": lambda ctx: cmd_technical(ctx, adapter),
-            "news": lambda ctx: cmd_news(ctx, adapter),
-            "track": lambda ctx: cmd_track(ctx, adapter),
             "stock": lambda ctx: cmd_stock_watch(ctx, adapter),
-            "score": lambda ctx: cmd_score(ctx, adapter),
             "portfolio": lambda ctx: cmd_portfolio(ctx, adapter),
-            "history": lambda ctx: cmd_history(ctx, adapter),
-            "deep": lambda ctx: cmd_deep(ctx, adapter),
-            "ask": lambda ctx: cmd_ask(ctx, adapter),
             "research": lambda ctx: cmd_research(ctx, adapter),
-            "thread": lambda ctx: cmd_research(ctx, adapter),
             "topic": lambda ctx: cmd_topic(ctx, adapter),
-            "log": lambda ctx: cmd_log(ctx, adapter),
-            "journal": lambda ctx: cmd_journal(ctx, adapter),
-            "pnl": lambda ctx: cmd_pnl(ctx, adapter),
             "x": lambda ctx: cmd_twatch(ctx, adapter),
-            "twatch": lambda ctx: cmd_twatch(ctx, adapter),
             "task": lambda ctx: cmd_task(ctx, adapter),
-            "schedule": lambda ctx: cmd_task(ctx, adapter),
-            "remind": lambda ctx: cmd_task(ctx, adapter),
             "alert": lambda ctx: cmd_alert(ctx, adapter),
             "movers": lambda ctx: cmd_movers(ctx, adapter),
-            "briefing": lambda ctx: cmd_briefing(ctx, adapter),
-            "digest": lambda ctx: cmd_digest(ctx, adapter),
-            "summary": lambda ctx: cmd_summary(ctx, adapter),
         }
     )
     router.register_message_handler(lambda ctx: handle_plain_message(ctx, adapter))

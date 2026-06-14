@@ -51,6 +51,31 @@ class Trade(Base):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Portfolio Markers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class PortfolioMarker(Base):
+    __tablename__ = "portfolio_markers"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    ticker: Mapped[str] = mapped_column(String(10), index=True)
+    marker_type: Mapped[str] = mapped_column(String(20), default="holding")
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint(
+            "ticker",
+            "marker_type",
+            name="uq_portfolio_marker_ticker_type",
+        ),
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Stock Picks & Tracking
 # ═══════════════════════════════════════════════════════════════════════════════
 

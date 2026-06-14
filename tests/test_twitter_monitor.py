@@ -10,8 +10,9 @@ from sqlalchemy import func, select
 from server.bot.base import BotAdapter
 from server.db import engine as db_engine
 from server.db.engine import get_session_factory
-from server.db.models import SocialPost, TwitterState
+from server.db.models import SocialPost, StockWatch, TwitterState
 from server.db.time import utc_now_naive
+from server.portfolio.markers import add_portfolio_holding_marker
 from server.social.monitor import (
     _build_tweet_card,
     _epoch_or_zero,
@@ -581,6 +582,78 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(pushed_count, 2)
+
+    async def test_monitor_adds_personal_impact_for_manual_stock_watch(self):
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            session.add(TwitterState(username="alice", last_tweet_epoch=100))
+            session.add(
+                StockWatch(
+                    ticker="NVDA",
+                    chat_id="chat-1",
+                    platform="feishu",
+                    threshold_pct=5.0,
+                    is_active=True,
+                )
+            )
+            await session.commit()
+
+        async def fake_fetch_user_tweets(username: str, count: int = 20, cursor: str | None = None):
+            return {
+                "screen_name": username,
+                "latest_tweets": [
+                    {
+                        "tweetID": "301",
+                        "date_epoch": 301,
+                        "text": "Nvidia announces a major AI infrastructure order.",
+                    },
+                ],
+            }
+
+        adapter = DummyAdapter()
+        with patch("server.social.monitor.fetch_user_tweets", new=fake_fetch_user_tweets):
+            total = await run_twitter_monitor(["alice"], adapter, DummyProcessor())
+
+        self.assertEqual(total, 1)
+        self.assertEqual(len(adapter.cards), 1)
+        card = adapter.cards[0][1]
+        pushed = "\n".join([card["title"], *card["sections"]])
+        self.assertIn("**对持仓/关注的影响**", pushed)
+        self.assertIn("NVDA（观察列表）", pushed)
+        self.assertIn("与你的观察列表相关", pushed)
+        self.assertIn("出现明确催化", pushed)
+        self.assertIn("建议关注后续价格、成交量和消息确认", pushed)
+
+    async def test_monitor_adds_personal_impact_for_holding_marker(self):
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            session.add(TwitterState(username="alice", last_tweet_epoch=100))
+            await session.commit()
+        await add_portfolio_holding_marker("NVDA")
+
+        async def fake_fetch_user_tweets(username: str, count: int = 20, cursor: str | None = None):
+            return {
+                "screen_name": username,
+                "latest_tweets": [
+                    {
+                        "tweetID": "302",
+                        "date_epoch": 302,
+                        "text": "Nvidia announces a major AI infrastructure order.",
+                    },
+                ],
+            }
+
+        adapter = DummyAdapter()
+        with patch("server.social.monitor.fetch_user_tweets", new=fake_fetch_user_tweets):
+            total = await run_twitter_monitor(["alice"], adapter, DummyProcessor())
+
+        self.assertEqual(total, 1)
+        self.assertEqual(len(adapter.cards), 1)
+        pushed = "\n".join([adapter.cards[0][1]["title"], *adapter.cards[0][1]["sections"]])
+        self.assertIn("**对持仓/关注的影响**", pushed)
+        self.assertIn("NVDA（持仓）", pushed)
+        self.assertIn("持仓关注标记，未记录数量/成本", pushed)
+        self.assertIn("与你的持仓直接相关", pushed)
 
 
 if __name__ == "__main__":

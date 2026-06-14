@@ -8,15 +8,26 @@ from sqlalchemy import desc, select
 
 from server.db.engine import get_session_factory
 from server.db.models import ConversationMessage, ResearchSession, SocialPost
-from server.events.types import compact_event_context
 from server.research.claude_sdk_runtime import (
     AgentRunResult,
     AgentRuntimeError,
     ProgressCallback,
     run_agent,
 )
-from server.research.market_skills import market_skill_prompt_context
-from server.social.events import event_from_social_post
+from server.research.prompts import (
+    AgentToolProfile,
+    agent_message_prompt,
+    ask_prompt,
+    deep_prompt,
+    freeform_followup_prompt,
+    freeform_prompt,
+    post_context,
+    resume_rebuild_freeform_prompt,
+    resume_rebuild_prompt,
+    ticker_prompt,
+    tool_profile_for_agent_message,
+    topic_prompt,
+)
 
 
 class ResearchError(ValueError):
@@ -65,7 +76,7 @@ async def run_deep_research(
     on_progress: ProgressCallback | None = None,
 ) -> ResearchRun:
     post = await resolve_social_post(post_ref)
-    result = await _run_new_agent(_deep_prompt(post, focus), on_progress=on_progress)
+    result = await _run_new_agent(deep_prompt(post, focus), on_progress=on_progress)
     session_id = await _create_session(chat_id, post.id, focus or _default_topic(post))
     await _save_answer(session_id, result.answer, result.agent_session_id)
     return ResearchRun(session_id=session_id, post=post, answer=result.answer)
@@ -78,7 +89,7 @@ async def start_freeform_research(
     on_progress: ProgressCallback | None = None,
 ) -> ResearchRun:
     """Start research from a freeform question, not tied to any tweet."""
-    prompt = _freeform_prompt(query, focus)
+    prompt = freeform_prompt(query, focus)
     result = await _run_new_agent(prompt, on_progress=on_progress)
     session_id = await _create_session(
         chat_id, None, query[:300], source_type="freeform", source_query=query
@@ -94,7 +105,7 @@ async def research_ticker(
     on_progress: ProgressCallback | None = None,
 ) -> ResearchRun:
     """Start research on a specific stock ticker."""
-    prompt = _ticker_prompt(ticker, focus)
+    prompt = ticker_prompt(ticker, focus)
     result = await _run_new_agent(prompt, on_progress=on_progress)
     session_id = await _create_session(
         chat_id,
@@ -141,8 +152,9 @@ async def run_agent_session_message(
     result = await _run_agent_for_session(
         research_session,
         None,
-        _agent_message_prompt(research_session, message, platform),
+        agent_message_prompt(research_session, message, platform),
         on_progress=on_progress,
+        tool_profile=tool_profile_for_agent_message(message),
     )
     await _append_message(research_session.id, "user", message)
     await _append_message(research_session.id, "assistant", result.answer, result.agent_session_id)
@@ -160,11 +172,11 @@ async def ask_about_post(
     post = await resolve_social_post(post_ref)
     session = await _find_active_session_for_post(chat_id, post)
     if session is None:
-        result = await _run_new_agent(_ask_prompt(post, question), on_progress=on_progress)
+        result = await _run_new_agent(ask_prompt(post, question), on_progress=on_progress)
         session_id = await _create_session(chat_id, post.id, _default_topic(post))
     else:
         result = await _run_agent_for_session(
-            session, post, _ask_prompt(post, question), on_progress=on_progress
+            session, post, ask_prompt(post, question), on_progress=on_progress
         )
         session_id = session.id
     await _append_message(session_id, "user", question)
@@ -274,12 +286,18 @@ async def handle_topic_message(
 
     if topic.source_type == "twitter" and topic.source_id:
         post = await resolve_social_post(str(topic.source_id))
-        prompt = _topic_prompt(post, message)
+        prompt = topic_prompt(post, message)
     else:
-        prompt = _freeform_followup_prompt(topic, message)
+        prompt = freeform_followup_prompt(topic, message)
         post = None
 
-    result = await _run_agent_for_session(topic, post, prompt, on_progress=on_progress)
+    result = await _run_agent_for_session(
+        topic,
+        post,
+        prompt,
+        on_progress=on_progress,
+        tool_profile=tool_profile_for_agent_message(message),
+    )
     await _append_message(topic.id, "user", message)
     await _append_message(topic.id, "assistant", result.answer, result.agent_session_id)
     return result.answer
@@ -298,7 +316,7 @@ async def summarize_topic(chat_id: str, on_progress: ProgressCallback | None = N
         post = await resolve_social_post(str(topic.source_id))
         if not history:
             return f"当前线程基于 @{post.username} 的更新，还没有进一步对话。"
-        source_section = f"原始更新:\n{_post_context(post)}"
+        source_section = f"原始更新:\n{post_context(post)}"
     else:
         if not history:
             return f"当前研究线程 '{topic.topic or ''}' 还没有进一步对话。"
@@ -403,9 +421,10 @@ async def _load_history(session_id: int, limit: int) -> list[ConversationMessage
 async def _run_new_agent(
     prompt: str,
     on_progress: ProgressCallback | None = None,
+    tool_profile: AgentToolProfile = "research",
 ) -> AgentRunResult:
     try:
-        return await run_agent(prompt, on_progress=on_progress)
+        return await run_agent(prompt, on_progress=on_progress, tool_profile=tool_profile)
     except AgentRuntimeError as exc:
         logger.exception("Agent runtime failed for new research session")
         raise ResearchError(exc.user_message) from exc
@@ -416,13 +435,17 @@ async def _run_agent_for_session(
     post: SocialPost | None,
     prompt: str,
     on_progress: ProgressCallback | None = None,
+    tool_profile: AgentToolProfile = "research",
 ) -> AgentRunResult:
     if not research_session.agent_session_id:
-        return await _run_new_agent(prompt, on_progress=on_progress)
+        return await _run_new_agent(prompt, on_progress=on_progress, tool_profile=tool_profile)
 
     try:
         return await run_agent(
-            prompt, resume=research_session.agent_session_id, on_progress=on_progress
+            prompt,
+            resume=research_session.agent_session_id,
+            on_progress=on_progress,
+            tool_profile=tool_profile,
         )
     except AgentRuntimeError as exc:
         if not _should_rebuild_after_resume_error(exc):
@@ -442,11 +465,14 @@ async def _run_agent_for_session(
     history = await _load_history(research_session.id, limit=20)
     if post:
         return await _run_new_agent(
-            _resume_rebuild_prompt(post, history, prompt), on_progress=on_progress
+            resume_rebuild_prompt(post, history, prompt),
+            on_progress=on_progress,
+            tool_profile=tool_profile,
         )
     return await _run_new_agent(
-        _resume_rebuild_freeform_prompt(research_session, history, prompt),
+        resume_rebuild_freeform_prompt(research_session, history, prompt),
         on_progress=on_progress,
+        tool_profile=tool_profile,
     )
 
 
@@ -491,28 +517,6 @@ def _should_rebuild_after_resume_error(exc: AgentRuntimeError) -> bool:
     return not any(marker in text for marker in fatal_markers)
 
 
-def _resume_rebuild_prompt(
-    post: SocialPost,
-    history: list[ConversationMessage],
-    prompt: str,
-) -> str:
-    history_text = "\n".join(f"{message.role}: {message.content}" for message in history)
-    if not history_text:
-        history_text = "（无历史对话）"
-    return f"""上一个 Agent 会话无法恢复。
-请基于 Reveal 保存的上下文继续研究，并开启新的 Agent 会话。
-
-原始更新:
-{_post_context(post)}
-
-已保存的历史对话:
-{history_text}
-
-当前任务:
-{prompt}
-"""
-
-
 async def _save_answer(
     session_id: int,
     answer: str,
@@ -555,177 +559,6 @@ async def _append_message(
                 research_session.agent_session_id = agent_session_id
         session.add(ConversationMessage(session_id=session_id, role=role, content=content))
         await session.commit()
-
-
-def _deep_prompt(post: SocialPost, focus: str) -> str:
-    return f"""请围绕下面这条 Twitter/X 更新做深度研究。
-
-如果推文提到了具体股票，请用 stock_quote / technical_analysis 查数据。
-用 portfolio 查看用户是否持有相关标的。
-用 WebSearch 搜索外部证据，覆盖背景、可信度、潜在影响、反方观点。
-
-原始更新:
-{_post_context(post)}
-
-研究重点:
-{focus or "背景、可信度、潜在影响、反方观点、后续观察点"}
-"""
-
-
-def _ask_prompt(post: SocialPost, question: str) -> str:
-    return f"""请基于下面这条 Twitter/X 更新回答用户问题。
-
-需要数据时使用内部工具 (stock_quote, portfolio 等)，需要外部信息时用 WebSearch。
-
-原始更新:
-{_post_context(post)}
-
-用户问题:
-{question}
-"""
-
-
-def _topic_prompt(post: SocialPost, message: str) -> str:
-    return f"""当前对话绑定下面这条 Twitter/X 更新。请回答用户的新问题。
-
-需要数据时使用内部工具，需要外部信息时用 WebSearch。
-保持多轮研究上下文，不要把回答降级成简单摘要。
-
-原始更新:
-{_post_context(post)}
-
-用户消息:
-{message}
-"""
-
-
-def _post_context(post: SocialPost) -> str:
-    event = event_from_social_post(post)
-    lines = [
-        f"post_id: {post.id}",
-        f"author: @{post.username}",
-        f"tweet_id: {post.tweet_id}",
-    ]
-    if post.tweet_url:
-        lines.append(f"url: {post.tweet_url}")
-    labels = []
-    if post.is_quote:
-        labels.append("quote")
-    if post.is_repost:
-        labels.append("repost")
-    if post.is_reply:
-        labels.append("reply")
-    if labels:
-        lines.append("type: " + ", ".join(labels))
-    lines.extend(["content:", post.content or "（无正文）"])
-    if post.links:
-        lines.append("links: " + ", ".join(str(link) for link in post.links[:8]))
-    if post.media:
-        lines.append("media: " + ", ".join(str(item.get("url")) for item in post.media[:4]))
-    if post.referenced_tweets:
-        lines.append("referenced:")
-        for ref in post.referenced_tweets[:3]:
-            lines.append(f"- {ref.get('type')}: {ref.get('url')} {ref.get('text', '')}")
-    lines.extend(["", "canonical_event:", compact_event_context(event)])
-    if skill_context := market_skill_prompt_context(event):
-        lines.extend(["", skill_context])
-    return "\n".join(lines)
-
-
-def _freeform_prompt(query: str, focus: str) -> str:
-    return f"""用户有一个问题需要你帮忙研究。
-
-请先用 portfolio 工具查看用户持仓，再结合其他工具和 WebSearch 给出个性化回答。
-
-用户问题:
-{query}
-
-研究重点:
-{focus or "综合分析"}
-"""
-
-
-def _ticker_prompt(ticker: str, focus: str) -> str:
-    return f"""请对 {ticker} 做深度研究。
-
-请依次:
-1. 用 technical_analysis 查技术指标
-2. 用 stock_news 查最近新闻
-3. 用 portfolio 查用户是否持有
-4. 用 research_history 查过去的研究结论
-5. 用 WebSearch 补充最新信息
-6. 综合以上给出全面分析
-
-研究重点:
-{focus or "综合分析: 技术面、基本面、催化剂、风险"}
-"""
-
-
-def _freeform_followup_prompt(topic: ResearchSession, message: str) -> str:
-    label = "Agent 会话" if topic.source_type == "agent" else "自由研究线程"
-    return f"""当前对话是一个{label}。
-
-研究主题: {topic.topic or topic.source_query or ""}
-
-需要数据时请使用内部工具 (stock_quote, portfolio 等) 和 WebSearch。
-保持多轮研究上下文，不要把回答降级成简单摘要。
-
-用户消息:
-{message}
-"""
-
-
-def _agent_message_prompt(topic: ResearchSession, message: str, platform: str = "auto") -> str:
-    return f"""用户正在 Reveal 的 IM Agent 会话里发送自然语言请求。
-
-Reveal 的能力以 MCP tools 暴露给你。请根据用户意图选择真实工具执行，而不是输出工具调用文本。
-
-原则:
-1. 如果用户要执行系统操作，例如添加/移除 Twitter watch list、添加/移除股票观察列表、
-创建/查看/取消未来定时任务、获取某用户最新推文、搜索本地推文、查询股票、查看持仓、
-查询交易日记或系统状态，
-直接调用对应 Reveal MCP 工具。
-   - 如果用户说“2小时后”、“今晚7点”、“明天早上”等未来时间后再推送/提醒/查询，
-     调用 scheduled_task_create，而不是现在直接完成任务。
-2. 如果用户要研究、解释、比较、验证事实或需要最新外部证据，
-结合 Reveal MCP 工具和 WebSearch/WebFetch。
-3. 如果意图不明确，向用户追问一个具体澄清问题。
-4. 最终只返回用户可读的中文结果，不要输出伪 function_calls/XML/JSON 工具调用文本。
-
-会话主题: {topic.topic or topic.source_query or ""}
-
-当前会话上下文:
-chat_id: {topic.chat_id}
-platform: {platform}
-如果调用 stock_watch_add、stock_watch_remove 或 stock_watch_list，必须使用上面的 chat_id；
-添加/移除时也要传 platform。这样后续价格异动 alert 才能发回当前会话。
-如果调用 scheduled_task_create、scheduled_task_list 或 scheduled_task_cancel，也必须使用
-上面的 chat_id；创建任务时传 platform，并把用户原始时间短语放入 run_at_text。
-
-用户消息:
-{message}
-"""
-
-
-def _resume_rebuild_freeform_prompt(
-    research_session: ResearchSession,
-    history: list[ConversationMessage],
-    prompt: str,
-) -> str:
-    history_text = "\n".join(f"{message.role}: {message.content}" for message in history)
-    if not history_text:
-        history_text = "（无历史对话）"
-    return f"""上一个 Agent 会话无法恢复。
-请基于 Reveal 保存的上下文继续研究，并开启新的 Agent 会话。
-
-研究主题: {research_session.topic or research_session.source_query or ""}
-
-已保存的历史对话:
-{history_text}
-
-当前任务:
-{prompt}
-"""
 
 
 def _default_topic(post: SocialPost) -> str:

@@ -20,6 +20,8 @@ class CapabilityRegistryTest(unittest.TestCase):
         self.assertIn("mcp__reveal__technical_analysis", tools)
         self.assertIn("mcp__reveal__stock_news", tools)
         self.assertIn("mcp__reveal__portfolio", tools)
+        self.assertIn("mcp__reveal__portfolio_holding_add", tools)
+        self.assertIn("mcp__reveal__portfolio_holding_remove", tools)
         self.assertIn("mcp__reveal__research_history", tools)
         self.assertIn("mcp__reveal__market_skill_catalog", tools)
         self.assertIn("mcp__reveal__stock_score", tools)
@@ -43,18 +45,38 @@ class CapabilityRegistryTest(unittest.TestCase):
         help_text = format_command_help()
 
         for command in (
-            "/tools",
-            "/quote",
-            "/technical",
-            "/news",
             "/portfolio",
-            "/history",
             "/stock",
             "/movers",
             "/research",
             "/x",
+            "/topic",
+            "/task",
+            "/alert",
         ):
             self.assertIn(command, help_text)
+        for removed_command in (
+            "/tools",
+            "/quote",
+            "/technical",
+            "/news",
+            "/score",
+            "/track",
+            "/history",
+            "/deep",
+            "/ask",
+            "/thread",
+            "/twatch",
+            "/schedule",
+            "/remind",
+            "/briefing",
+            "/digest",
+            "/summary",
+            "/log",
+            "/journal",
+            "/pnl",
+        ):
+            self.assertNotIn(removed_command, help_text)
 
     def test_capability_catalog_explains_entrypoint_layers(self):
         catalog = format_capability_catalog()
@@ -66,6 +88,7 @@ class CapabilityRegistryTest(unittest.TestCase):
         self.assertIn("External services", catalog)
         self.assertIn("stock.quote", capability_ids)
         self.assertIn("stock.watch", capability_ids)
+        self.assertIn("portfolio.holding_marker", capability_ids)
         self.assertIn("market.movers", capability_ids)
         self.assertIn("research.ticker", capability_ids)
         self.assertIn("research.market_skills", capability_ids)
@@ -77,6 +100,7 @@ class CapabilityRegistryTest(unittest.TestCase):
         self.assertIn("Reveal system capabilities", catalog)
         self.assertIn("mcp__reveal__twitter_watch_list", catalog)
         self.assertIn("mcp__reveal__stock_watch_add", catalog)
+        self.assertIn("mcp__reveal__portfolio_holding_add", catalog)
         self.assertIn("mcp__reveal__market_movers_check", catalog)
         self.assertIn("mcp__reveal__market_skill_catalog", catalog)
         self.assertIn("mcp__reveal__scheduled_task_create", catalog)
@@ -97,12 +121,12 @@ class CapabilityRegistryTest(unittest.TestCase):
 class CapabilityPlannerTest(unittest.TestCase):
     def test_command_route_compiles_to_planned_action(self):
         plan = plan_from_command_route(
-            {"command": "quote", "args": ["NVDA"]},
-            "NVDA 现在多少钱",
+            {"command": "research", "args": ["NVDA"]},
+            "研究 NVDA",
         )
 
-        self.assertEqual(plan.capability_id, "stock.quote")
-        self.assertEqual(plan.command, "quote")
+        self.assertEqual(plan.capability_id, "research.ticker")
+        self.assertEqual(plan.command, "research")
         self.assertEqual(plan.args, ["NVDA"])
         self.assertFalse(plan.needs_confirmation)
 

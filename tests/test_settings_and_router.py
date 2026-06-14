@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from config.settings import Settings
 from server.bot.base import BotAdapter, BotContext, CommandRouter
-from server.commands import cmd_research, handle_plain_message
+from server.commands import cmd_research, handle_plain_message, register_all_commands
 from server.llm.client import classify_intent_locally
 
 
@@ -186,6 +186,7 @@ class DummyAdapter(BotAdapter):
     def __init__(self, authorized: bool):
         self.authorized = authorized
         self.messages: list[tuple[str, str]] = []
+        self.registered_commands: list[str] = []
 
     async def send_message(self, chat_id: str, text: str, **kwargs) -> None:
         self.messages.append((chat_id, text))
@@ -194,7 +195,7 @@ class DummyAdapter(BotAdapter):
         self.messages.append((chat_id, str(card)))
 
     def register_command(self, command: str, handler) -> None:
-        return None
+        self.registered_commands.append(command)
 
     async def push_to_admin(self, text: str) -> None:
         self.messages.append(("admin", text))
@@ -204,6 +205,28 @@ class DummyAdapter(BotAdapter):
 
 
 class CommandRouterTest(unittest.TestCase):
+    def test_register_all_commands_uses_slim_public_command_set(self):
+        adapter = DummyAdapter(authorized=True)
+        router = CommandRouter(adapter)
+
+        register_all_commands(router, adapter)
+
+        self.assertEqual(
+            set(adapter.registered_commands),
+            {
+                "help",
+                "status",
+                "stock",
+                "portfolio",
+                "research",
+                "topic",
+                "x",
+                "task",
+                "alert",
+                "movers",
+            },
+        )
+
     def test_unauthorized_command_is_blocked(self):
         adapter = DummyAdapter(authorized=False)
         router = CommandRouter(adapter)
@@ -231,6 +254,46 @@ class IntentFallbackTest(unittest.TestCase):
 
 
 class AgentFirstRoutingTest(unittest.TestCase):
+    def test_plain_quote_request_uses_lightweight_route(self):
+        adapter = DummyAdapter(authorized=True)
+        ctx = BotContext(chat_id="chat-1", user_id="user-1", text="NVDA 现在多少钱")
+
+        def fail_spawn(coro, label: str) -> None:
+            coro.close()
+            raise AssertionError(f"unexpected background task: {label}")
+
+        with (
+            patch("server.commands._spawn_background_task", new=fail_spawn),
+            patch(
+                "server.capabilities.market.get_stock_quote_payload",
+                new=AsyncMock(return_value={"symbol": "NVDA", "price": 100}),
+            ),
+            patch("server.capabilities.market.format_stock_quote", return_value="NVDA quote"),
+        ):
+            asyncio.run(handle_plain_message(ctx, adapter))
+
+        self.assertEqual(adapter.messages, [("chat-1", "NVDA quote")])
+
+    def test_plain_portfolio_request_uses_lightweight_route(self):
+        adapter = DummyAdapter(authorized=True)
+        ctx = BotContext(chat_id="chat-1", user_id="user-1", text="我的持仓")
+
+        def fail_spawn(coro, label: str) -> None:
+            coro.close()
+            raise AssertionError(f"unexpected background task: {label}")
+
+        with (
+            patch("server.commands._spawn_background_task", new=fail_spawn),
+            patch(
+                "server.capabilities.market.get_portfolio_payload",
+                new=AsyncMock(return_value={"positions": []}),
+            ),
+            patch("server.capabilities.market.format_portfolio", return_value="portfolio"),
+        ):
+            asyncio.run(handle_plain_message(ctx, adapter))
+
+        self.assertEqual(adapter.messages, [("chat-1", "portfolio")])
+
     def test_plain_natural_language_routes_to_agent(self):
         adapter = DummyAdapter(authorized=True)
         ctx = BotContext(chat_id="chat-1", user_id="user-1", text="加上 @aleabitoreddit")
@@ -355,7 +418,8 @@ class ResearchCommandTest(unittest.TestCase):
         self.assertEqual(len(adapter.messages), 1)
         self.assertIn("已建立研究话题 #7", adapter.messages[0][1])
         self.assertIn("在这条消息下面回复", adapter.messages[0][1])
-        self.assertIn("/deep 42", adapter.messages[0][1])
+        self.assertIn("/topic summary", adapter.messages[0][1])
+        self.assertNotIn("/deep", adapter.messages[0][1])
 
 
 if __name__ == "__main__":

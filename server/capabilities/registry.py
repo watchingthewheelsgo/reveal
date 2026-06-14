@@ -187,11 +187,10 @@ CAPABILITIES: tuple[CapabilitySpec, ...] = (
         kind="system",
         group="系统",
         description="查看系统工具、技能和自然语言示例。",
-        slash_commands=("tools",),
         natural_examples=("有哪些工具", "你能做什么", "有哪些技能"),
         agent_tools=("mcp__reveal__capability_catalog",),
         external_services=("mcp.reveal",),
-        usage="/tools",
+        usage="自然语言: 有哪些工具 / 你能做什么",
     ),
     CapabilitySpec(
         id="system.status",
@@ -218,10 +217,9 @@ CAPABILITIES: tuple[CapabilitySpec, ...] = (
         kind="workflow",
         group="股票",
         description="扫描市场并推荐标的。",
-        slash_commands=("pick",),
         natural_examples=("今日选股", "推荐股票"),
         external_services=("market.finnhub", "market.yfinance", "database.app"),
-        usage="/pick",
+        usage="自动每日执行；也可用自然语言让 Agent 生成选股建议。",
         side_effects="会写入/更新每日选股和追踪记录。",
     ),
     CapabilitySpec(
@@ -230,12 +228,11 @@ CAPABILITIES: tuple[CapabilitySpec, ...] = (
         kind="tool",
         group="股票",
         description="查询股票现价、涨跌幅、成交量等。",
-        slash_commands=("quote",),
         natural_examples=("NVDA 现在多少钱", "查一下 MRVL 报价"),
         required_args=("ticker",),
         agent_tools=("mcp__reveal__stock_quote",),
         external_services=("market.finnhub", "market.yfinance", "mcp.reveal"),
-        usage="/quote TICKER",
+        usage="自然语言: NVDA 现在多少钱",
     ),
     CapabilitySpec(
         id="stock.technical",
@@ -243,12 +240,11 @@ CAPABILITIES: tuple[CapabilitySpec, ...] = (
         kind="tool",
         group="股票",
         description="查询 RSI、均线、量比、52 周高低点等。",
-        slash_commands=("technical",),
         natural_examples=("MRVL 技术指标", "看一下 NVDA RSI 和均线"),
         required_args=("ticker",),
         agent_tools=("mcp__reveal__technical_analysis",),
         external_services=("market.yfinance", "mcp.reveal"),
-        usage="/technical TICKER",
+        usage="自然语言: 看一下 NVDA 技术指标",
     ),
     CapabilitySpec(
         id="stock.news",
@@ -256,12 +252,11 @@ CAPABILITIES: tuple[CapabilitySpec, ...] = (
         kind="tool",
         group="股票",
         description="查询公司最近新闻。",
-        slash_commands=("news",),
         natural_examples=("查一下 MRVL 新闻", "NVDA 最近有什么新闻"),
         required_args=("ticker",),
         agent_tools=("mcp__reveal__stock_news",),
         external_services=("market.finnhub", "mcp.reveal"),
-        usage="/news TICKER",
+        usage="自然语言: NVDA 最近有什么新闻",
     ),
     CapabilitySpec(
         id="stock.score",
@@ -269,12 +264,11 @@ CAPABILITIES: tuple[CapabilitySpec, ...] = (
         kind="tool",
         group="股票",
         description="对股票做技术、基本面、新闻情绪和板块评分。",
-        slash_commands=("score",),
         natural_examples=("给 MRVL 打分", "NVDA 评分"),
         required_args=("ticker",),
         agent_tools=("mcp__reveal__stock_score",),
         external_services=("market.yfinance", "mcp.reveal"),
-        usage="/score TICKER",
+        usage="自然语言: 给 NVDA 打分",
     ),
     CapabilitySpec(
         id="stock.track",
@@ -282,11 +276,10 @@ CAPABILITIES: tuple[CapabilitySpec, ...] = (
         kind="tool",
         group="股票",
         description="查看正在追踪的标的表现。",
-        slash_commands=("track",),
         natural_examples=("查看追踪标的", "MRVL 追踪情况"),
         agent_tools=("mcp__reveal__tracking_report",),
         external_services=("market.yfinance", "database.app", "mcp.reveal"),
-        usage="/track [TICKER]",
+        usage="自然语言: 查看追踪标的 / MRVL 追踪情况",
     ),
     CapabilitySpec(
         id="stock.watch",
@@ -335,17 +328,32 @@ CAPABILITIES: tuple[CapabilitySpec, ...] = (
         usage="/portfolio",
     ),
     CapabilitySpec(
+        id="portfolio.holding_marker",
+        title="持仓关注标记",
+        kind="workflow",
+        group="交易",
+        description="只记录某 ticker 需要按持仓影响来关注，不保存数量或成本，不代表真实交易。",
+        natural_examples=("我持有 NVDA，后面相关消息提醒我", "记一下我有 TSLA，不用记录数量"),
+        required_args=("ticker",),
+        agent_tools=(
+            "mcp__reveal__portfolio_holding_add",
+            "mcp__reveal__portfolio_holding_remove",
+        ),
+        external_services=("database.app", "mcp.reveal"),
+        usage="自然语言: 我持有 TICKER，后面消息关注它；移除 TICKER 持仓关注标记",
+        side_effects="会写入或关闭一个不含数量/成本的持仓关注标记；只在用户明确要求时执行。",
+    ),
+    CapabilitySpec(
         id="research.history",
         title="历史研究",
         kind="tool",
         group="研究",
         description="查询某只股票过去的研究结论。",
-        slash_commands=("history",),
         natural_examples=("MRVL 之前研究过什么", "查 NVDA 历史研究"),
         required_args=("ticker",),
         agent_tools=("mcp__reveal__research_history",),
         external_services=("database.app", "mcp.reveal"),
-        usage="/history TICKER",
+        usage="自然语言: 查 NVDA 历史研究",
     ),
     CapabilitySpec(
         id="research.ticker",
@@ -372,7 +380,7 @@ CAPABILITIES: tuple[CapabilitySpec, ...] = (
         kind="skill",
         group="研究",
         description="基于 Twitter/X 更新建立研究线程或主动深挖。",
-        slash_commands=("deep", "ask", "topic", "thread"),
+        slash_commands=("topic",),
         natural_examples=("深挖最新推文", "基于这条消息分析影响"),
         external_services=(
             "llm.deepseek_agent",
@@ -381,7 +389,7 @@ CAPABILITIES: tuple[CapabilitySpec, ...] = (
             "mcp.reveal",
             "database.app",
         ),
-        usage="/deep latest|POST_ID; /ask latest|POST_ID QUESTION; /topic start|summary|stop",
+        usage="/topic status|start|summary|stop；也可直接回复研究结果继续追问",
         side_effects="会创建、恢复或更新研究线程。",
     ),
     CapabilitySpec(
@@ -418,7 +426,6 @@ CAPABILITIES: tuple[CapabilitySpec, ...] = (
         kind="workflow",
         group="Twitter",
         description="生成关注账号日报或单账号总结。",
-        slash_commands=("digest", "summary"),
         natural_examples=("推特日报", "@OwenCarter_k 昨天发了什么"),
         agent_tools=("mcp__reveal__twitter_latest", "mcp__reveal__twitter_search"),
         external_services=(
@@ -428,7 +435,7 @@ CAPABILITIES: tuple[CapabilitySpec, ...] = (
             "llm.deepseek_chat",
             "mcp.reveal",
         ),
-        usage="/digest [DAYS_AGO]; /summary @USER [YYYY-MM-DD]",
+        usage="自动日报；也可自然语言询问某账号昨日总结。",
     ),
     CapabilitySpec(
         id="journal.log",
@@ -436,10 +443,9 @@ CAPABILITIES: tuple[CapabilitySpec, ...] = (
         kind="workflow",
         group="交易",
         description="记录买入、卖出、做空和交易备注。",
-        slash_commands=("log",),
         natural_examples=("记录买入 AAPL 180 100 股", "卖出 TSLA 250"),
         external_services=("database.app",),
-        usage="/log buy|short|sell|note ...",
+        usage="不作为默认快捷命令暴露；真实交易记录需显式功能入口。",
         side_effects="会写入或修改交易日记。",
     ),
     CapabilitySpec(
@@ -448,11 +454,10 @@ CAPABILITIES: tuple[CapabilitySpec, ...] = (
         kind="tool",
         group="交易",
         description="查看交易日记和盈亏汇总。",
-        slash_commands=("journal", "pnl"),
         natural_examples=("今日交易日记", "本月盈亏", "pnl"),
         agent_tools=("mcp__reveal__trading_journal", "mcp__reveal__pnl_summary"),
         external_services=("database.app", "mcp.reveal"),
-        usage="/journal [today|week|month|year|all]; /pnl [today|week|month|year|all]",
+        usage="自然语言: 今日交易日记 / 本月盈亏",
     ),
     CapabilitySpec(
         id="alert.manage",
@@ -480,7 +485,7 @@ CAPABILITIES: tuple[CapabilitySpec, ...] = (
         kind="workflow",
         group="系统",
         description="创建、查看和取消用户的一次性定时 Agent 任务。",
-        slash_commands=("task", "schedule", "remind"),
+        slash_commands=("task",),
         natural_examples=("2小时后推送 CPI 新闻", "今晚7点提醒我看 CPI 数据", "查看未来任务"),
         agent_tools=(
             "mcp__reveal__scheduled_task_create",
@@ -497,11 +502,10 @@ CAPABILITIES: tuple[CapabilitySpec, ...] = (
         kind="workflow",
         group="股票",
         description="生成每日市场简报。",
-        slash_commands=("briefing",),
         natural_examples=("每日简报", "市场简报"),
         agent_tools=("mcp__reveal__daily_briefing",),
         external_services=("market.finnhub", "market.yfinance", "database.app", "mcp.reveal"),
-        usage="/briefing",
+        usage="自动每日执行；也可自然语言请求市场简报。",
     ),
 )
 
@@ -567,21 +571,31 @@ def format_capability_catalog() -> str:
     return "\n".join(lines)
 
 
-def format_agent_tool_catalog() -> str:
+def format_agent_tool_catalog(
+    allowed_tools: list[str] | tuple[str, ...] | set[str] | None = None,
+) -> str:
+    allowed_tool_set = set(allowed_tools or [])
     lines = [
         "Reveal system capabilities:",
         "- 你知道所有 capability；只有 Agent MCP / built-in tools 里的名称可以真实调用。",
         "- 常用能力也有 slash command；如果用户要快速执行，可以建议或解释对应命令。",
         "- 带 side effects 的能力只有在用户明确表达意图时执行；"
-        "交易写入类能力不要通过 Agent 工具擅自执行。",
+        "交易写入类能力不要通过 Agent 工具擅自执行；持仓关注标记不是交易，但也必须用户明确要求。",
         "",
         "Built-in Agent tools:",
-        "- WebSearch: 搜索互联网，适合最新新闻、公司公告、市场观点。",
-        "- WebFetch: 抓取用户提供或搜索结果中的网页内容。",
-        "",
-        "Reveal MCP tools and capabilities:",
     ]
+    if not allowed_tool_set or "WebSearch" in allowed_tool_set:
+        lines.append("- WebSearch: 搜索互联网，适合最新新闻、公司公告、市场观点。")
+    if not allowed_tool_set or "WebFetch" in allowed_tool_set:
+        lines.append("- WebFetch: 抓取用户提供或搜索结果中的网页内容。")
+    if allowed_tool_set and not ({"WebSearch", "WebFetch"} & allowed_tool_set):
+        lines.append("- 当前工具画像未开放 built-in web tools。")
+    lines.extend(["", "Reveal MCP tools and capabilities:"])
     for cap in CAPABILITIES:
+        if allowed_tool_set and cap.agent_tools and not (set(cap.agent_tools) & allowed_tool_set):
+            continue
+        if allowed_tool_set and not cap.agent_tools and not cap.slash_commands:
+            continue
         command = ", ".join(f"/{cmd}" for cmd in cap.slash_commands) or "-"
         tools = ", ".join(cap.agent_tools) or "not directly callable"
         args = ", ".join(cap.required_args) or "none"

@@ -17,6 +17,7 @@ from server.bot.base import BotAdapter
 from server.db.engine import get_session_factory
 from server.db.models import SocialPost, TwitterState
 from server.db.time import assume_utc, to_naive_utc, utc_now_naive
+from server.social.impact import build_personal_impact_lines
 from server.social.relevance import (
     agent_market_relevance,
     group_similar_social_posts,
@@ -1056,6 +1057,12 @@ async def _build_tweet_card(
         elements.extend([{"tag": "hr"}, _md_div(match_text)])
         sections.append(match_text)
 
+        impact_lines = cross_ref.get("impact_lines") or []
+        if impact_lines:
+            impact_text = "**对持仓/关注的影响**\n" + "\n".join(str(line) for line in impact_lines)
+            elements.extend([{"tag": "hr"}, _md_div(impact_text)])
+            sections.append(impact_text)
+
     if post.media:
         media_elements, media_section = await _tweet_media_card_elements(post.media, adapter)
         if media_elements:
@@ -1114,6 +1121,11 @@ def _build_tweet_topic_card(
     viewpoint = _topic_viewpoint_text(posts, cross_ref or {})
     elements.extend([{"tag": "hr"}, _md_div(viewpoint)])
     sections.append(viewpoint)
+
+    impact_text = _topic_impact_text(posts, cross_ref or {})
+    if impact_text:
+        elements.extend([{"tag": "hr"}, _md_div(impact_text)])
+        sections.append(impact_text)
 
     reference_text = _topic_reference_text(posts)
     if reference_text:
@@ -1198,6 +1210,23 @@ def _topic_viewpoint_text(posts: list[SocialPost], cross_ref: dict[int, dict]) -
                 suffix_parts.append(f"关联: {match['matches']}")
         suffix = f" ({' · '.join(suffix_parts)})" if suffix_parts else ""
         lines.append(f"- {author}: {_trim_text(view, 180)}{suffix}")
+    return "\n".join(lines)
+
+
+def _topic_impact_text(posts: list[SocialPost], cross_ref: dict[int, dict]) -> str:
+    lines = ["**对持仓/关注的影响**"]
+    seen: set[str] = set()
+    for post in posts:
+        if not post.id:
+            continue
+        match = cross_ref.get(post.id) or {}
+        for line in match.get("impact_lines") or []:
+            if line in seen:
+                continue
+            seen.add(line)
+            lines.append(str(line))
+    if len(lines) == 1:
+        return ""
     return "\n".join(lines)
 
 
@@ -1481,7 +1510,11 @@ async def _cross_reference_posts(posts: list[SocialPost]) -> dict[int, dict]:
     all_tickers: set[str] = set()
     for post in posts:
         if post.mentioned_tickers:
-            all_tickers.update(str(t) for t in post.mentioned_tickers)
+            all_tickers.update(
+                ticker
+                for ticker in (_normalize_cross_ref_ticker(t) for t in post.mentioned_tickers)
+                if ticker
+            )
     if not all_tickers:
         return {}
 
@@ -1493,61 +1526,146 @@ async def _cross_reference_posts(posts: list[SocialPost]) -> dict[int, dict]:
         trades = await get_trades_for_period("all")
         for trade in trades:
             if trade.exit_price is None:
-                held_tickers.add(trade.ticker)
+                ticker = _normalize_cross_ref_ticker(trade.ticker)
+                if not ticker:
+                    continue
+                held_tickers.add(ticker)
+
                 unrealized = (0.0 - trade.entry_price) * trade.quantity
                 try:
                     from server.stock.data import get_current_price
 
-                    price = await get_current_price(trade.ticker)
+                    price = await get_current_price(ticker)
                     if price:
                         unrealized = (price - trade.entry_price) * trade.quantity
                         if trade.direction == "short":
                             unrealized = -unrealized
                 except Exception:
-                    logger.exception(
-                        "Cross-reference position price fetch failed for {}", trade.ticker
-                    )
-                position_info[trade.ticker] = (
-                    f"{trade.ticker} (持有 {trade.quantity} 股, 浮盈 ${unrealized:+,.0f})"
+                    logger.exception("Cross-reference position price fetch failed for {}", ticker)
+                position_info[ticker] = (
+                    f"{ticker} (持有 {trade.quantity} 股, 浮盈 ${unrealized:+,.0f})"
                 )
     except Exception:
         logger.exception("Cross-reference portfolio fetch failed")
+
+    marker_tickers: set[str] = set()
+    try:
+        from server.portfolio.markers import get_portfolio_holding_marker_tickers
+
+        marker_tickers = {
+            ticker
+            for ticker in (
+                _normalize_cross_ref_ticker(t) for t in await get_portfolio_holding_marker_tickers()
+            )
+            if ticker
+        }
+        for ticker in marker_tickers - held_tickers:
+            position_info[ticker] = f"{ticker} (持仓关注标记，未记录数量/成本)"
+    except Exception:
+        logger.exception("Cross-reference portfolio marker fetch failed")
 
     tracked_tickers: set[str] = set()
     try:
         from server.stock.tracker import get_active_tickers
 
-        tracked_tickers = set(await get_active_tickers())
+        tracked_tickers = {
+            ticker
+            for ticker in (_normalize_cross_ref_ticker(t) for t in await get_active_tickers())
+            if ticker
+        }
     except Exception:
         logger.exception("Cross-reference tracked tickers fetch failed")
+
+    manual_watchlist: set[str] = set()
+    try:
+        from server.stock.watchlist import get_manual_stock_watch_tickers
+
+        manual_watchlist = {
+            ticker
+            for ticker in (
+                _normalize_cross_ref_ticker(t) for t in await get_manual_stock_watch_tickers()
+            )
+            if ticker
+        }
+    except Exception:
+        logger.exception("Cross-reference manual watchlist fetch failed")
 
     watchlist: set[str] = set()
     try:
         from server.stock.scanner import DEFAULT_WATCHLIST
 
-        watchlist = set(DEFAULT_WATCHLIST)
+        watchlist = {
+            ticker
+            for ticker in (_normalize_cross_ref_ticker(t) for t in DEFAULT_WATCHLIST)
+            if ticker
+        }
     except Exception:
         logger.exception("Cross-reference default watchlist fetch failed")
 
-    user_tickers = held_tickers | tracked_tickers | watchlist
+    user_tickers = held_tickers | marker_tickers | tracked_tickers | manual_watchlist | watchlist
 
     result: dict[int, dict] = {}
     for post in posts:
         if not post.mentioned_tickers or not post.id:
             continue
-        overlap = {str(t) for t in post.mentioned_tickers} & user_tickers
+        post_tickers = {
+            ticker
+            for ticker in (_normalize_cross_ref_ticker(t) for t in post.mentioned_tickers)
+            if ticker
+        }
+        overlap = post_tickers & user_tickers
         if not overlap:
             continue
-        parts = []
+        parts: list[str] = []
+        items: list[dict[str, str]] = []
         for ticker in sorted(overlap):
             if ticker in position_info:
-                parts.append(position_info[ticker])
+                detail = position_info[ticker]
+                item = {
+                    "ticker": ticker,
+                    "relation": "holding",
+                    "label": "持仓",
+                    "detail": detail,
+                }
+                parts.append(detail)
             elif ticker in tracked_tickers:
-                parts.append(f"{ticker} (追踪中)")
+                item = {
+                    "ticker": ticker,
+                    "relation": "tracking",
+                    "label": "追踪中",
+                    "detail": f"{ticker} (追踪中)",
+                }
+                parts.append(item["detail"])
+            elif ticker in manual_watchlist:
+                item = {
+                    "ticker": ticker,
+                    "relation": "watchlist",
+                    "label": "观察列表",
+                    "detail": f"{ticker} (观察列表)",
+                }
+                parts.append(item["detail"])
             else:
-                parts.append(f"{ticker} (关注列表)")
-        result[post.id] = {"matches": ", ".join(parts[:5])}
+                item = {
+                    "ticker": ticker,
+                    "relation": "default_watchlist",
+                    "label": "默认池",
+                    "detail": f"{ticker} (默认池)",
+                }
+                parts.append(item["detail"])
+            items.append(item)
+
+        impact_items = [item for item in items if item["relation"] != "default_watchlist"]
+        result[post.id] = {
+            "matches": ", ".join(parts[:5]),
+            "items": items,
+            "impact_lines": build_personal_impact_lines(post, impact_items),
+        }
     return result
+
+
+def _normalize_cross_ref_ticker(value: object) -> str:
+    ticker = str(value or "").strip().upper().lstrip("$")
+    return ticker if re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker) else ""
 
 
 async def _push_card_to_admin(adapter: BotAdapter, card: dict) -> list[tuple[str, str]]:

@@ -89,7 +89,7 @@ Reveal 的系统能力分为四层，`CapabilitySpec` 是事实源：
 - **Capability**：产品能力定义，例如 `stock.quote`、`twitter.watch`、`journal.view`。每个能力声明标题、类型、参数、slash command、自然语言示例、Agent MCP 工具、依赖的三方服务和副作用。
 - **System tool / workflow / skill**：能力的实现层。确定性读工具复用 `server/capabilities/*` 的函数；多步任务通过 command handler 或 Claude Agent SDK 调度。
 - **Agent MCP tool**：Agent 可真实调用的执行入口，例如 `mcp__reveal__stock_quote`、`mcp__reveal__twitter_watch_list`、`mcp__reveal__pnl_summary`。这些工具全部由 `server/mcp.py` 包装同一批 capability 函数。
-- **Slash command**：常用能力的快捷入口，例如 `/quote`、`/x`、`/research`。slash command 不是另一套业务逻辑，只是 capability 的快速调用路径。
+- **Slash command**：少量高频入口，例如 `/x`、`/stock`、`/research`。slash command 不是另一套业务逻辑，只是 capability 的快速调用路径；低频查询优先通过自然语言交给 Agent。
 - **External service API**：能力背后的服务，例如 Feishu、Telegram、DeepSeek、Finnhub、yfinance、X GraphQL、vxTwitter、Postgres/SQLite。
 
 代码层次：
@@ -180,13 +180,11 @@ Bot 命令默认只允许配置的管理员 chat 使用。至少配置一个：
 /x add @elonmusk
 /x del @elonmusk
 /x check
-/digest
-/summary @elonmusk
 ```
 
 首次添加账号后会立即检查一次，最多推送最近 10 条推文；列表接口已经返回的内容都会缓存。之后按 `TWITTER_MONITOR_INTERVAL` 增量检查新推文，默认每 3600 秒一次。飞书/Telegram 是主交互入口：系统会推送可操作研究卡片，完整正文、外链、媒体和引用信息保存在 Reveal 数据库中。
 
-`TWITTER_DIGEST_ENABLED=true` 时，Reveal 会按 `TWITTER_DIGEST_TIME` 和 `TWITTER_DIGEST_TIMEZONE` 自动发送昨日 Twitter 关注日报。也可以手动用 `/digest` 生成关注账号日报，或用 `/summary @user [YYYY-MM-DD]` 查看单个账号日报。
+`TWITTER_DIGEST_ENABLED=true` 时，Reveal 会按 `TWITTER_DIGEST_TIME` 和 `TWITTER_DIGEST_TIMEZONE` 自动发送昨日 Twitter 关注日报。也可以直接用自然语言询问“总结 @user 昨天发了什么”。
 
 收到提醒后，优先直接回复那张推送卡片并 @Reveal 继续提问。Reveal 会根据被回复的卡片自动绑定这条 Twitter/X 更新并建立研究话题。
 
@@ -196,8 +194,8 @@ Bot 命令默认只允许配置的管理员 chat 使用。至少配置一个：
 
 ```text
 /research POST_ID [研究重点]  # 建立研究话题
-/deep POST_ID [研究重点]      # 让 Agent 主动深挖
-/ask POST_ID 问题            # 基于这条更新直接追问
+/topic summary               # 汇总当前话题
+/topic stop                  # 结束当前话题
 ```
 
 `/research` 建立话题后，直接发送普通消息就会进入当前研究话题；用 `/topic summary` 汇总，用 `/topic stop` 结束。
@@ -207,8 +205,6 @@ Bot 命令默认只允许配置的管理员 chat 使用。至少配置一个：
 每条 Twitter/X 推送都会绑定到一个稳定的消息 ID。直接回复卡片是主路径，也可以用命令手动指定：
 
 ```text
-/deep POST_ID [研究重点]
-/ask POST_ID 问题
 /research POST_ID [研究重点]
 /topic start POST_ID [研究重点]
 ```
@@ -216,13 +212,11 @@ Bot 命令默认只允许配置的管理员 chat 使用。至少配置一个：
 也可以用 `latest` 指向最近一条更新：
 
 ```text
-/deep latest
-/ask latest 这条消息对 NVDA 有什么影响？
 /research latest AI 基建
 /topic start latest AI 基建
 ```
 
-`/deep` 会通过 Claude Agent SDK 调用 DeepSeek，并让 agent 使用 WebSearch/WebFetch 对原推、引用推、外部链接和外部证据做深度解析。`/research` 和 `/topic start` 都会开启一个绑定到该消息的研究线程，之后可以直接发送普通消息继续追问；用 `/topic summary` 汇总当前线程，用 `/topic stop` 结束线程。
+`/research` 和 `/topic start` 会通过 Claude Agent SDK 调用 DeepSeek，并让 Agent 使用 WebSearch/WebFetch 对原推、引用推、外部链接和外部证据做深度解析。它们会开启一个绑定到该消息的研究线程，之后可以直接发送普通消息继续追问；用 `/topic summary` 汇总当前线程，用 `/topic stop` 结束线程。
 
 Deep research 不再维护 Reveal 自己的 Google/SearXNG/Brave planner 或抓取 runtime。Reveal 只保存研究线程状态，把联网搜索、页面读取和多轮工具循环交给 Claude Agent SDK。
 

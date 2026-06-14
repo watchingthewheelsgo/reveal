@@ -121,6 +121,33 @@ class ClaudeSdkRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(options.env["ANTHROPIC_MODEL"], "native-model")
         self.assertEqual(options.env["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "native-haiku")
 
+    async def test_run_agent_trims_tools_by_task_profile(self):
+        captured = {}
+
+        async def fake_query(prompt, options):
+            captured["options"] = options
+            yield ResultMessage(
+                subtype="success",
+                duration_ms=1,
+                duration_api_ms=1,
+                is_error=False,
+                num_turns=1,
+                session_id="result-session",
+                result="system status",
+            )
+
+        with patch("server.research.claude_sdk_runtime.query", new=fake_query):
+            await run_agent("系统状态", tool_profile="system_ops")
+
+        options = captured["options"]
+        self.assertEqual(options.tools, [])
+        self.assertNotIn("WebSearch", options.allowed_tools)
+        self.assertNotIn("WebFetch", options.allowed_tools)
+        self.assertNotIn("mcp__reveal__stock_quote", options.allowed_tools)
+        self.assertIn("mcp__reveal__system_status", options.allowed_tools)
+        self.assertIn("mcp__reveal__alert_status", options.allowed_tools)
+        self.assertIn("system_ops", options.system_prompt)
+
     async def test_run_agent_records_plan_trace(self):
         async def fake_query(prompt, options):
             yield AssistantMessage(
@@ -187,6 +214,26 @@ class ClaudeSdkRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 await run_agent("research this")
 
         self.assertIn("认证失败", ctx.exception.user_message)
+        self.assertIn("原因: authentication failed", ctx.exception.user_message)
+
+    async def test_run_agent_maps_tool_errors_to_actionable_message(self):
+        async def fake_query(prompt, options):
+            yield ResultMessage(
+                subtype="error",
+                duration_ms=1,
+                duration_api_ms=1,
+                is_error=True,
+                num_turns=1,
+                session_id="result-session",
+                result="Reveal MCP tool stock_quote failed: upstream timeout",
+            )
+
+        with patch("server.research.claude_sdk_runtime.query", new=fake_query):
+            with self.assertRaises(AgentRuntimeError) as ctx:
+                await run_agent("research this")
+
+        self.assertIn("工具调用失败", ctx.exception.user_message)
+        self.assertIn("原因:", ctx.exception.user_message)
 
     async def test_run_agent_returns_partial_answer_when_max_turns_reached(self):
         async def fake_query(prompt, options):

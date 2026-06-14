@@ -26,15 +26,17 @@ from config.settings import get_settings
 from server.capabilities.registry import (
     BUILTIN_AGENT_TOOLS,
     DISALLOWED_LOCAL_TOOLS,
-    agent_allowed_tools,
     agent_mcp_tool_names,
-    format_agent_tool_catalog,
 )
 from server.research.agent_plan import AgentRunPlan, new_agent_run_plan
+from server.research.prompts import (
+    AgentToolProfile,
+    agent_system_prompt,
+    allowed_tools_for_profile,
+)
 from server.research.sdk_mcp import build_reveal_sdk_mcp_server
 
 REVEAL_MCP_TOOLS = agent_mcp_tool_names()
-AGENT_ALLOWED_TOOLS = agent_allowed_tools()
 AgentEffort = Literal["low", "medium", "high", "xhigh", "max"]
 ProgressCallback = Callable[[str, str], Awaitable[None]]
 
@@ -60,10 +62,12 @@ async def run_agent(
     prompt: str,
     resume: str | None = None,
     on_progress: ProgressCallback | None = None,
+    tool_profile: AgentToolProfile = "research",
     _retrying_pseudo_tools: bool = False,
 ) -> AgentRunResult:
     settings = get_settings()
-    plan = new_agent_run_plan(prompt, resume=resume, allowed_tools=AGENT_ALLOWED_TOOLS)
+    allowed_tools = allowed_tools_for_profile(tool_profile)
+    plan = new_agent_run_plan(prompt, resume=resume, allowed_tools=allowed_tools)
     plan.start()
     token = settings.get_agent_auth_token()
     if not token:
@@ -92,8 +96,8 @@ async def run_agent(
     }
 
     options = ClaudeAgentOptions(
-        tools=BUILTIN_AGENT_TOOLS,
-        allowed_tools=AGENT_ALLOWED_TOOLS,
+        tools=[tool for tool in BUILTIN_AGENT_TOOLS if tool in allowed_tools],
+        allowed_tools=allowed_tools,
         disallowed_tools=DISALLOWED_LOCAL_TOOLS,
         strict_mcp_config=True,
         mcp_servers={"reveal": build_reveal_sdk_mcp_server()},
@@ -107,18 +111,7 @@ async def run_agent(
         setting_sources=[],
         # Claude Code bare mode omits built-in WebSearch/WebFetch from the tool context.
         extra_args={},
-        system_prompt=(
-            "你是 Reveal 美股交易助手的研究代理。\n\n"
-            f"{format_agent_tool_catalog()}\n\n"
-            "工作原则:\n"
-            "1. 先用内部工具 (stock_quote, technical_analysis 等) 获取精确数据\n"
-            "2. 再用 WebSearch/WebFetch 补充最新信息和外部观点\n"
-            "3. 结合用户持仓 (portfolio) 给出个性化建议\n"
-            "4. 区分事实、推断和不确定性\n"
-            "5. 输出中文，末尾列出来源 URL\n"
-            "6. 不要读取本地文件、运行命令或修改文件\n"
-            "7. 必须通过真实工具调用获取数据；不要在正文中输出 JSON 形式的 tool/arguments 伪调用。"
-        ),
+        system_prompt=agent_system_prompt(allowed_tools, tool_profile),
     )
 
     answer_parts: list[str] = []
@@ -128,11 +121,12 @@ async def run_agent(
     result_error: str | None = None
     tool_use_count = 0
     logger.info(
-        "Research agent run start: resume={} model={} max_turns={} tools={}",
+        "Research agent run start: resume={} model={} max_turns={} profile={} tools={}",
         bool(resume),
         model,
         settings.agent_max_turns,
-        AGENT_ALLOWED_TOOLS,
+        tool_profile,
+        allowed_tools,
     )
 
     try:
@@ -235,6 +229,7 @@ async def run_agent(
                 retry_prompt,
                 resume=resume,
                 on_progress=on_progress,
+                tool_profile=tool_profile,
                 _retrying_pseudo_tools=True,
             )
         plan.fail("Agent returned pseudo tool-call JSON instead of executing tools.")
@@ -355,16 +350,41 @@ def _partial_answer_from_max_turns(
 
 
 def _user_message_for_text(text: str) -> str:
+    title, action = _classify_agent_error(text)
+    reason = _compact_error_reason(text)
+    if reason:
+        return f"{title}。建议: {action}。原因: {reason}"
+    return f"{title}。建议: {action}。"
+
+
+def _classify_agent_error(text: str) -> tuple[str, str]:
     normalized = text.lower()
     if "authentication" in normalized or "401" in normalized or "auth" in normalized:
-        return "研究 Agent 认证失败，请检查 DeepSeek API Key。"
+        return "研究 Agent 认证失败", "检查 ANTHROPIC_AUTH_TOKEN 或 DEEPSEEK_API_KEY"
     if "rate limit" in normalized or "429" in normalized:
-        return "研究 Agent 触发限流，请稍后重试。"
+        return "研究 Agent 触发限流", "稍后重试，或降低并发和请求频率"
     if "billing" in normalized or "payment" in normalized or "402" in normalized:
-        return "研究 Agent 计费状态异常，请检查 DeepSeek 账户。"
+        return "研究 Agent 计费状态异常", "检查模型账户余额、账单或额度"
     if "resume" in normalized or "session" in normalized:
-        return "研究 Agent 会话恢复失败，请重新发起这次研究。"
-    return "研究 Agent 执行失败，请稍后重试。"
+        return "研究 Agent 会话恢复失败", "在本话题重新发送问题，系统会重建上下文"
+    if "not found" in normalized or "claude code cli" in normalized:
+        return "研究 Agent 运行环境不可用", "检查 Docker 镜像是否包含 Claude Code runtime"
+    if "tool" in normalized or "mcp" in normalized:
+        return "研究 Agent 工具调用失败", "重试或把问题拆成更具体的操作"
+    if "timeout" in normalized or "timed out" in normalized:
+        return "研究 Agent 上游请求超时", "稍后重试，必要时缩小问题范围"
+    if "connection" in normalized or "network" in normalized or "dns" in normalized:
+        return "研究 Agent 网络连接失败", "检查服务器网络和上游 API 可用性"
+    return "研究 Agent 执行失败", "稍后重试；如果持续失败，请查看服务日志"
+
+
+def _compact_error_reason(text: str, limit: int = 220) -> str:
+    clean = " ".join(str(text or "").split())
+    if not clean:
+        return ""
+    if len(clean) <= limit:
+        return clean
+    return clean[: limit - 1].rstrip() + "..."
 
 
 def _looks_like_pseudo_tool_call_answer(text: str) -> bool:

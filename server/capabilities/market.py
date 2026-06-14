@@ -92,16 +92,18 @@ async def get_stock_score_payload(ticker: str) -> dict[str, Any] | None:
 async def get_portfolio_payload() -> list[dict[str, Any]]:
     from server.stock.data import get_current_price
 
+    trades = []
     try:
         from server.journal.service import get_trades_for_period
 
         trades = await get_trades_for_period("all")
     except Exception:
         logger.exception("Portfolio trade fetch failed")
-        return []
 
     positions = []
+    real_position_tickers: set[str] = set()
     for trade in [item for item in trades if item.exit_price is None]:
+        real_position_tickers.add(str(trade.ticker).upper())
         current = trade.entry_price
         try:
             price = await get_current_price(trade.ticker)
@@ -120,9 +122,35 @@ async def get_portfolio_payload() -> list[dict[str, Any]]:
                 "entry_price": trade.entry_price,
                 "current_price": current,
                 "unrealized_pnl": unrealized,
+                "portfolio_marker": False,
                 "trade_date": trade.trade_date.isoformat() if trade.trade_date else None,
             }
         )
+
+    try:
+        from server.portfolio.markers import get_portfolio_holding_markers
+
+        markers = await get_portfolio_holding_markers()
+        for marker in markers:
+            if marker.ticker in real_position_tickers:
+                continue
+            positions.append(
+                {
+                    "ticker": marker.ticker,
+                    "direction": "holding_marker",
+                    "quantity": None,
+                    "entry_price": None,
+                    "current_price": None,
+                    "unrealized_pnl": None,
+                    "portfolio_marker": True,
+                    "note": marker.note,
+                    "trade_date": None,
+                    "created_at": marker.created_at.isoformat() if marker.created_at else None,
+                }
+            )
+    except Exception:
+        logger.exception("Portfolio marker fetch failed")
+
     return positions
 
 
@@ -225,11 +253,14 @@ def format_portfolio(positions: list[dict[str, Any]]) -> str:
         return "*当前持仓*\n\n当前无未平仓持仓。"
     lines = ["*当前持仓*", ""]
     for item in positions[:20]:
-        lines.append(
-            f"- {item['ticker']} {item['direction']} "
-            f"qty={item['quantity']} entry=${item['entry_price']:.2f} "
-            f"current=${item['current_price']:.2f} pnl=${item['unrealized_pnl']:+.2f}"
-        )
+        if item.get("portfolio_marker"):
+            lines.append(f"- {item['ticker']} 持仓关注标记（不代表真实交易，不记录数量/成本）")
+        else:
+            lines.append(
+                f"- {item['ticker']} {item['direction']} "
+                f"qty={item['quantity']} entry=${item['entry_price']:.2f} "
+                f"current=${item['current_price']:.2f} pnl=${item['unrealized_pnl']:+.2f}"
+            )
     return "\n".join(lines)
 
 

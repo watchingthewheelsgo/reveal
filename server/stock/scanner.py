@@ -170,6 +170,6 @@ def format_pick_message(pick: dict) -> str:
             lines.append(f"      _{detail['reason']}_")
 
     lines.append("")
-    lines.append(f"📝 追踪 30 天 /track {pick['ticker']}")
+    lines.append(f"📝 已纳入 30 天追踪；可直接询问“{pick['ticker']} 追踪情况”。")
 
     return "\n".join(lines)

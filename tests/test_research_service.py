@@ -85,6 +85,7 @@ class ResearchServiceTest(unittest.IsolatedAsyncioTestCase):
             prompt: str,
             resume: str | None = None,
             on_progress=None,
+            tool_profile=None,
         ) -> AgentRunResult:
             calls.append((prompt, resume))
             return AgentRunResult("agent answer", "agent-session-1")
@@ -127,6 +128,7 @@ class ResearchServiceTest(unittest.IsolatedAsyncioTestCase):
             prompt: str,
             resume: str | None = None,
             on_progress=None,
+            tool_profile=None,
         ) -> AgentRunResult:
             calls.append((prompt, resume))
             return AgentRunResult("agent answer", "agent-session-market-skill")
@@ -153,6 +155,7 @@ class ResearchServiceTest(unittest.IsolatedAsyncioTestCase):
             prompt: str,
             resume: str | None = None,
             on_progress=None,
+            tool_profile=None,
         ) -> AgentRunResult:
             calls.append((prompt, resume))
             return AgentRunResult("LLM answer", "agent-session-2")
@@ -191,14 +194,15 @@ class ResearchServiceTest(unittest.IsolatedAsyncioTestCase):
         post_id = await self.create_post()
         topic = await start_topic("chat-1", str(post_id), "AI infra")
         agent_session = await start_agent_session("chat-1", "加上 @aleabitoreddit")
-        calls: list[tuple[str, str | None]] = []
+        calls: list[tuple[str, str | None, str | None]] = []
 
         async def fake_run_agent(
             prompt: str,
             resume: str | None = None,
             on_progress=None,
+            tool_profile=None,
         ) -> AgentRunResult:
-            calls.append((prompt, resume))
+            calls.append((prompt, resume, tool_profile))
             return AgentRunResult("watch list updated", "agent-session-top")
 
         with patch("server.research.service.run_agent", new=fake_run_agent):
@@ -207,6 +211,7 @@ class ResearchServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(answer, "watch list updated")
         self.assertEqual(len(calls), 1)
         self.assertIn("Twitter watch list", calls[0][0])
+        self.assertEqual(calls[0][2], "social_ops")
 
         session_factory = get_session_factory()
         async with session_factory() as session:
@@ -241,6 +246,7 @@ class ResearchServiceTest(unittest.IsolatedAsyncioTestCase):
             prompt: str,
             resume: str | None = None,
             on_progress=None,
+            tool_profile=None,
         ) -> AgentRunResult:
             raise AgentRuntimeError("authentication failed", "研究 Agent 认证失败")
 
@@ -274,6 +280,7 @@ class ResearchServiceTest(unittest.IsolatedAsyncioTestCase):
             prompt: str,
             resume: str | None = None,
             on_progress=None,
+            tool_profile=None,
         ) -> AgentRunResult:
             calls.append((prompt, resume))
             if resume == "stale-session":
@@ -320,6 +327,7 @@ class ResearchServiceTest(unittest.IsolatedAsyncioTestCase):
             prompt: str,
             resume: str | None = None,
             on_progress=None,
+            tool_profile=None,
         ) -> AgentRunResult:
             calls.append((prompt, resume))
             return AgentRunResult("first topic answer", "agent-session-first")
@@ -375,6 +383,7 @@ class ResearchServiceTest(unittest.IsolatedAsyncioTestCase):
             prompt: str,
             resume: str | None = None,
             on_progress=None,
+            tool_profile=None,
         ) -> AgentRunResult:
             calls.append((prompt, resume))
             if resume == "stale-session":

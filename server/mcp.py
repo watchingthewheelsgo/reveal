@@ -87,6 +87,27 @@ async def portfolio() -> str:
 
 
 @mcp.tool()
+async def portfolio_holding_add(ticker: str, note: str = "") -> str:
+    """记录持仓关注标记：只保存 ticker，不保存数量/成本，不代表真实交易。"""
+    from server.portfolio.markers import add_portfolio_holding_marker
+
+    await _ensure_database()
+    return json.dumps(
+        await add_portfolio_holding_marker(ticker, note=note or None),
+        ensure_ascii=False,
+    )
+
+
+@mcp.tool()
+async def portfolio_holding_remove(ticker: str) -> str:
+    """移除持仓关注标记；不会影响真实交易日记中的买入/做空记录。"""
+    from server.portfolio.markers import remove_portfolio_holding_marker
+
+    await _ensure_database()
+    return json.dumps(await remove_portfolio_holding_marker(ticker), ensure_ascii=False)
+
+
+@mcp.tool()
 async def research_history(ticker: str, limit: int = 5) -> str:
     """查找过去关于某只股票的研究结论。"""
     from server.capabilities.market import get_research_history_payload
