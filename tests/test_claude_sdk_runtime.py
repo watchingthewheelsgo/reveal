@@ -121,7 +121,7 @@ class ClaudeSdkRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(options.env["ANTHROPIC_MODEL"], "native-model")
         self.assertEqual(options.env["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "native-haiku")
 
-    async def test_run_agent_trims_tools_by_task_profile(self):
+    async def test_run_agent_exposes_full_tool_set_for_agent_planning(self):
         captured = {}
 
         async def fake_query(prompt, options):
@@ -137,16 +137,16 @@ class ClaudeSdkRuntimeTest(unittest.IsolatedAsyncioTestCase):
             )
 
         with patch("server.research.claude_sdk_runtime.query", new=fake_query):
-            await run_agent("系统状态", tool_profile="system_ops")
+            await run_agent("系统状态")
 
         options = captured["options"]
-        self.assertEqual(options.tools, [])
-        self.assertNotIn("WebSearch", options.allowed_tools)
-        self.assertNotIn("WebFetch", options.allowed_tools)
-        self.assertNotIn("mcp__reveal__stock_quote", options.allowed_tools)
+        self.assertEqual(options.tools, ["WebSearch", "WebFetch"])
+        self.assertIn("WebSearch", options.allowed_tools)
+        self.assertIn("WebFetch", options.allowed_tools)
+        self.assertIn("mcp__reveal__stock_quote", options.allowed_tools)
         self.assertIn("mcp__reveal__system_status", options.allowed_tools)
         self.assertIn("mcp__reveal__alert_status", options.allowed_tools)
-        self.assertIn("system_ops", options.system_prompt)
+        self.assertIn("先基于用户意图制定 plan", options.system_prompt)
 
     async def test_run_agent_records_plan_trace(self):
         async def fake_query(prompt, options):

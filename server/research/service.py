@@ -15,7 +15,6 @@ from server.research.claude_sdk_runtime import (
     run_agent,
 )
 from server.research.prompts import (
-    AgentToolProfile,
     agent_message_prompt,
     ask_prompt,
     deep_prompt,
@@ -25,7 +24,6 @@ from server.research.prompts import (
     resume_rebuild_freeform_prompt,
     resume_rebuild_prompt,
     ticker_prompt,
-    tool_profile_for_agent_message,
     topic_prompt,
 )
 
@@ -154,7 +152,6 @@ async def run_agent_session_message(
         None,
         agent_message_prompt(research_session, message, platform),
         on_progress=on_progress,
-        tool_profile=tool_profile_for_agent_message(message),
     )
     await _append_message(research_session.id, "user", message)
     await _append_message(research_session.id, "assistant", result.answer, result.agent_session_id)
@@ -296,7 +293,6 @@ async def handle_topic_message(
         post,
         prompt,
         on_progress=on_progress,
-        tool_profile=tool_profile_for_agent_message(message),
     )
     await _append_message(topic.id, "user", message)
     await _append_message(topic.id, "assistant", result.answer, result.agent_session_id)
@@ -421,10 +417,9 @@ async def _load_history(session_id: int, limit: int) -> list[ConversationMessage
 async def _run_new_agent(
     prompt: str,
     on_progress: ProgressCallback | None = None,
-    tool_profile: AgentToolProfile = "research",
 ) -> AgentRunResult:
     try:
-        return await run_agent(prompt, on_progress=on_progress, tool_profile=tool_profile)
+        return await run_agent(prompt, on_progress=on_progress)
     except AgentRuntimeError as exc:
         logger.exception("Agent runtime failed for new research session")
         raise ResearchError(exc.user_message) from exc
@@ -435,17 +430,15 @@ async def _run_agent_for_session(
     post: SocialPost | None,
     prompt: str,
     on_progress: ProgressCallback | None = None,
-    tool_profile: AgentToolProfile = "research",
 ) -> AgentRunResult:
     if not research_session.agent_session_id:
-        return await _run_new_agent(prompt, on_progress=on_progress, tool_profile=tool_profile)
+        return await _run_new_agent(prompt, on_progress=on_progress)
 
     try:
         return await run_agent(
             prompt,
             resume=research_session.agent_session_id,
             on_progress=on_progress,
-            tool_profile=tool_profile,
         )
     except AgentRuntimeError as exc:
         if not _should_rebuild_after_resume_error(exc):
@@ -467,12 +460,10 @@ async def _run_agent_for_session(
         return await _run_new_agent(
             resume_rebuild_prompt(post, history, prompt),
             on_progress=on_progress,
-            tool_profile=tool_profile,
         )
     return await _run_new_agent(
         resume_rebuild_freeform_prompt(research_session, history, prompt),
         on_progress=on_progress,
-        tool_profile=tool_profile,
     )
 
 

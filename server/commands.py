@@ -3,7 +3,6 @@ Bot command handlers shared across Telegram and Feishu.
 """
 
 import asyncio
-import re
 
 from loguru import logger
 
@@ -252,9 +251,6 @@ async def handle_plain_message(ctx: BotContext, adapter):
             if routed:
                 return
 
-        if await _try_handle_lightweight_message(ctx, adapter, text):
-            return
-
         reply_anchor = ctx.reply_to_message_id or ctx.message_id
         _spawn_background_task(
             _run_agent_message_job(
@@ -270,80 +266,6 @@ async def handle_plain_message(ctx: BotContext, adapter):
     except Exception as e:
         logger.exception(f"Message handling failed: {e}")
         await adapter.send_message(ctx.chat_id, "❌ 消息处理失败。")
-
-
-async def _try_handle_lightweight_message(ctx: BotContext, adapter, text: str) -> bool:
-    normalized = text.lower().strip()
-    if normalized in {"help", "帮助", "命令", "怎么用"}:
-        await cmd_help(ctx, adapter)
-        return True
-    if _contains_any(normalized, {"状态", "系统状态", "服务状态", "status"}):
-        await cmd_status(ctx, adapter)
-        return True
-    if _contains_any(normalized, {"持仓", "仓位", "portfolio"}):
-        await cmd_portfolio(ctx, adapter)
-        return True
-
-    ticker = _extract_message_ticker(text)
-    if ticker is None:
-        return False
-    if _contains_any(normalized, {"现价", "价格", "多少钱", "报价", "quote", "price"}):
-        from server.capabilities.market import format_stock_quote, get_stock_quote_payload
-
-        await adapter.send_message(
-            ctx.chat_id,
-            format_stock_quote(await get_stock_quote_payload(ticker), ticker),
-        )
-        return True
-    if _contains_any(normalized, {"技术", "技术指标", "rsi", "均线", "macd", "technical"}):
-        from server.capabilities.market import (
-            format_technical_analysis,
-            get_technical_analysis_payload,
-        )
-
-        await adapter.send_message(
-            ctx.chat_id,
-            format_technical_analysis(await get_technical_analysis_payload(ticker), ticker),
-        )
-        return True
-    if _contains_any(normalized, {"新闻", "消息", "news"}) and not _contains_any(
-        normalized,
-        {"分析", "研究", "影响", "怎么看", "为什么", "research"},
-    ):
-        from server.capabilities.market import format_stock_news, get_stock_news_payload
-
-        await adapter.send_message(
-            ctx.chat_id,
-            format_stock_news(await get_stock_news_payload(ticker, limit=8), ticker),
-        )
-        return True
-    return False
-
-
-def _contains_any(text: str, tokens: set[str]) -> bool:
-    return any(token in text for token in tokens)
-
-
-def _extract_message_ticker(text: str) -> str | None:
-    stopwords = {
-        "HELP",
-        "STATUS",
-        "PORTFOLIO",
-        "PRICE",
-        "QUOTE",
-        "NEWS",
-        "TECH",
-        "TECHNICAL",
-        "ANALYSIS",
-        "RESEARCH",
-        "WATCH",
-        "LIST",
-    }
-    for token in re.findall(r"\$?[A-Za-z][A-Za-z0-9.\-]{0,9}", text):
-        ticker = token.upper().lstrip("$")
-        if ticker not in stopwords and _looks_like_ticker(ticker):
-            return ticker
-    return None
 
 
 async def _route_bound_reply(ctx: BotContext, adapter, text: str) -> bool:

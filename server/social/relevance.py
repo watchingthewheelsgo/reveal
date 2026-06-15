@@ -1,4 +1,4 @@
-"""Market relevance and story grouping for social posts."""
+"""Agent relevance and story grouping for social posts."""
 
 from __future__ import annotations
 
@@ -8,176 +8,6 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from server.db.models import SocialPost
 from server.social.urls import normalize_x_url
-
-SOCIAL_RELEVANCE_KEYWORDS = frozenset(
-    {
-        "$",
-        "10-k",
-        "10-q",
-        "after-hours",
-        "ai capex",
-        "attack",
-        "bank",
-        "banking",
-        "bitcoin",
-        "bond",
-        "bonds",
-        "btc",
-        "buyback",
-        "cbo",
-        "ceasefire",
-        "central bank",
-        "ceo",
-        "china",
-        "congress",
-        "cpi",
-        "crypto",
-        "defense",
-        "department of defense",
-        "dollar",
-        "dow",
-        "drone",
-        "earnings",
-        "economy",
-        "election",
-        "equities",
-        "equity",
-        "executive order",
-        "export control",
-        "fed",
-        "fda",
-        "fomc",
-        "forex",
-        "futures",
-        "gaza",
-        "gdp",
-        "gold",
-        "guidance",
-        "inflation",
-        "ipo",
-        "iran",
-        "israel",
-        "jobs report",
-        "market",
-        "merger",
-        "military",
-        "missile",
-        "nasdaq",
-        "nato",
-        "oil",
-        "options",
-        "opec",
-        "palestine",
-        "payrolls",
-        "pce",
-        "pentagon",
-        "policy",
-        "politics",
-        "powell",
-        "president",
-        "ppi",
-        "premarket",
-        "rate cut",
-        "rate hike",
-        "recession",
-        "regulation",
-        "revenue",
-        "russia",
-        "s&p",
-        "sanction",
-        "sanctions",
-        "sec",
-        "senate",
-        "shares",
-        "sp500",
-        "stock",
-        "stocks",
-        "strike",
-        "supreme court",
-        "taiwan",
-        "tariff",
-        "tariffs",
-        "treasury",
-        "trump",
-        "ukraine",
-        "unemployment",
-        "vix",
-        "war",
-        "white house",
-        "yield",
-        "yields",
-        "上证",
-        "下跌",
-        "个股",
-        "中东",
-        "以色列",
-        "企业",
-        "估值",
-        "俄乌",
-        "俄罗斯",
-        "停火",
-        "关税",
-        "军事",
-        "军工",
-        "制裁",
-        "加息",
-        "北约",
-        "升息",
-        "原油",
-        "台海",
-        "国会",
-        "国债",
-        "国防",
-        "地缘",
-        "失业",
-        "总统",
-        "战争",
-        "指数",
-        "收益率",
-        "政策",
-        "政治",
-        "无人机",
-        "日本央行",
-        "暴涨",
-        "暴跌",
-        "期权",
-        "期货",
-        "板块",
-        "欧洲央行",
-        "比特币",
-        "油价",
-        "法案",
-        "港股",
-        "白宫",
-        "监管",
-        "石油",
-        "美国大选",
-        "美债",
-        "美军",
-        "美股",
-        "美元",
-        "联储",
-        "股价",
-        "股市",
-        "股票",
-        "英伟达",
-        "营收",
-        "衰退",
-        "议会",
-        "财报",
-        "财政",
-        "贸易",
-        "通胀",
-        "选举",
-        "道指",
-        "金融",
-        "降息",
-        "非农",
-        "韩国央行",
-        "预期",
-        "黄金",
-    }
-)
 
 SOCIAL_TOPIC_STOPWORDS = frozenset(
     {
@@ -240,7 +70,7 @@ def agent_market_relevance(post: SocialPost) -> bool | None:
 
     New rows store the explicit verdict in raw_json.reveal_analysis. Older rows
     did not have that field, so we infer only from Agent-derived structured
-    fields, never from the raw tweet body.
+    fields, never from raw tweet text.
     """
 
     analysis = _raw_agent_analysis(post)
@@ -250,19 +80,7 @@ def agent_market_relevance(post: SocialPost) -> bool | None:
     if not _has_legacy_agent_analysis(post):
         return None
 
-    if post.is_noteworthy or post.mentioned_tickers:
-        return True
-
-    agent_text = " ".join(
-        [
-            post.summary or "",
-            post.attention_reason or "",
-            " ".join(str(topic) for topic in (post.topics or [])),
-        ]
-    )
-    if post.urgency in {"high", "medium"} and contains_relevance_keyword(agent_text):
-        return True
-    return False
+    return bool(post.is_noteworthy or post.mentioned_tickers)
 
 
 def _raw_agent_analysis(post: SocialPost) -> dict[str, Any] | None:
@@ -282,13 +100,6 @@ def _has_legacy_agent_analysis(post: SocialPost) -> bool:
         or post.attention_reason
         or post.is_noteworthy
     )
-
-
-def contains_relevance_keyword(text: str) -> bool:
-    normalized = text.lower()
-    if re.search(r"\$[A-Z]{1,6}\b", text):
-        return True
-    return any(keyword_in_text(normalized, keyword) for keyword in SOCIAL_RELEVANCE_KEYWORDS)
 
 
 def social_post_search_text(post: SocialPost) -> str:
@@ -384,14 +195,6 @@ def story_fingerprint(post: SocialPost) -> dict[str, set[str]]:
 
 def tokenize_story_text(text: str) -> set[str]:
     tokens: set[str] = set()
-    normalized = text.lower()
-    for keyword in SOCIAL_RELEVANCE_KEYWORDS:
-        if (
-            len(keyword) >= 3
-            and keyword_in_text(normalized, keyword)
-            and keyword not in SOCIAL_TOPIC_STOPWORDS
-        ):
-            tokens.add(keyword)
 
     for raw in re.findall(r"\$?[A-Za-z][A-Za-z0-9&.-]{2,}", text):
         token = raw.strip("$").strip(".-").lower()
@@ -399,19 +202,21 @@ def tokenize_story_text(text: str) -> set[str]:
             continue
         tokens.add(token)
 
-    for raw in re.findall(r"[\u4e00-\u9fff]{2,8}", text):
-        if raw in SOCIAL_RELEVANCE_KEYWORDS:
-            tokens.add(raw)
+    for raw in re.findall(r"[\u4e00-\u9fff]{2,12}", text):
+        tokens.update(_cjk_story_tokens(raw))
     return tokens
 
 
-def keyword_in_text(normalized_text: str, keyword: str) -> bool:
-    if keyword == "$":
-        return "$" in normalized_text
-    if re.fullmatch(r"[a-z0-9&.-]+", keyword):
-        pattern = rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])"
-        return re.search(pattern, normalized_text) is not None
-    return keyword in normalized_text
+def _cjk_story_tokens(text: str) -> set[str]:
+    if len(text) < 2:
+        return set()
+    if len(text) <= 6:
+        return {text}
+    tokens: set[str] = set()
+    for size in (3, 4, 5):
+        for index in range(0, len(text) - size + 1):
+            tokens.add(text[index : index + size])
+    return tokens
 
 
 def canonical_story_url(url: str) -> str:

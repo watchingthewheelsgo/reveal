@@ -30,9 +30,8 @@ from server.capabilities.registry import (
 )
 from server.research.agent_plan import AgentRunPlan, new_agent_run_plan
 from server.research.prompts import (
-    AgentToolProfile,
+    agent_allowed_tools,
     agent_system_prompt,
-    allowed_tools_for_profile,
 )
 from server.research.sdk_mcp import build_reveal_sdk_mcp_server
 
@@ -62,11 +61,10 @@ async def run_agent(
     prompt: str,
     resume: str | None = None,
     on_progress: ProgressCallback | None = None,
-    tool_profile: AgentToolProfile = "research",
     _retrying_pseudo_tools: bool = False,
 ) -> AgentRunResult:
     settings = get_settings()
-    allowed_tools = allowed_tools_for_profile(tool_profile)
+    allowed_tools = agent_allowed_tools()
     plan = new_agent_run_plan(prompt, resume=resume, allowed_tools=allowed_tools)
     plan.start()
     token = settings.get_agent_auth_token()
@@ -111,7 +109,7 @@ async def run_agent(
         setting_sources=[],
         # Claude Code bare mode omits built-in WebSearch/WebFetch from the tool context.
         extra_args={},
-        system_prompt=agent_system_prompt(allowed_tools, tool_profile),
+        system_prompt=agent_system_prompt(allowed_tools),
     )
 
     answer_parts: list[str] = []
@@ -121,11 +119,10 @@ async def run_agent(
     result_error: str | None = None
     tool_use_count = 0
     logger.info(
-        "Research agent run start: resume={} model={} max_turns={} profile={} tools={}",
+        "Research agent run start: resume={} model={} max_turns={} tools={}",
         bool(resume),
         model,
         settings.agent_max_turns,
-        tool_profile,
         allowed_tools,
     )
 
@@ -229,7 +226,6 @@ async def run_agent(
                 retry_prompt,
                 resume=resume,
                 on_progress=on_progress,
-                tool_profile=tool_profile,
                 _retrying_pseudo_tools=True,
             )
         plan.fail("Agent returned pseudo tool-call JSON instead of executing tools.")

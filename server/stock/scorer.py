@@ -129,7 +129,7 @@ def score_fundamental(data: dict) -> tuple[float, str]:
 
 
 async def score_news_sentiment(ticker: str) -> tuple[float, str]:
-    """Score based on news volume and simple sentiment (0-1)."""
+    """Score based on recent news volume (0-1)."""
     from server.stock.data import fetch_news
 
     articles = await fetch_news(ticker, limit=10)
@@ -146,24 +146,6 @@ async def score_news_sentiment(ticker: str) -> tuple[float, str]:
         reasons.append("新闻活跃度高")
     elif recent_count >= 3:
         score += 0.08
-
-    # Check for positive keywords
-    positive_keywords = ["beat", "raise", "growth", "buyback", "upgrade", "breakthrough"]
-    negative_keywords = ["miss", "cut", "downgrade", "layoff", "lawsuit", "investigation"]
-
-    pos_count = 0
-    neg_count = 0
-    for a in articles:
-        text = (a.get("headline", "") + " " + a.get("summary", "")).lower()
-        pos_count += sum(1 for kw in positive_keywords if kw in text)
-        neg_count += sum(1 for kw in negative_keywords if kw in text)
-
-    if pos_count > neg_count:
-        score += 0.1
-        reasons.append("正面关键词占优")
-    elif neg_count > pos_count:
-        score -= 0.1
-        reasons.append("负面关键词偏多")
 
     return min(score, 1.0), "; ".join(reasons)
 

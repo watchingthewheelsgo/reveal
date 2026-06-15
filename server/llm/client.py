@@ -3,30 +3,11 @@ Multi-provider LLM client compatible with OpenAI SDK format.
 Supports DeepSeek, Qwen, OpenAI, and any OpenAI-compatible endpoint.
 """
 
-import json
-import re
-
 from loguru import logger
 from openai import AsyncOpenAI, AuthenticationError
 from openai.types.chat import ChatCompletionMessageParam
 
 from config.settings import get_settings
-
-_INTENT_SYSTEM_PROMPT = """判断用户消息的意图。返回严格的 JSON（不要 markdown 代码块）:
-{
-  "intent": "research" 或 "trade" 或 "question" 或 "status" 或 "chat",
-  "ticker": "NVDA" 或 null,
-  "query": "用户实际想问或研究的问题"
-}
-
-意图判定规则:
-- research: 需要深度分析、搜索外部信息的问题（如"帮我分析NVDA"、"美联储加息影响"）
-- trade: 用户想记录交易（如"买入AAPL 180 100股"、"卖出TSLA"）
-- question: 可以用已有数据快速回答的问题（如"NVDA现在多少钱"、"我的持仓"、"今天行情怎么样"）
-- status: 查看系统状态
-- chat: 日常对话、感谢、问候等
-
-如果消息提到具体股票 ticker 或公司名，在 ticker 字段填入对应 ticker。"""
 
 
 class LLMClient:
@@ -64,33 +45,6 @@ class LLMClient:
                 "DeepSeek authentication failed. Check DEEPSEEK_API_KEY or ANTHROPIC_AUTH_TOKEN."
             ) from exc
         return response.choices[0].message.content or ""
-
-    async def classify_intent(self, message: str) -> dict:
-        messages: list[ChatCompletionMessageParam] = [
-            {"role": "system", "content": _INTENT_SYSTEM_PROMPT},
-            {"role": "user", "content": message},
-        ]
-        raw = ""
-        try:
-            raw = await self.chat(messages, temperature=0, max_tokens=200)
-            cleaned = raw.strip()
-            if cleaned.startswith("```"):
-                lines = cleaned.split("\n")
-                lines = [line for line in lines if not line.strip().startswith("```")]
-                cleaned = "\n".join(lines)
-            return json.loads(cleaned)
-        except (json.JSONDecodeError, KeyError):
-            logger.exception(
-                "Intent classification parse failed; falling back to local classifier: raw={}",
-                raw[:200],
-            )
-            return classify_intent_locally(message)
-        except LLMAuthenticationError:
-            logger.exception(
-                "Intent classification disabled: LLM authentication failed. "
-                "Check DEEPSEEK_API_KEY or ANTHROPIC_AUTH_TOKEN."
-            )
-            return classify_intent_locally(message)
 
     async def translate(self, text: str, target_lang: str = "zh") -> str:
         messages: list[ChatCompletionMessageParam] = [
@@ -135,59 +89,6 @@ _llm_client: LLMClient | None = None
 
 class LLMAuthenticationError(RuntimeError):
     """Raised after the configured OpenAI-compatible key has failed authentication."""
-
-
-def classify_intent_locally(message: str) -> dict:
-    """Small deterministic fallback used when the lightweight LLM classifier is unavailable."""
-    text = message.strip()
-    lowered = text.lower()
-    ticker = _extract_ticker(text)
-
-    if any(keyword in lowered for keyword in {"status", "状态", "系统"}):
-        return {"intent": "status", "ticker": ticker, "query": text}
-
-    trade_keywords = {"买入", "卖出", "做空", "平仓", "trade", "buy", "sell"}
-    if any(keyword in lowered for keyword in trade_keywords):
-        return {"intent": "trade", "ticker": ticker, "query": text}
-
-    if ticker:
-        quick_keywords = {"价格", "多少钱", "现价", "当前", "quote", "price"}
-        if any(keyword in lowered for keyword in quick_keywords):
-            return {"intent": "question", "ticker": ticker, "query": text}
-        return {"intent": "research", "ticker": ticker, "query": text}
-
-    research_keywords = {
-        "分析",
-        "研究",
-        "深挖",
-        "怎么看",
-        "为什么",
-        "影响",
-        "财报",
-        "新闻",
-        "search",
-        "research",
-    }
-    if any(keyword in lowered for keyword in research_keywords):
-        return {"intent": "research", "ticker": None, "query": text}
-
-    question_keywords = {"持仓", "portfolio", "行情", "今天", "收益", "pnl", "盈亏"}
-    if any(keyword in lowered for keyword in question_keywords):
-        return {"intent": "question", "ticker": None, "query": text}
-
-    return {"intent": "chat", "ticker": None, "query": text}
-
-
-def _extract_ticker(message: str) -> str | None:
-    cashtag = re.search(r"\$([A-Za-z]{1,6})(?=\b)", message)
-    if cashtag:
-        return cashtag.group(1).upper()
-
-    for match in re.finditer(r"(?<![A-Za-z])([A-Z]{1,6})(?![A-Za-z])", message):
-        value = match.group(1).upper()
-        if value not in {"AI", "CEO", "CFO", "ETF", "IPO", "USD", "API", "LLM"}:
-            return value
-    return None
 
 
 def get_llm_client() -> LLMClient | None:

@@ -9,7 +9,6 @@ from pydantic import ValidationError
 from config.settings import Settings
 from server.bot.base import BotAdapter, BotContext, CommandRouter
 from server.commands import cmd_research, handle_plain_message, register_all_commands
-from server.llm.client import classify_intent_locally
 
 
 class SettingsTest(unittest.TestCase):
@@ -245,54 +244,36 @@ class CommandRouterTest(unittest.TestCase):
         self.assertEqual(adapter.messages, [("chat-1", "未授权访问。")])
 
 
-class IntentFallbackTest(unittest.TestCase):
-    def test_stock_message_routes_to_research(self):
-        intent = classify_intent_locally("看看今天MRVL 股票")
-
-        self.assertEqual(intent["intent"], "research")
-        self.assertEqual(intent["ticker"], "MRVL")
-
-
 class AgentFirstRoutingTest(unittest.TestCase):
-    def test_plain_quote_request_uses_lightweight_route(self):
+    def test_plain_quote_request_routes_to_agent(self):
         adapter = DummyAdapter(authorized=True)
         ctx = BotContext(chat_id="chat-1", user_id="user-1", text="NVDA 现在多少钱")
+        spawned: dict[str, str] = {}
 
-        def fail_spawn(coro, label: str) -> None:
+        def fake_spawn(coro, label: str) -> None:
+            spawned["label"] = label
             coro.close()
-            raise AssertionError(f"unexpected background task: {label}")
 
-        with (
-            patch("server.commands._spawn_background_task", new=fail_spawn),
-            patch(
-                "server.capabilities.market.get_stock_quote_payload",
-                new=AsyncMock(return_value={"symbol": "NVDA", "price": 100}),
-            ),
-            patch("server.capabilities.market.format_stock_quote", return_value="NVDA quote"),
-        ):
+        with patch("server.commands._spawn_background_task", new=fake_spawn):
             asyncio.run(handle_plain_message(ctx, adapter))
 
-        self.assertEqual(adapter.messages, [("chat-1", "NVDA quote")])
+        self.assertEqual(spawned, {"label": "agent message"})
+        self.assertEqual(adapter.messages, [])
 
-    def test_plain_portfolio_request_uses_lightweight_route(self):
+    def test_plain_portfolio_request_routes_to_agent(self):
         adapter = DummyAdapter(authorized=True)
         ctx = BotContext(chat_id="chat-1", user_id="user-1", text="我的持仓")
+        spawned: dict[str, str] = {}
 
-        def fail_spawn(coro, label: str) -> None:
+        def fake_spawn(coro, label: str) -> None:
+            spawned["label"] = label
             coro.close()
-            raise AssertionError(f"unexpected background task: {label}")
 
-        with (
-            patch("server.commands._spawn_background_task", new=fail_spawn),
-            patch(
-                "server.capabilities.market.get_portfolio_payload",
-                new=AsyncMock(return_value={"positions": []}),
-            ),
-            patch("server.capabilities.market.format_portfolio", return_value="portfolio"),
-        ):
+        with patch("server.commands._spawn_background_task", new=fake_spawn):
             asyncio.run(handle_plain_message(ctx, adapter))
 
-        self.assertEqual(adapter.messages, [("chat-1", "portfolio")])
+        self.assertEqual(spawned, {"label": "agent message"})
+        self.assertEqual(adapter.messages, [])
 
     def test_plain_natural_language_routes_to_agent(self):
         adapter = DummyAdapter(authorized=True)

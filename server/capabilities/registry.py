@@ -589,7 +589,7 @@ def format_agent_tool_catalog(
     if not allowed_tool_set or "WebFetch" in allowed_tool_set:
         lines.append("- WebFetch: 抓取用户提供或搜索结果中的网页内容。")
     if allowed_tool_set and not ({"WebSearch", "WebFetch"} & allowed_tool_set):
-        lines.append("- 当前工具画像未开放 built-in web tools。")
+        lines.append("- 当前 Agent runtime 未启用 built-in web tools。")
     lines.extend(["", "Reveal MCP tools and capabilities:"])
     for cap in CAPABILITIES:
         if allowed_tool_set and cap.agent_tools and not (set(cap.agent_tools) & allowed_tool_set):

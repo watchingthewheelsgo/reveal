@@ -32,8 +32,7 @@ def assess_post_impact(post: SocialPost, item: dict[str, str]) -> ImpactAssessme
     ticker = item["ticker"]
     relation = item["relation"]
     label = item["label"]
-    text = _combined_post_text(post)
-    event_type = _event_type(text)
+    event_type = _event_type(post)
     direction = _direction(post)
     reason = _reason(post)
     return ImpactAssessment(
@@ -71,91 +70,26 @@ def format_impact_line(assessment: ImpactAssessment) -> str:
     return "".join(parts)
 
 
-def _combined_post_text(post: SocialPost) -> str:
-    pieces: list[str] = []
-    for value in (
-        post.content,
-        post.translated_content,
-        post.summary,
-        post.attention_reason,
-        " ".join(str(topic) for topic in (post.topics or [])),
-    ):
-        if value:
-            pieces.append(str(value))
-    raw = post.raw_json or {}
-    analysis = raw.get("reveal_analysis") if isinstance(raw, dict) else None
-    if isinstance(analysis, dict) and analysis.get("urgency_reason"):
-        pieces.append(str(analysis["urgency_reason"]))
-    return "\n".join(pieces).lower()
-
-
-def _event_type(text: str) -> str:
-    checks = [
-        (
-            "公司基本面",
-            {"earnings", "guidance", "revenue", "order", "contract", "财报", "营收", "订单"},
-        ),
-        (
-            "宏观/政策",
-            {
-                "cpi",
-                "ppi",
-                "fed",
-                "fomc",
-                "inflation",
-                "tariff",
-                "rate",
-                "关税",
-                "通胀",
-                "降息",
-                "加息",
-                "政策",
-            },
-        ),
-        (
-            "地缘/大宗",
-            {
-                "war",
-                "military",
-                "missile",
-                "iran",
-                "israel",
-                "oil",
-                "opec",
-                "战争",
-                "军事",
-                "中东",
-                "油价",
-                "原油",
-            },
-        ),
-        ("监管", {"sec", "fda", "regulation", "lawsuit", "监管", "诉讼"}),
-        (
-            "市场观点",
-            {"analyst", "price target", "upgrade", "downgrade", "rating", "评级", "目标价"},
-        ),
-    ]
-    for label, keywords in checks:
-        if any(keyword in text for keyword in keywords):
-            return label
-    return "一般市场线索"
+def _event_type(post: SocialPost) -> str:
+    topics = [str(topic).strip() for topic in (post.topics or []) if str(topic).strip()]
+    if topics:
+        return " / ".join(topics[:2])
+    return "市场相关"
 
 
 def _materiality(post: SocialPost, relation: str, event_type: str) -> str:
+    del event_type
     if post.urgency == "high" or (relation == "holding" and post.is_noteworthy):
         return "high"
     if post.urgency == "medium" or relation in {"holding", "tracking", "watchlist"}:
-        return "medium"
-    if event_type in {"宏观/政策", "地缘/大宗", "监管"}:
         return "medium"
     return "low"
 
 
 def _horizon(post: SocialPost, event_type: str) -> str:
+    del event_type
     if post.urgency == "high":
         return "短线"
-    if event_type in {"宏观/政策", "地缘/大宗", "监管"}:
-        return "短中期"
     return "观察"
 
 

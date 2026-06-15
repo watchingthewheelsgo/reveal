@@ -1,8 +1,6 @@
-"""Centralized prompt builders and Agent tool profiles."""
+"""Centralized prompt builders and Agent tool access."""
 
 from __future__ import annotations
-
-from typing import Literal
 
 from server.capabilities.registry import (
     BUILTIN_AGENT_TOOLS,
@@ -14,107 +12,32 @@ from server.events.types import compact_event_context
 from server.research.market_skills import market_skill_prompt_context
 from server.social.events import event_from_social_post
 
-AgentToolProfile = Literal[
-    "research",
-    "market_data",
-    "social_ops",
-    "scheduler_ops",
-    "portfolio_ops",
-    "system_ops",
-]
-
 _ALL_MCP_TOOLS = agent_mcp_tool_names()
-_TOOL_PROFILES: dict[AgentToolProfile, list[str]] = {
-    "research": [*BUILTIN_AGENT_TOOLS, *_ALL_MCP_TOOLS],
-    "market_data": [
-        "mcp__reveal__capability_catalog",
-        "mcp__reveal__stock_quote",
-        "mcp__reveal__technical_analysis",
-        "mcp__reveal__stock_news",
-        "mcp__reveal__stock_score",
-        "mcp__reveal__tracking_report",
-        "mcp__reveal__portfolio",
-        "mcp__reveal__research_history",
-        "mcp__reveal__market_movers_status",
-        "mcp__reveal__market_movers_recent",
-    ],
-    "social_ops": [
-        "mcp__reveal__capability_catalog",
-        "mcp__reveal__twitter_watch_list",
-        "mcp__reveal__twitter_watch_add",
-        "mcp__reveal__twitter_watch_remove",
-        "mcp__reveal__twitter_latest",
-        "mcp__reveal__twitter_search",
-    ],
-    "scheduler_ops": [
-        "mcp__reveal__capability_catalog",
-        "mcp__reveal__scheduled_task_create",
-        "mcp__reveal__scheduled_task_list",
-        "mcp__reveal__scheduled_task_cancel",
-    ],
-    "portfolio_ops": [
-        "mcp__reveal__capability_catalog",
-        "mcp__reveal__portfolio",
-        "mcp__reveal__portfolio_holding_add",
-        "mcp__reveal__portfolio_holding_remove",
-        "mcp__reveal__trading_journal",
-        "mcp__reveal__pnl_summary",
-    ],
-    "system_ops": [
-        "mcp__reveal__capability_catalog",
-        "mcp__reveal__system_status",
-        "mcp__reveal__alert_status",
-    ],
-}
+_AGENT_TOOLS = [*BUILTIN_AGENT_TOOLS, *_ALL_MCP_TOOLS]
 
 
-def allowed_tools_for_profile(profile: AgentToolProfile) -> list[str]:
-    return list(dict.fromkeys(_TOOL_PROFILES.get(profile, _TOOL_PROFILES["research"])))
+def agent_allowed_tools() -> list[str]:
+    return list(dict.fromkeys(_AGENT_TOOLS))
 
 
-def tool_profile_for_agent_message(message: str) -> AgentToolProfile:
-    text = message.lower()
-    if any(
-        token in text
-        for token in {
-            "2小时后",
-            "小时后",
-            "半小时后",
-            "分钟后",
-            "今天晚上",
-            "今晚",
-            "明天",
-            "提醒",
-            "定时",
-        }
-    ):
-        return "scheduler_ops"
-    if any(token in text for token in {"watch list", "关注账号", "推特", "twitter", "/x", "@"}):
-        return "social_ops"
-    if any(token in text for token in {"持仓", "仓位", "portfolio", "pnl", "盈亏", "交易日记"}):
-        return "portfolio_ops"
-    if any(token in text for token in {"状态", "配置", "告警", "status", "alert"}):
-        return "system_ops"
-    if any(token in text for token in {"报价", "现价", "多少钱", "技术指标", "新闻", "评分"}):
-        return "market_data"
-    return "research"
-
-
-def agent_system_prompt(allowed_tools: list[str], profile: AgentToolProfile) -> str:
+def agent_system_prompt(allowed_tools: list[str]) -> str:
     return (
         "你是 Reveal 美股交易助手的研究代理。\n\n"
-        f"当前任务工具画像: {profile}。只使用已授权工具完成任务；不要假装调用不可用工具。\n\n"
+        "你可以使用已授权的 Reveal MCP 工具和 built-in web tools。"
+        "先基于用户意图制定 plan，再选择真实工具执行；不要用关键词猜测任务类型。\n\n"
         f"{format_agent_tool_catalog(allowed_tools=allowed_tools)}\n\n"
         "工作原则:\n"
         "1. 简单状态/列表/添加/取消类任务，直接调用对应 Reveal MCP 工具，不要做泛化研究。\n"
-        "2. 研究类任务先用内部工具获取精确数据，再用 WebSearch/WebFetch 补充最新信息。\n"
+        "2. 研究类任务先 plan，再用内部工具获取精确数据，并用 WebSearch/WebFetch 补充最新信息。\n"
         "3. 结合用户持仓和关注标的给出个性化影响判断。\n"
         "4. 区分事实、推断和不确定性；不要把观点当事实。\n"
         "5. 输出中文，末尾列出真实使用过的来源 URL；没有来源则说明未使用外部来源。\n"
         "6. 不要读取本地文件、运行命令或修改文件。\n"
         "7. 用户明确说持有某 ticker 但不想记录数量/成本、只为后续消息提醒时，"
         "才可调用持仓关注标记工具；它不代表真实交易。\n"
-        "8. 必须通过真实工具调用获取数据；不要在正文中输出 JSON 形式的 tool/arguments 伪调用。"
+        "8. 必须通过真实工具调用获取数据；不要在正文中输出 JSON 形式的 tool/arguments 伪调用。\n"
+        "9. 你正在处理当前请求；除非用户询问命令用法，不要建议用户改用 /research、/topic "
+        "或其他命令来完成同一个问题。"
     )
 
 

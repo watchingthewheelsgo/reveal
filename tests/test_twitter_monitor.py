@@ -501,7 +501,7 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.last_tweet_epoch, 101)
         self.assertFalse(post.is_pushed)
 
-    async def test_monitor_does_not_push_keyword_match_without_agent_relevance(self):
+    async def test_monitor_does_not_push_raw_text_match_without_agent_relevance(self):
         session_factory = get_session_factory()
         async with session_factory() as session:
             session.add(TwitterState(username="alice", last_tweet_epoch=100))
