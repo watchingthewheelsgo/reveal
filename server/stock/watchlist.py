@@ -9,6 +9,7 @@ from typing import Any
 from loguru import logger
 from sqlalchemy import select
 
+from config.settings import get_settings
 from server.db.engine import get_session_factory
 from server.db.models import StockWatch
 from server.events.types import PriceAlertEvent, normalize_event_severity
@@ -240,7 +241,8 @@ def _build_price_alert(watch: StockWatch, current_price: float) -> dict[str, Any
         return None
 
     direction = "上涨" if change_pct > 0 else "下跌"
-    severity = "critical" if abs(change_pct) >= watch.threshold_pct * 2 else "warning"
+    critical_threshold = watch.threshold_pct * get_settings().stock_watch_critical_multiplier
+    severity = "critical" if abs(change_pct) >= critical_threshold else "warning"
     return {
         "ticker": watch.ticker,
         "chat_id": watch.chat_id,

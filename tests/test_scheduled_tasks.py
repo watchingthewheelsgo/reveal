@@ -73,10 +73,7 @@ class ScheduledTasksTest(unittest.IsolatedAsyncioTestCase):
             split_schedule_command_body("2小时后 | 推送 CPI 数据新闻"),
             ("2小时后", "推送 CPI 数据新闻"),
         )
-        self.assertEqual(
-            split_schedule_command_body("今晚7点 推送 CPI 数据新闻"),
-            ("今晚7点", "推送 CPI 数据新闻"),
-        )
+        self.assertIsNone(split_schedule_command_body("今晚7点 推送 CPI 数据新闻"))
 
     async def test_create_list_and_cancel_task(self):
         scheduler = DummyScheduler()

@@ -4,6 +4,7 @@ Volume anomaly alerts — detects unusual trading volume for watched tickers.
 
 from loguru import logger
 
+from config.settings import get_settings
 from server.events.types import VolumeAlertEvent, normalize_event_severity
 from server.stock.data import fetch_stock_data
 
@@ -11,6 +12,7 @@ from server.stock.data import fetch_stock_data
 async def check_volume_alerts(tickers: list[str], threshold_ratio: float = 2.5) -> list[dict]:
     """Check for volume anomalies across watched tickers."""
     alerts = []
+    critical_ratio = get_settings().alert_volume_critical_ratio
 
     for ticker in tickers:
         try:
@@ -21,7 +23,7 @@ async def check_volume_alerts(tickers: list[str], threshold_ratio: float = 2.5) 
             vol_ratio = data.get("volume_ratio", 1.0)
 
             if vol_ratio >= threshold_ratio:
-                severity = "critical" if vol_ratio >= 4.0 else "warning"
+                severity = "critical" if vol_ratio >= critical_ratio else "warning"
 
                 alerts.append(
                     {

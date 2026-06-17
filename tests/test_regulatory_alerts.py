@@ -39,10 +39,18 @@ class RegulatoryAlertsTest(unittest.IsolatedAsyncioTestCase):
         self.original_values = {
             "sec_user_agent": self.settings.sec_user_agent,
             "sec_alert_forms": list(self.settings.sec_alert_forms),
+            "sec_alert_critical_forms": list(self.settings.sec_alert_critical_forms),
+            "sec_alert_warning_forms": list(self.settings.sec_alert_warning_forms),
             "fda_alert_enabled": self.settings.fda_alert_enabled,
             "fda_base_url": self.settings.fda_base_url,
             "fda_alert_categories": list(self.settings.fda_alert_categories),
             "fda_alert_classifications": list(self.settings.fda_alert_classifications),
+            "fda_alert_critical_classifications": list(
+                self.settings.fda_alert_critical_classifications
+            ),
+            "fda_alert_warning_classifications": list(
+                self.settings.fda_alert_warning_classifications
+            ),
             "fda_alert_keywords": list(self.settings.fda_alert_keywords),
             "regulatory_alert_lookback_hours": self.settings.regulatory_alert_lookback_hours,
         }
@@ -142,6 +150,17 @@ class RegulatoryAlertsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(typed.category, "drug")
         self.assertEqual(typed.recall_number, "D-1234-2026")
         self.assertEqual(typed.classification, "Class I")
+
+    async def test_regulatory_severity_uses_configured_policy(self):
+        self.settings.sec_alert_critical_forms = ["10-Q"]
+        self.settings.sec_alert_warning_forms = ["8-K"]
+        self.settings.fda_alert_critical_classifications = ["Class II"]
+        self.settings.fda_alert_warning_classifications = ["Class I"]
+
+        self.assertEqual(regulatory._sec_severity("10-Q"), "critical")
+        self.assertEqual(regulatory._sec_severity("8-K"), "warning")
+        self.assertEqual(regulatory._fda_severity("Class II"), "critical")
+        self.assertEqual(regulatory._fda_severity("Class I"), "warning")
 
 
 if __name__ == "__main__":

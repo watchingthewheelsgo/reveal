@@ -14,14 +14,17 @@ from server.db.models import SocialPost, StockWatch, TwitterState
 from server.db.time import utc_now_naive
 from server.portfolio.markers import add_portfolio_holding_marker
 from server.social.monitor import (
+    STORY_CLUSTER_MAX_BATCH_POSTS,
     _build_tweet_card,
     _epoch_or_zero,
+    _group_relevant_social_posts,
     cache_user_tweets,
     check_and_notify,
     fetch_user_tweets,
     run_twitter_monitor,
 )
-from server.social.processor import TweetAnalysis, _parse_analysis
+from server.social.processor import TweetAnalysis, TweetStoryCluster, _parse_analysis
+from server.social.relevance import group_similar_social_posts
 
 
 class DummyAdapter(BotAdapter):
@@ -95,6 +98,53 @@ class MarketProcessor:
         )
 
 
+class GenericEventProcessor:
+    async def analyze(self, context: str, author: str = "") -> TweetAnalysis:
+        return TweetAnalysis(
+            summary=f"{author} 提到一条公司交易新闻。",
+            translation=None,
+            mentioned_tickers=["SPY"],
+            topics=["并购"],
+            canonical_event_id="major-acquisition",
+            canonical_event_title="重大并购",
+            canonical_event_summary="一条泛化的并购事件标签",
+            sentiment="mixed",
+            urgency="medium",
+            urgency_reason="公司交易新闻可能影响市场。",
+            is_market_relevant=True,
+            is_noteworthy=True,
+            attention_reason=f"{author} 提到的公司交易新闻需要核验。",
+        )
+
+
+class StoryClusterProcessor(MarketProcessor):
+    async def cluster_stories(self, posts: list[dict]) -> list[TweetStoryCluster]:
+        return [
+            TweetStoryCluster(
+                title="特朗普关税 headline",
+                summary="两位博主讨论同一条特朗普关税新闻。",
+                confidence="high",
+                post_ids=[str(post["id"]) for post in posts],
+                reason="同一条关税新闻的不同观点。",
+            )
+        ]
+
+
+class BatchingStoryClusterProcessor:
+    def __init__(self):
+        self.batch_sizes: list[int] = []
+
+    async def cluster_stories(self, posts: list[dict]) -> list[TweetStoryCluster]:
+        self.batch_sizes.append(len(posts))
+        return [
+            TweetStoryCluster(
+                confidence="low",
+                post_ids=[str(post["id"])],
+            )
+            for post in posts
+        ]
+
+
 class SocialOnlyProcessor:
     async def analyze(self, context: str, author: str = "") -> TweetAnalysis:
         return TweetAnalysis(
@@ -136,6 +186,11 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
               "translation": null,
               "mentioned_tickers": ["nvda"],
               "topics": ["AI基建"],
+              "canonical_event": {
+                "id": "Major Nvidia Order",
+                "title": "英伟达重大订单",
+                "summary": "英伟达披露新的 AI 基建订单"
+              },
               "sentiment": "bullish",
               "urgency": "high",
               "urgency_reason": "可能影响股价",
@@ -149,6 +204,109 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(analysis.is_noteworthy)
         self.assertEqual(analysis.attention_reason, "新增订单金额超预期")
         self.assertEqual(analysis.mentioned_tickers, ["NVDA"])
+        self.assertEqual(analysis.canonical_event_id, "major-nvidia-order")
+        self.assertEqual(analysis.canonical_event_title, "英伟达重大订单")
+
+    def test_story_grouping_prefers_agent_canonical_event(self):
+        posts = [
+            SocialPost(
+                username="alice",
+                tweet_id="1001",
+                tweet_url="https://x.com/alice/status/1001",
+                content="first view",
+                raw_json={"reveal_analysis": {"canonical_event": {"id": "tariff-chip-risk"}}},
+                links=[],
+                referenced_tweets=[],
+                media=[],
+                posted_at=datetime(2026, 6, 1, 12, 0),
+            ),
+            SocialPost(
+                username="bob",
+                tweet_id="1002",
+                tweet_url="https://x.com/bob/status/1002",
+                content="second view",
+                raw_json={"reveal_analysis": {"canonical_event": {"id": "tariff-chip-risk"}}},
+                links=[],
+                referenced_tweets=[],
+                media=[],
+                posted_at=datetime(2026, 6, 1, 12, 1),
+            ),
+            SocialPost(
+                username="carol",
+                tweet_id="1003",
+                tweet_url="https://x.com/carol/status/1003",
+                content="different story",
+                raw_json={"reveal_analysis": {"canonical_event": {"id": "fed-rate-cut"}}},
+                links=[],
+                referenced_tweets=[],
+                media=[],
+                posted_at=datetime(2026, 6, 1, 12, 2),
+            ),
+        ]
+
+        groups = group_similar_social_posts(posts)
+
+        self.assertEqual(
+            [[post.tweet_id for post in group] for group in groups],
+            [["1001", "1002"], ["1003"]],
+        )
+
+    def test_story_grouping_ignores_generic_agent_event_id(self):
+        posts = [
+            SocialPost(
+                username="alice",
+                tweet_id="1001",
+                tweet_url="https://x.com/alice/status/1001",
+                content="SpaceX acquires Anysphere",
+                raw_json={"reveal_analysis": {"canonical_event": {"id": "major-acquisition"}}},
+                links=[],
+                referenced_tweets=[],
+                media=[],
+                posted_at=datetime(2026, 6, 1, 12, 0),
+            ),
+            SocialPost(
+                username="bob",
+                tweet_id="1002",
+                tweet_url="https://x.com/bob/status/1002",
+                content="Yum sells Pizza Hut",
+                raw_json={"reveal_analysis": {"canonical_event": {"id": "major-acquisition"}}},
+                links=[],
+                referenced_tweets=[],
+                media=[],
+                posted_at=datetime(2026, 6, 1, 12, 1),
+            ),
+        ]
+
+        groups = group_similar_social_posts(posts)
+
+        self.assertEqual(
+            [[post.tweet_id for post in group] for group in groups],
+            [["1001"], ["1002"]],
+        )
+
+    async def test_story_clustering_batches_large_candidate_sets(self):
+        posts = [
+            SocialPost(
+                id=index + 1,
+                username=f"user{index}",
+                tweet_id=str(3000 + index),
+                tweet_url=f"https://x.com/user{index}/status/{3000 + index}",
+                content="market relevant update " * 80,
+                summary="market relevant update",
+                links=[],
+                referenced_tweets=[],
+                media=[],
+                posted_at=datetime(2026, 6, 1, 12, index),
+            )
+            for index in range(STORY_CLUSTER_MAX_BATCH_POSTS * 2 + 1)
+        ]
+        processor = BatchingStoryClusterProcessor()
+
+        groups = await _group_relevant_social_posts(posts, processor)
+
+        self.assertEqual(len(groups), len(posts))
+        self.assertTrue(processor.batch_sizes)
+        self.assertLessEqual(max(processor.batch_sizes), STORY_CLUSTER_MAX_BATCH_POSTS)
 
     async def test_fetch_user_tweets_prefers_graphql_when_auth_token_is_configured(self):
         graphql = AsyncMock(
@@ -588,6 +746,80 @@ class TwitterMonitorTest(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(pushed_count, 2)
+
+    async def test_monitor_uses_agent_story_clustering_without_shared_links(self):
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            session.add(TwitterState(username="alice", last_tweet_epoch=100))
+            session.add(TwitterState(username="bob", last_tweet_epoch=100))
+            await session.commit()
+
+        async def fake_fetch_user_tweets(username: str, count: int = 20, cursor: str | None = None):
+            tweet_id = "211" if username == "alice" else "212"
+            return {
+                "screen_name": username,
+                "latest_tweets": [
+                    {
+                        "tweetID": tweet_id,
+                        "date_epoch": int(tweet_id),
+                        "text": f"{username} posts a separate angle on the same tariff headline",
+                    },
+                ],
+            }
+
+        adapter = DummyAdapter()
+        with patch("server.social.monitor.fetch_user_tweets", new=fake_fetch_user_tweets):
+            total = await run_twitter_monitor(
+                ["alice", "bob"],
+                adapter,
+                StoryClusterProcessor(),
+            )
+
+        self.assertEqual(total, 2)
+        self.assertEqual(len(adapter.cards), 1)
+        pushed = "\n".join([adapter.cards[0][1]["title"], *adapter.cards[0][1]["sections"]])
+        self.assertIn("2 条更新 · 2 位博主提到", pushed)
+        self.assertIn("@alice", pushed)
+        self.assertIn("@bob", pushed)
+
+    async def test_monitor_keeps_unrelated_generic_agent_events_separate(self):
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            session.add(TwitterState(username="alice", last_tweet_epoch=100))
+            session.add(TwitterState(username="bob", last_tweet_epoch=100))
+            await session.commit()
+
+        async def fake_fetch_user_tweets(username: str, count: int = 20, cursor: str | None = None):
+            if username == "alice":
+                tweet_id = "221"
+                text = "SpaceX announces an Anysphere acquisition headline."
+            else:
+                tweet_id = "222"
+                text = "Yum Brands announces a Pizza Hut sale headline."
+            return {
+                "screen_name": username,
+                "latest_tweets": [
+                    {
+                        "tweetID": tweet_id,
+                        "date_epoch": int(tweet_id),
+                        "text": text,
+                    },
+                ],
+            }
+
+        adapter = DummyAdapter()
+        with patch("server.social.monitor.fetch_user_tweets", new=fake_fetch_user_tweets):
+            total = await run_twitter_monitor(
+                ["alice", "bob"],
+                adapter,
+                GenericEventProcessor(),
+            )
+
+        self.assertEqual(total, 2)
+        self.assertEqual(len(adapter.cards), 2)
+        pushed_titles = [card["title"] for _, card in adapter.cards]
+        self.assertTrue(any("@alice 提到" in title for title in pushed_titles))
+        self.assertTrue(any("@bob 提到" in title for title in pushed_titles))
 
     async def test_monitor_adds_personal_impact_for_manual_stock_watch(self):
         session_factory = get_session_factory()

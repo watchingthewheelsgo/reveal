@@ -213,7 +213,9 @@ async def check_fda_enforcement_events(tickers: list[str]) -> list[dict[str, Any
     cutoff = _utcnow() - timedelta(hours=settings.regulatory_alert_lookback_hours)
     start = cutoff.strftime("%Y%m%d")
     end = _utcnow().strftime("%Y%m%d")
-    accepted_classifications = {c.lower() for c in settings.fda_alert_classifications}
+    accepted_classifications = {
+        _normalize_fda_classification(c) for c in settings.fda_alert_classifications
+    }
     events: list[dict[str, Any]] = []
 
     async with httpx.AsyncClient(timeout=20) as client:
@@ -246,7 +248,8 @@ async def check_fda_enforcement_events(tickers: list[str]) -> list[dict[str, Any
                 classification = str(item.get("classification") or "")
                 if (
                     accepted_classifications
-                    and classification.lower() not in accepted_classifications
+                    and _normalize_fda_classification(classification)
+                    not in accepted_classifications
                 ):
                     continue
 
@@ -506,11 +509,15 @@ async def get_regulatory_alert_status_payload() -> dict[str, Any]:
         "sec": {
             "enabled": bool(settings.sec_user_agent),
             "forms": settings.sec_alert_forms,
+            "critical_forms": settings.sec_alert_critical_forms,
+            "warning_forms": settings.sec_alert_warning_forms,
         },
         "fda": {
             "enabled": settings.fda_alert_enabled,
             "categories": settings.fda_alert_categories,
             "classifications": settings.fda_alert_classifications,
+            "critical_classifications": settings.fda_alert_critical_classifications,
+            "warning_classifications": settings.fda_alert_warning_classifications,
             "keyword_count": len(settings.fda_alert_keywords),
         },
         "active_tickers": await get_active_tickers_for_alert(),
@@ -552,20 +559,34 @@ def _is_watched_sec_form(form: str, watched_forms: set[str]) -> bool:
 
 
 def _sec_severity(form: str) -> str:
-    if form.startswith(("8-K", "S-1", "F-1", "424B")):
+    settings = get_settings()
+    critical_forms = {_normalize_form(item) for item in settings.sec_alert_critical_forms}
+    warning_forms = {_normalize_form(item) for item in settings.sec_alert_warning_forms}
+    if _is_watched_sec_form(form, critical_forms):
         return "critical"
-    if form.startswith(("10-K", "10-Q", "SC 13D", "SC 13G", "DEF 14A")):
+    if _is_watched_sec_form(form, warning_forms):
         return "warning"
     return "info"
 
 
 def _fda_severity(classification: str) -> str:
-    normalized = classification.lower()
-    if normalized == "class i":
+    settings = get_settings()
+    normalized = _normalize_fda_classification(classification)
+    critical = {
+        _normalize_fda_classification(item) for item in settings.fda_alert_critical_classifications
+    }
+    warning = {
+        _normalize_fda_classification(item) for item in settings.fda_alert_warning_classifications
+    }
+    if normalized in critical:
         return "critical"
-    if normalized == "class ii":
+    if normalized in warning:
         return "warning"
     return "info"
+
+
+def _normalize_fda_classification(value: str) -> str:
+    return re.sub(r"\s+", " ", value.strip().lower())
 
 
 async def _fda_keyword_pairs(tickers: list[str]) -> list[tuple[str, str | None]]:

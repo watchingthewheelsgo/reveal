@@ -188,6 +188,27 @@ class ClaudeSdkRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.plan.steps[0].input, {"ticker": "NVDA"})
         self.assertIn("NVDA", result.plan.steps[0].observation or "")
 
+    async def test_run_agent_extracts_reveal_metadata_from_answer(self):
+        async def fake_query(prompt, options):
+            yield ResultMessage(
+                subtype="success",
+                duration_ms=1,
+                duration_api_ms=1,
+                is_error=False,
+                num_turns=1,
+                session_id="result-session",
+                result=(
+                    "这是给用户看的研究结论。\n\n"
+                    'REVEAL_METADATA: {"mentioned_tickers":["NVDA","SPY"],"confidence":"high"}'
+                ),
+            )
+
+        with patch("server.research.claude_sdk_runtime.query", new=fake_query):
+            result = await run_agent("research NVDA")
+
+        self.assertEqual(result.answer, "这是给用户看的研究结论。")
+        self.assertEqual(result.metadata["mentioned_tickers"], ["NVDA", "SPY"])
+
     async def test_run_agent_requires_token(self):
         settings_module.global_settings.openai_api_key = ""
         settings_module.global_settings.anthropic_auth_token = ""

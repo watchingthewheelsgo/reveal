@@ -37,7 +37,10 @@ def agent_system_prompt(allowed_tools: list[str]) -> str:
         "才可调用持仓关注标记工具；它不代表真实交易。\n"
         "8. 必须通过真实工具调用获取数据；不要在正文中输出 JSON 形式的 tool/arguments 伪调用。\n"
         "9. 你正在处理当前请求；除非用户询问命令用法，不要建议用户改用 /research、/topic "
-        "或其他命令来完成同一个问题。"
+        "或其他命令来完成同一个问题。\n"
+        "10. 最终答案末尾追加一行机器可读元数据，格式必须是 "
+        'REVEAL_METADATA: {"mentioned_tickers":["NVDA"],"confidence":"high"}。'
+        "mentioned_tickers 只放你在工具结果或证据中确认相关的 ticker；如果没有则为空数组。"
     )
 
 

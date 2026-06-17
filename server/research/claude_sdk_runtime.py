@@ -3,6 +3,7 @@
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Literal, cast
 
@@ -45,16 +46,51 @@ class AgentRunResult:
     answer: str
     agent_session_id: str | None = None
     plan: AgentRunPlan = field(default_factory=lambda: new_agent_run_plan(""))
+    metadata: dict[str, object] = field(default_factory=dict)
+
+
+class AgentErrorKind(StrEnum):
+    AUTH = "auth"
+    RATE_LIMIT = "rate_limit"
+    BILLING = "billing"
+    RESUME = "resume"
+    RUNTIME = "runtime"
+    TOOL = "tool"
+    TIMEOUT = "timeout"
+    CONNECTION = "connection"
+    UNKNOWN = "unknown"
 
 
 class AgentRuntimeError(RuntimeError):
-    def __init__(self, message: str, user_message: str):
+    def __init__(
+        self,
+        message: str,
+        user_message: str,
+        kind: AgentErrorKind | None = None,
+    ):
         super().__init__(message)
         self.user_message = user_message
+        self.kind = kind or _classify_agent_error(f"{message} {user_message}")
 
 
 class AgentConfigurationError(AgentRuntimeError):
     pass
+
+
+_AGENT_ERROR_MESSAGES: dict[AgentErrorKind, tuple[str, str]] = {
+    AgentErrorKind.AUTH: ("研究 Agent 认证失败", "检查 ANTHROPIC_AUTH_TOKEN 或 DEEPSEEK_API_KEY"),
+    AgentErrorKind.RATE_LIMIT: ("研究 Agent 触发限流", "稍后重试，或降低并发和请求频率"),
+    AgentErrorKind.BILLING: ("研究 Agent 计费状态异常", "检查模型账户余额、账单或额度"),
+    AgentErrorKind.RESUME: ("研究 Agent 会话恢复失败", "在本话题重新发送问题，系统会重建上下文"),
+    AgentErrorKind.RUNTIME: (
+        "研究 Agent 运行环境不可用",
+        "检查 Docker 镜像是否包含 Claude Code runtime",
+    ),
+    AgentErrorKind.TOOL: ("研究 Agent 工具调用失败", "重试或把问题拆成更具体的操作"),
+    AgentErrorKind.TIMEOUT: ("研究 Agent 上游请求超时", "稍后重试，必要时缩小问题范围"),
+    AgentErrorKind.CONNECTION: ("研究 Agent 网络连接失败", "检查服务器网络和上游 API 可用性"),
+    AgentErrorKind.UNKNOWN: ("研究 Agent 执行失败", "稍后重试；如果持续失败，请查看服务日志"),
+}
 
 
 async def run_agent(
@@ -73,6 +109,7 @@ async def run_agent(
         raise AgentConfigurationError(
             "Claude Agent SDK runtime requires ANTHROPIC_AUTH_TOKEN or DEEPSEEK_API_KEY.",
             "研究 Agent 未配置 DeepSeek API Key。请设置 ANTHROPIC_AUTH_TOKEN 或 DEEPSEEK_API_KEY。",
+            kind=AgentErrorKind.AUTH,
         )
 
     base_url = settings.get_agent_base_url()
@@ -170,11 +207,17 @@ async def run_agent(
         raise AgentConfigurationError(
             str(exc),
             "研究 Agent 未找到 Claude Code CLI。请先安装或修复 claude-agent-sdk 的 bundled CLI。",
+            kind=AgentErrorKind.RUNTIME,
         ) from exc
     except (CLIConnectionError, ProcessError, ClaudeSDKError) as exc:
         logger.exception("Claude Agent SDK execution failed")
         plan.fail(str(exc))
-        raise AgentRuntimeError(str(exc), _user_message_for_exception(exc)) from exc
+        kind = _kind_for_exception(exc)
+        raise AgentRuntimeError(
+            str(exc),
+            _user_message_for_kind(kind, str(exc)),
+            kind=kind,
+        ) from exc
     except Exception as exc:
         if _is_max_turns_error(str(exc)):
             return _max_turns_result(
@@ -186,7 +229,12 @@ async def run_agent(
             )
         logger.exception("Claude Agent SDK execution failed unexpectedly")
         plan.fail(str(exc))
-        raise AgentRuntimeError(str(exc), _user_message_for_exception(exc)) from exc
+        kind = _classify_agent_error(str(exc))
+        raise AgentRuntimeError(
+            str(exc),
+            _user_message_for_kind(kind, str(exc)),
+            kind=kind,
+        ) from exc
 
     if result_error:
         if _is_max_turns_error(result_error):
@@ -199,7 +247,8 @@ async def run_agent(
             )
         logger.error("Research agent result error: {}", result_error)
         plan.fail(result_error)
-        raise AgentRuntimeError(result_error, _user_message_for_text(result_error))
+        kind = _classify_agent_error(result_error)
+        raise AgentRuntimeError(result_error, _user_message_for_kind(kind, result_error), kind=kind)
 
     answer = result_answer or "\n".join(answer_parts).strip()
     if not answer:
@@ -207,7 +256,9 @@ async def run_agent(
         raise AgentRuntimeError(
             "Agent SDK returned no answer.",
             "研究 Agent 没有返回内容，请稍后重试。",
+            kind=AgentErrorKind.UNKNOWN,
         )
+    answer, metadata = _extract_reveal_metadata(answer)
     if _looks_like_pseudo_tool_call_answer(answer):
         logger.info(
             "Research agent returned pseudo tool calls without protocol tool use; "
@@ -232,6 +283,7 @@ async def run_agent(
         raise AgentRuntimeError(
             "Agent returned pseudo tool-call JSON instead of executing tools.",
             "研究 Agent 没有真正执行工具调用，请稍后重试或换用更强模型。",
+            kind=AgentErrorKind.TOOL,
         )
     logger.info(
         "Research agent run complete: session_id={} answer_chars={} tool_uses={}",
@@ -243,6 +295,7 @@ async def run_agent(
         answer=answer,
         agent_session_id=agent_session_id,
         plan=plan.complete(answer),
+        metadata=metadata,
     )
 
 
@@ -287,7 +340,15 @@ def _clip_partial_context(text: str, limit: int = 800) -> str:
 
 
 def _user_message_for_exception(exc: BaseException) -> str:
-    return _user_message_for_text(str(exc))
+    return _user_message_for_kind(_kind_for_exception(exc), str(exc))
+
+
+def _kind_for_exception(exc: BaseException) -> AgentErrorKind:
+    if isinstance(exc, CLIConnectionError):
+        return AgentErrorKind.CONNECTION
+    if isinstance(exc, ProcessError):
+        return AgentErrorKind.RUNTIME
+    return _classify_agent_error(str(exc))
 
 
 def _is_max_turns_error(text: str) -> bool:
@@ -323,6 +384,29 @@ def _max_turns_result(
     )
 
 
+def _extract_reveal_metadata(answer: str) -> tuple[str, dict[str, object]]:
+    """Parse optional Agent-produced metadata and strip it from the user answer."""
+
+    marker = "REVEAL_METADATA:"
+    marker_index = answer.rfind(marker)
+    if marker_index < 0:
+        return answer.strip(), {}
+
+    visible_answer = answer[:marker_index].rstrip()
+    raw_metadata = answer[marker_index + len(marker) :].strip()
+    if raw_metadata.startswith("```"):
+        lines = [line for line in raw_metadata.splitlines() if not line.strip().startswith("```")]
+        raw_metadata = "\n".join(lines).strip()
+    try:
+        parsed = json.loads(raw_metadata)
+    except json.JSONDecodeError:
+        logger.warning("Agent returned invalid REVEAL_METADATA; leaving answer metadata empty")
+        return visible_answer or answer.strip(), {}
+    if not isinstance(parsed, dict):
+        return visible_answer or answer.strip(), {}
+    return visible_answer or answer.strip(), parsed
+
+
 def _partial_answer_from_max_turns(
     answer_parts: list[str],
     observation_parts: list[str],
@@ -346,32 +430,40 @@ def _partial_answer_from_max_turns(
 
 
 def _user_message_for_text(text: str) -> str:
-    title, action = _classify_agent_error(text)
+    title, action = _AGENT_ERROR_MESSAGES[_classify_agent_error(text)]
     reason = _compact_error_reason(text)
     if reason:
         return f"{title}。建议: {action}。原因: {reason}"
     return f"{title}。建议: {action}。"
 
 
-def _classify_agent_error(text: str) -> tuple[str, str]:
+def _user_message_for_kind(kind: AgentErrorKind, text: str) -> str:
+    title, action = _AGENT_ERROR_MESSAGES[kind]
+    reason = _compact_error_reason(text)
+    if reason:
+        return f"{title}。建议: {action}。原因: {reason}"
+    return f"{title}。建议: {action}。"
+
+
+def _classify_agent_error(text: str) -> AgentErrorKind:
     normalized = text.lower()
     if "authentication" in normalized or "401" in normalized or "auth" in normalized:
-        return "研究 Agent 认证失败", "检查 ANTHROPIC_AUTH_TOKEN 或 DEEPSEEK_API_KEY"
+        return AgentErrorKind.AUTH
     if "rate limit" in normalized or "429" in normalized:
-        return "研究 Agent 触发限流", "稍后重试，或降低并发和请求频率"
+        return AgentErrorKind.RATE_LIMIT
     if "billing" in normalized or "payment" in normalized or "402" in normalized:
-        return "研究 Agent 计费状态异常", "检查模型账户余额、账单或额度"
+        return AgentErrorKind.BILLING
     if "resume" in normalized or "session" in normalized:
-        return "研究 Agent 会话恢复失败", "在本话题重新发送问题，系统会重建上下文"
+        return AgentErrorKind.RESUME
     if "not found" in normalized or "claude code cli" in normalized:
-        return "研究 Agent 运行环境不可用", "检查 Docker 镜像是否包含 Claude Code runtime"
+        return AgentErrorKind.RUNTIME
     if "tool" in normalized or "mcp" in normalized:
-        return "研究 Agent 工具调用失败", "重试或把问题拆成更具体的操作"
+        return AgentErrorKind.TOOL
     if "timeout" in normalized or "timed out" in normalized:
-        return "研究 Agent 上游请求超时", "稍后重试，必要时缩小问题范围"
+        return AgentErrorKind.TIMEOUT
     if "connection" in normalized or "network" in normalized or "dns" in normalized:
-        return "研究 Agent 网络连接失败", "检查服务器网络和上游 API 可用性"
-    return "研究 Agent 执行失败", "稍后重试；如果持续失败，请查看服务日志"
+        return AgentErrorKind.CONNECTION
+    return AgentErrorKind.UNKNOWN
 
 
 def _compact_error_reason(text: str, limit: int = 220) -> str:

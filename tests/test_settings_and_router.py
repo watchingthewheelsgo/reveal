@@ -46,7 +46,9 @@ class SettingsTest(unittest.TestCase):
             os.environ,
             {
                 "SEC_ALERT_FORMS": "8-K, 10-Q, 8-K",
+                "SEC_ALERT_CRITICAL_FORMS": "S-1,F-1",
                 "FDA_ALERT_CATEGORIES": "drug,device",
+                "FDA_ALERT_WARNING_CLASSIFICATIONS": "Class II,Class III",
                 "FDA_ALERT_KEYWORDS": "Pfizer, Moderna",
             },
             clear=False,
@@ -54,8 +56,26 @@ class SettingsTest(unittest.TestCase):
             settings = self.build_settings()
 
         self.assertEqual(settings.sec_alert_forms, ["8-K", "10-Q"])
+        self.assertEqual(settings.sec_alert_critical_forms, ["S-1", "F-1"])
         self.assertEqual(settings.fda_alert_categories, ["drug", "device"])
+        self.assertEqual(settings.fda_alert_warning_classifications, ["Class II", "Class III"])
         self.assertEqual(settings.fda_alert_keywords, ["Pfizer", "Moderna"])
+
+    def test_alert_policy_thresholds_are_configurable(self):
+        with patch.dict(
+            os.environ,
+            {
+                "ALERT_PRICE_CRITICAL_PCT": "7.5",
+                "ALERT_VOLUME_CRITICAL_RATIO": "6",
+                "STOCK_WATCH_CRITICAL_MULTIPLIER": "3",
+            },
+            clear=False,
+        ):
+            settings = self.build_settings()
+
+        self.assertEqual(settings.alert_price_critical_pct, 7.5)
+        self.assertEqual(settings.alert_volume_critical_ratio, 6)
+        self.assertEqual(settings.stock_watch_critical_multiplier, 3)
 
     def test_longbridge_oauth_settings_configure_market_movers(self):
         with patch.dict(

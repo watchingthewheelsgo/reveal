@@ -4,6 +4,7 @@ Price movement alerts — detects significant intraday price changes for watched
 
 from loguru import logger
 
+from config.settings import get_settings
 from server.events.types import PriceAlertEvent, normalize_event_severity
 from server.stock.data import fetch_stock_data
 
@@ -11,6 +12,7 @@ from server.stock.data import fetch_stock_data
 async def check_price_alerts(tickers: list[str], threshold_pct: float = 3.0) -> list[dict]:
     """Check for significant price movements across watched tickers."""
     alerts = []
+    critical_pct = get_settings().alert_price_critical_pct
 
     for ticker in tickers:
         try:
@@ -23,7 +25,7 @@ async def check_price_alerts(tickers: list[str], threshold_pct: float = 3.0) -> 
 
             if abs(change_pct) >= threshold_pct:
                 direction = "📈 上涨" if change_pct > 0 else "📉 下跌"
-                severity = "critical" if abs(change_pct) >= 5 else "warning"
+                severity = "critical" if abs(change_pct) >= critical_pct else "warning"
 
                 alerts.append(
                     {

@@ -9,6 +9,7 @@ from sqlalchemy import desc, select
 from server.db.engine import get_session_factory
 from server.db.models import ConversationMessage, ResearchSession, SocialPost
 from server.research.claude_sdk_runtime import (
+    AgentErrorKind,
     AgentRunResult,
     AgentRuntimeError,
     ProgressCallback,
@@ -76,7 +77,7 @@ async def run_deep_research(
     post = await resolve_social_post(post_ref)
     result = await _run_new_agent(deep_prompt(post, focus), on_progress=on_progress)
     session_id = await _create_session(chat_id, post.id, focus or _default_topic(post))
-    await _save_answer(session_id, result.answer, result.agent_session_id)
+    await _save_answer(session_id, result.answer, result.agent_session_id, result.metadata)
     return ResearchRun(session_id=session_id, post=post, answer=result.answer)
 
 
@@ -92,7 +93,7 @@ async def start_freeform_research(
     session_id = await _create_session(
         chat_id, None, query[:300], source_type="freeform", source_query=query
     )
-    await _save_answer(session_id, result.answer, result.agent_session_id)
+    await _save_answer(session_id, result.answer, result.agent_session_id, result.metadata)
     return ResearchRun(session_id=session_id, post=None, answer=result.answer)
 
 
@@ -112,7 +113,7 @@ async def research_ticker(
         source_type="ticker",
         source_query=ticker,
     )
-    await _save_answer(session_id, result.answer, result.agent_session_id)
+    await _save_answer(session_id, result.answer, result.agent_session_id, result.metadata)
     return ResearchRun(session_id=session_id, post=None, answer=result.answer)
 
 
@@ -154,7 +155,13 @@ async def run_agent_session_message(
         on_progress=on_progress,
     )
     await _append_message(research_session.id, "user", message)
-    await _append_message(research_session.id, "assistant", result.answer, result.agent_session_id)
+    await _append_message(
+        research_session.id,
+        "assistant",
+        result.answer,
+        result.agent_session_id,
+        result.metadata,
+    )
     return result.answer
 
 
@@ -177,7 +184,13 @@ async def ask_about_post(
         )
         session_id = session.id
     await _append_message(session_id, "user", question)
-    await _append_message(session_id, "assistant", result.answer, result.agent_session_id)
+    await _append_message(
+        session_id,
+        "assistant",
+        result.answer,
+        result.agent_session_id,
+        result.metadata,
+    )
     return result.answer
 
 
@@ -295,7 +308,13 @@ async def handle_topic_message(
         on_progress=on_progress,
     )
     await _append_message(topic.id, "user", message)
-    await _append_message(topic.id, "assistant", result.answer, result.agent_session_id)
+    await _append_message(
+        topic.id,
+        "assistant",
+        result.answer,
+        result.agent_session_id,
+        result.metadata,
+    )
     return result.answer
 
 
@@ -331,7 +350,13 @@ async def summarize_topic(chat_id: str, on_progress: ProgressCallback | None = N
 {history_text}
 """
     result = await _run_agent_for_session(topic, post, prompt, on_progress=on_progress)
-    await _append_message(topic.id, "assistant", result.answer, result.agent_session_id)
+    await _append_message(
+        topic.id,
+        "assistant",
+        result.answer,
+        result.agent_session_id,
+        result.metadata,
+    )
     return result.answer
 
 
@@ -480,6 +505,10 @@ async def _set_agent_session_id(session_id: int, agent_session_id: str | None) -
 
 
 def _is_resume_error(exc: AgentRuntimeError) -> bool:
+    if exc.kind == AgentErrorKind.RESUME:
+        return True
+    if exc.kind != AgentErrorKind.UNKNOWN:
+        return False
     text = f"{exc} {exc.user_message}".lower()
     markers = ["resume", "session", "conversation", "not found", "does not exist", "invalid"]
     return any(marker in text for marker in markers)
@@ -487,6 +516,15 @@ def _is_resume_error(exc: AgentRuntimeError) -> bool:
 
 def _should_rebuild_after_resume_error(exc: AgentRuntimeError) -> bool:
     if _is_resume_error(exc):
+        return True
+    if exc.kind in {
+        AgentErrorKind.AUTH,
+        AgentErrorKind.RATE_LIMIT,
+        AgentErrorKind.BILLING,
+        AgentErrorKind.RUNTIME,
+    }:
+        return False
+    if exc.kind != AgentErrorKind.UNKNOWN:
         return True
     text = f"{exc} {exc.user_message}".lower()
     fatal_markers = [
@@ -512,8 +550,9 @@ async def _save_answer(
     session_id: int,
     answer: str,
     agent_session_id: str | None = None,
+    metadata: dict[str, object] | None = None,
 ) -> None:
-    tickers = _extract_tickers_from_text(answer)
+    tickers = _metadata_tickers(metadata)
     session_factory = get_session_factory()
     async with session_factory() as session:
         result = await session.execute(
@@ -537,6 +576,7 @@ async def _append_message(
     role: str,
     content: str,
     agent_session_id: str | None = None,
+    metadata: dict[str, object] | None = None,
 ) -> None:
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -548,6 +588,11 @@ async def _append_message(
             research_session.status = "active"
             if agent_session_id:
                 research_session.agent_session_id = agent_session_id
+            if role == "assistant":
+                tickers = _metadata_tickers(metadata)
+                if tickers:
+                    existing = research_session.mentioned_tickers or []
+                    research_session.mentioned_tickers = list(dict.fromkeys([*existing, *tickers]))
         session.add(ConversationMessage(session_id=session_id, role=role, content=content))
         await session.commit()
 
@@ -564,103 +609,24 @@ def _agent_topic(message: str) -> str:
     return (cleaned or message.strip())[:120]
 
 
-_KNOWN_TICKERS = {
-    "AAPL",
-    "MSFT",
-    "GOOGL",
-    "GOOG",
-    "AMZN",
-    "NVDA",
-    "META",
-    "TSLA",
-    "NFLX",
-    "AMD",
-    "CRM",
-    "ADBE",
-    "ORCL",
-    "NOW",
-    "INTU",
-    "UBER",
-    "JPM",
-    "BAC",
-    "GS",
-    "V",
-    "MA",
-    "JNJ",
-    "UNH",
-    "PFE",
-    "ABBV",
-    "MRK",
-    "XOM",
-    "CVX",
-    "COP",
-    "HD",
-    "NKE",
-    "SBUX",
-    "MCD",
-    "COST",
-    "WMT",
-    "BA",
-    "CAT",
-    "GE",
-    "RTX",
-    "LMT",
-    "PLTR",
-    "SNOW",
-    "DDOG",
-    "CRWD",
-    "ZS",
-    "AVGO",
-    "QCOM",
-    "TXN",
-    "INTC",
-    "MU",
-    "AMAT",
-    "LRCX",
-    "KLAC",
-    "MRVL",
-    "ARM",
-    "SMCI",
-    "DELL",
-    "COIN",
-    "SQ",
-    "PYPL",
-    "SHOP",
-    "ROKU",
-    "SNAP",
-    "PINS",
-    "RBLX",
-    "ABNB",
-    "BABA",
-    "JD",
-    "PDD",
-    "NIO",
-    "XPEV",
-    "LI",
-    "BRK",
-    "DIS",
-    "CMCSA",
-    "T",
-    "VZ",
-    "TMUS",
-    "SPY",
-    "QQQ",
-    "IWM",
-    "DIA",
-    "VIX",
-}
-_TICKER_RE = re.compile(r"\b([A-Z]{1,5})\b")
+def _metadata_tickers(metadata: dict[str, object] | None) -> list[str]:
+    """Return Agent-declared tickers from structured run metadata."""
 
-
-def _extract_tickers_from_text(text: str) -> list[str]:
-    """Extract stock tickers from text using pattern matching against known tickers."""
-    matches = _TICKER_RE.findall(text)
+    if not metadata:
+        return []
+    raw = metadata.get("mentioned_tickers")
+    if not isinstance(raw, list):
+        return []
     found: list[str] = []
     seen: set[str] = set()
-    for match in matches:
-        if match in _KNOWN_TICKERS and match not in seen:
-            found.append(match)
-            seen.add(match)
+    for value in raw:
+        if not isinstance(value, str):
+            continue
+        ticker = value.strip().upper().lstrip("$")
+        if not ticker or len(ticker) > 10 or ticker in seen:
+            continue
+        found.append(ticker)
+        seen.add(ticker)
     return found
 
 

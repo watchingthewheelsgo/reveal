@@ -103,7 +103,16 @@ class Settings(BaseSettings):
     alert_enabled: bool = Field(default=True, alias="ALERT_ENABLED")
     alert_interval_minutes: int = Field(default=30, alias="ALERT_INTERVAL_MINUTES")
     alert_price_pct: float = Field(default=3.0, alias="ALERT_PRICE_PCT")
+    alert_price_critical_pct: float = Field(default=5.0, alias="ALERT_PRICE_CRITICAL_PCT")
     alert_volume_ratio: float = Field(default=2.5, alias="ALERT_VOLUME_RATIO")
+    alert_volume_critical_ratio: float = Field(
+        default=4.0,
+        alias="ALERT_VOLUME_CRITICAL_RATIO",
+    )
+    stock_watch_critical_multiplier: float = Field(
+        default=2.0,
+        alias="STOCK_WATCH_CRITICAL_MULTIPLIER",
+    )
 
     # Regulatory event alerts
     regulatory_alert_enabled: bool = Field(default=True, alias="REGULATORY_ALERT_ENABLED")
@@ -129,6 +138,14 @@ class Settings(BaseSettings):
         ],
         alias="SEC_ALERT_FORMS",
     )
+    sec_alert_critical_forms: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["8-K", "S-1", "F-1", "424B"],
+        alias="SEC_ALERT_CRITICAL_FORMS",
+    )
+    sec_alert_warning_forms: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["10-K", "10-Q", "SC 13D", "SC 13G", "DEF 14A"],
+        alias="SEC_ALERT_WARNING_FORMS",
+    )
     fda_alert_enabled: bool = Field(default=True, alias="FDA_ALERT_ENABLED")
     fda_base_url: str = Field(default="https://api.fda.gov", alias="FDA_BASE_URL")
     fda_alert_categories: Annotated[list[str], NoDecode] = Field(
@@ -136,6 +153,12 @@ class Settings(BaseSettings):
     )
     fda_alert_classifications: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["Class I", "Class II"], alias="FDA_ALERT_CLASSIFICATIONS"
+    )
+    fda_alert_critical_classifications: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["Class I"], alias="FDA_ALERT_CRITICAL_CLASSIFICATIONS"
+    )
+    fda_alert_warning_classifications: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["Class II"], alias="FDA_ALERT_WARNING_CLASSIFICATIONS"
     )
     fda_alert_keywords: Annotated[list[str], NoDecode] = Field(
         default_factory=list, alias="FDA_ALERT_KEYWORDS"
@@ -220,8 +243,12 @@ class Settings(BaseSettings):
 
     @field_validator(
         "sec_alert_forms",
+        "sec_alert_critical_forms",
+        "sec_alert_warning_forms",
         "fda_alert_categories",
         "fda_alert_classifications",
+        "fda_alert_critical_classifications",
+        "fda_alert_warning_classifications",
         "fda_alert_keywords",
         mode="before",
     )
@@ -286,6 +313,19 @@ class Settings(BaseSettings):
     def validate_positive_interval(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("interval values must be positive")
+        return value
+
+    @field_validator(
+        "alert_price_pct",
+        "alert_price_critical_pct",
+        "alert_volume_ratio",
+        "alert_volume_critical_ratio",
+        "stock_watch_critical_multiplier",
+    )
+    @classmethod
+    def validate_positive_alert_thresholds(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("alert thresholds must be positive")
         return value
 
     @field_validator("longbridge_movers_market")

@@ -1,49 +1,12 @@
-"""Agent relevance and story grouping for social posts."""
+"""Agent relevance and exact-source story grouping for social posts."""
 
 from __future__ import annotations
 
-import re
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from server.db.models import SocialPost
 from server.social.urls import normalize_x_url
-
-SOCIAL_TOPIC_STOPWORDS = frozenset(
-    {
-        "about",
-        "after",
-        "again",
-        "also",
-        "because",
-        "before",
-        "being",
-        "could",
-        "from",
-        "have",
-        "into",
-        "just",
-        "market",
-        "markets",
-        "more",
-        "news",
-        "over",
-        "said",
-        "says",
-        "stock",
-        "stocks",
-        "than",
-        "that",
-        "their",
-        "there",
-        "this",
-        "today",
-        "trump",
-        "were",
-        "with",
-        "would",
-    }
-)
 
 TRACKING_QUERY_PARAMS = frozenset(
     {
@@ -131,13 +94,11 @@ def group_similar_social_posts(posts: list[SocialPost]) -> list[list[SocialPost]
                 {
                     "posts": [post],
                     "keys": set(fingerprint["keys"]),
-                    "tokens": set(fingerprint["tokens"]),
                 }
             )
             continue
         matched_group["posts"].append(post)
         matched_group["keys"].update(fingerprint["keys"])
-        matched_group["tokens"].update(fingerprint["tokens"])
 
     grouped = [group["posts"] for group in groups]
     return sorted(grouped, key=lambda group: group[-1].posted_at)
@@ -145,78 +106,56 @@ def group_similar_social_posts(posts: list[SocialPost]) -> list[list[SocialPost]
 
 def is_similar_story(fingerprint: dict[str, set[str]], group: dict[str, Any]) -> bool:
     keys = fingerprint["keys"]
-    if keys and keys & group["keys"]:
-        return True
-
-    tokens = fingerprint["tokens"]
-    group_tokens = group["tokens"]
-    if not tokens or not group_tokens:
-        return False
-
-    overlap = tokens & group_tokens
-    if len(overlap) >= 3:
-        return True
-    if len(overlap) >= 2:
-        denominator = max(len(tokens | group_tokens), 1)
-        return len(overlap) / denominator >= 0.4
-    return False
+    return bool(keys and keys & group["keys"])
 
 
 def story_fingerprint(post: SocialPost) -> dict[str, set[str]]:
     keys: set[str] = set()
-    tokens: set[str] = set()
+
+    if canonical_event_id := agent_canonical_event_id(post):
+        if is_specific_canonical_event_id(canonical_event_id):
+            keys.add(f"agent-event:{canonical_event_id}")
 
     for link in post.links or []:
         canonical_link = canonical_story_url(str(link))
-        if canonical_link:
+        if canonical_link and is_groupable_story_link(canonical_link):
             keys.add(f"link:{canonical_link}")
-            tokens.update(tokenize_story_text(canonical_link.replace("/", " ")))
 
     for reference in post.referenced_tweets or []:
         url = str(reference.get("url") or "")
         if url:
             keys.add(f"ref:{normalize_x_url(url)}")
-        if text := reference.get("text"):
-            tokens.update(tokenize_story_text(str(text)))
 
-    for ticker in post.mentioned_tickers or []:
-        ticker_text = str(ticker).strip().upper()
-        if ticker_text:
-            tokens.add(f"ticker:{ticker_text}")
-
-    for topic in post.topics or []:
-        topic_text = str(topic).strip().lower()
-        if topic_text:
-            tokens.add(f"topic:{topic_text}")
-
-    tokens.update(tokenize_story_text(social_post_search_text(post)))
-    return {"keys": keys, "tokens": tokens}
+    if not keys:
+        keys.add(f"post:{post.tweet_id or post.id}")
+    return {"keys": keys}
 
 
-def tokenize_story_text(text: str) -> set[str]:
-    tokens: set[str] = set()
+def agent_canonical_event_id(post: SocialPost) -> str:
+    """Return the Agent-provided canonical event id used for story grouping."""
 
-    for raw in re.findall(r"\$?[A-Za-z][A-Za-z0-9&.-]{2,}", text):
-        token = raw.strip("$").strip(".-").lower()
-        if len(token) < 3 or token in SOCIAL_TOPIC_STOPWORDS:
-            continue
-        tokens.add(token)
-
-    for raw in re.findall(r"[\u4e00-\u9fff]{2,12}", text):
-        tokens.update(_cjk_story_tokens(raw))
-    return tokens
+    analysis = _raw_agent_analysis(post) or {}
+    event = analysis.get("canonical_event")
+    if isinstance(event, dict):
+        value = event.get("id")
+    else:
+        value = analysis.get("canonical_event_id")
+    return normalize_agent_event_id(value)
 
 
-def _cjk_story_tokens(text: str) -> set[str]:
-    if len(text) < 2:
-        return set()
-    if len(text) <= 6:
-        return {text}
-    tokens: set[str] = set()
-    for size in (3, 4, 5):
-        for index in range(0, len(text) - size + 1):
-            tokens.add(text[index : index + size])
-    return tokens
+def normalize_agent_event_id(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    normalized = "".join(ch if ch.isalnum() else "-" for ch in raw)
+    normalized = "-".join(part for part in normalized.split("-") if part)
+    return normalized[:96]
+
+
+def is_specific_canonical_event_id(value: str) -> bool:
+    normalized = normalize_agent_event_id(value)
+    parts = [part for part in normalized.split("-") if part]
+    return len(parts) >= 3 and len(normalized) >= 12
 
 
 def canonical_story_url(url: str) -> str:
@@ -241,6 +180,18 @@ def canonical_story_url(url: str) -> str:
         query_items.append((key, value))
     query = urlencode(query_items)
     return urlunsplit((scheme, netloc, path, query, ""))
+
+
+def is_groupable_story_link(url: str) -> bool:
+    try:
+        host = urlsplit(url).netloc.lower()
+    except ValueError:
+        return False
+    if host.startswith("www."):
+        host = host[4:]
+    if not host:
+        return False
+    return host not in {"x.com", "twitter.com", "t.co"}
 
 
 def is_x_url(url: str) -> bool:

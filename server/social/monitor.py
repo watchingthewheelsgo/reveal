@@ -3,9 +3,9 @@
 import asyncio
 import re
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -33,6 +33,9 @@ INITIAL_WATCH_BACKFILL_LIMIT = 10
 MAX_CARD_REFERENCES = 3
 CARD_SIGNAL_FACT_LIMIT = 1000
 CARD_SIGNAL_VIEW_LIMIT = 240
+STORY_CLUSTER_CONTENT_LIMIT = 500
+STORY_CLUSTER_REFERENCE_LIMIT = 180
+STORY_CLUSTER_MAX_BATCH_POSTS = 12
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 
 
@@ -194,6 +197,11 @@ async def _upsert_social_post(
                     "summary": analysis.summary,
                     "mentioned_tickers": analysis.mentioned_tickers,
                     "topics": analysis.topics,
+                    "canonical_event": {
+                        "id": analysis.canonical_event_id,
+                        "title": analysis.canonical_event_title,
+                        "summary": analysis.canonical_event_summary,
+                    },
                     "sentiment": analysis.sentiment,
                     "urgency": analysis.urgency,
                     "urgency_reason": analysis.urgency_reason,
@@ -557,6 +565,7 @@ async def push_tweet_cards(
 async def push_relevant_tweet_cards(
     posts: list[SocialPost],
     adapter: BotAdapter,
+    llm_processor=None,
 ) -> list[SocialPost]:
     """Filter social updates and push only market-relevant cards, grouped by story."""
     if not posts:
@@ -574,7 +583,7 @@ async def push_relevant_tweet_cards(
         return []
 
     cross_ref = await _cross_reference_posts(relevant_posts)
-    grouped_posts = group_similar_social_posts(relevant_posts)
+    grouped_posts = await _group_relevant_social_posts(relevant_posts, llm_processor)
     pushed_posts: list[SocialPost] = []
     for group in grouped_posts:
         try:
@@ -586,6 +595,136 @@ async def push_relevant_tweet_cards(
                 [post.id or post.tweet_id for post in group],
             )
     return pushed_posts
+
+
+async def _group_relevant_social_posts(
+    posts: list[SocialPost],
+    llm_processor=None,
+) -> list[list[SocialPost]]:
+    ordered_posts = sorted(posts, key=lambda post: post.posted_at)
+    if len(ordered_posts) <= 1:
+        return [ordered_posts] if ordered_posts else []
+
+    if len(ordered_posts) > STORY_CLUSTER_MAX_BATCH_POSTS and callable(
+        getattr(llm_processor, "cluster_stories", None)
+    ):
+        groups: list[list[SocialPost]] = []
+        for chunk in _chunk_social_posts(ordered_posts, STORY_CLUSTER_MAX_BATCH_POSTS):
+            groups.extend(await _group_relevant_social_posts(chunk, llm_processor))
+        return sorted(groups, key=lambda group: group[-1].posted_at)
+
+    agent_groups = await _cluster_social_posts_with_agent(ordered_posts, llm_processor)
+    if agent_groups is not None:
+        return agent_groups
+
+    return group_similar_social_posts(ordered_posts)
+
+
+def _chunk_social_posts(
+    posts: Sequence[SocialPost],
+    size: int,
+) -> list[list[SocialPost]]:
+    return [list(posts[index : index + size]) for index in range(0, len(posts), size)]
+
+
+async def _cluster_social_posts_with_agent(
+    posts: list[SocialPost],
+    llm_processor=None,
+) -> list[list[SocialPost]] | None:
+    cluster_stories = getattr(llm_processor, "cluster_stories", None)
+    if not callable(cluster_stories):
+        return None
+
+    try:
+        cluster_stories_func = cast(
+            Callable[[list[dict[str, Any]]], Awaitable[Sequence[Any] | None]],
+            cluster_stories,
+        )
+        clusters = await cluster_stories_func([_story_cluster_input(post) for post in posts])
+    except Exception:
+        logger.exception("Tweet story clustering failed; falling back to exact grouping")
+        return None
+
+    if clusters is None:
+        return None
+
+    return _groups_from_story_clusters(posts, clusters)
+
+
+def _story_cluster_input(post: SocialPost) -> dict[str, Any]:
+    raw = post.raw_json if isinstance(post.raw_json, dict) else {}
+    raw_analysis = raw.get("reveal_analysis")
+    analysis = raw_analysis if isinstance(raw_analysis, dict) else {}
+    return {
+        "id": _story_cluster_post_id(post),
+        "author": post.username,
+        "tweet_id": post.tweet_id,
+        "tweet_url": post.tweet_url,
+        "time": _format_beijing_time(post.posted_at),
+        "content": (post.content or "")[:STORY_CLUSTER_CONTENT_LIMIT],
+        "summary": post.summary or "",
+        "attention_reason": post.attention_reason or "",
+        "tickers": post.mentioned_tickers or [],
+        "topics": post.topics or [],
+        "canonical_event": analysis.get("canonical_event") or {},
+        "links": post.links or [],
+        "referenced_tweets": [
+            {
+                "type": reference.get("type"),
+                "username": reference.get("username"),
+                "url": reference.get("url"),
+                "text": str(reference.get("text") or "")[:STORY_CLUSTER_REFERENCE_LIMIT],
+            }
+            for reference in (post.referenced_tweets or [])
+            if isinstance(reference, dict)
+        ],
+    }
+
+
+def _groups_from_story_clusters(
+    posts: list[SocialPost],
+    clusters: Sequence[Any],
+) -> list[list[SocialPost]]:
+    post_by_id = {_story_cluster_post_id(post): post for post in posts}
+    used: set[str] = set()
+    groups: list[list[SocialPost]] = []
+
+    for cluster in clusters:
+        post_ids = _cluster_post_ids(cluster)
+        candidates = [post_by_id[post_id] for post_id in post_ids if post_id in post_by_id]
+        candidates = [post for post in candidates if _story_cluster_post_id(post) not in used]
+        if not candidates:
+            continue
+
+        confidence = str(getattr(cluster, "confidence", "") or "").strip().lower()
+        if len(candidates) > 1 and confidence == "high":
+            group = sorted(candidates, key=lambda post: post.posted_at)
+            groups.append(group)
+            used.update(_story_cluster_post_id(post) for post in group)
+            continue
+
+        for post in sorted(candidates, key=lambda item: item.posted_at):
+            groups.append([post])
+            used.add(_story_cluster_post_id(post))
+
+    for post in posts:
+        post_id = _story_cluster_post_id(post)
+        if post_id not in used:
+            groups.append([post])
+
+    return sorted(groups, key=lambda group: group[-1].posted_at)
+
+
+def _cluster_post_ids(cluster: Any) -> list[str]:
+    if isinstance(cluster, dict):
+        raw_ids = cluster.get("post_ids") or []
+    else:
+        raw_ids = getattr(cluster, "post_ids", []) or []
+    return [str(post_id or "").strip() for post_id in raw_ids if str(post_id or "").strip()]
+
+
+def _story_cluster_post_id(post: SocialPost) -> str:
+    return str(post.id or post.tweet_id)
 
 
 async def push_tweet_topic_card(
@@ -678,7 +817,11 @@ async def run_twitter_monitor(
 
     pushed_posts: list[SocialPost] = []
     if adapter and candidates:
-        pushed_posts = await push_relevant_tweet_cards(candidates, adapter)
+        pushed_posts = await push_relevant_tweet_cards(
+            candidates,
+            adapter,
+            llm_processor=llm_processor,
+        )
         await mark_tweet_posts_pushed(pushed_posts)
 
     total = len(pushed_posts) if adapter else len(candidates)

@@ -280,7 +280,12 @@ def parse_schedule_time(
 
 
 def split_schedule_command_body(body: str) -> tuple[str, str] | None:
-    """Split a compact /task add body into (run_at_text, prompt)."""
+    """Split an explicit /task add body into (run_at_text, prompt).
+
+    Natural-language requests such as "今晚7点提醒我..." are handled by the
+    Agent via scheduled_task_create. The slash command intentionally keeps a
+    simple delimiter grammar so command parsing does not become intent routing.
+    """
     text = body.strip()
     if not text:
         return None
@@ -288,18 +293,6 @@ def split_schedule_command_body(body: str) -> tuple[str, str] | None:
         left, right = text.split("|", 1)
         if left.strip() and right.strip():
             return left.strip(), right.strip()
-
-    patterns = [
-        r"^(?P<time>(?:in\s*)?\d+\s*(?:h|hr|hrs|hour|hours|m|min|mins|minute|minutes|d|day|days))\s+(?P<prompt>.+)$",
-        r"^(?P<time>[零一二两三四五六七八九十\d]+\s*(?:个)?\s*(?:小时|钟头|分钟|分|天|日)后)\s*(?P<prompt>.+)$",
-        r"^(?P<time>(?:今天|今日|今晚|明天|明晚|后天)?\s*(?:早上|上午|中午|下午|晚上|今晚|明晚)?\s*\d{1,2}(?:[:：]\d{1,2})?\s*点(?:半)?)\s*(?P<prompt>.+)$",
-        r"^(?P<time>(?:today|tonight|tomorrow)?\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+(?P<prompt>.+)$",
-        r"^(?P<time>\d{4}-\d{1,2}-\d{1,2}(?:[ T]\d{1,2}:\d{2})?)\s+(?P<prompt>.+)$",
-    ]
-    for pattern in patterns:
-        match = re.match(pattern, text, flags=re.IGNORECASE)
-        if match:
-            return match.group("time").strip(), match.group("prompt").strip()
     return None
 
 

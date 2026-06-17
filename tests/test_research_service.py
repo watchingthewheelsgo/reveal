@@ -87,14 +87,18 @@ class ResearchServiceTest(unittest.IsolatedAsyncioTestCase):
             on_progress=None,
         ) -> AgentRunResult:
             calls.append((prompt, resume))
-            return AgentRunResult("agent answer", "agent-session-1")
+            return AgentRunResult(
+                "agent answer mentions nothing in machine-readable text",
+                "agent-session-1",
+                metadata={"mentioned_tickers": ["NVDA"]},
+            )
 
         with patch("server.research.service.run_agent", new=fake_run_agent):
             run = await run_deep_research("chat-1", "latest", "AI infra")
 
         self.assertIsNotNone(run.post)
         self.assertEqual(run.post.id, post_id)  # type: ignore[union-attr]
-        self.assertEqual(run.answer, "agent answer")
+        self.assertEqual(run.answer, "agent answer mentions nothing in machine-readable text")
         self.assertEqual(len(calls), 1)
         self.assertIsNone(calls[0][1])
         self.assertIn("WebSearch", calls[0][0])
@@ -111,6 +115,7 @@ class ResearchServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(research_session.status, "active")
         self.assertEqual(research_session.agent_runtime, "claude_sdk")
         self.assertEqual(research_session.agent_session_id, "agent-session-1")
+        self.assertEqual(research_session.mentioned_tickers, ["NVDA"])
 
     async def test_tweet_research_prompt_includes_typed_event_and_market_skills(self):
         post_id = await self.create_post(
