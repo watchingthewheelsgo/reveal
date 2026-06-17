@@ -54,7 +54,7 @@ async def resolve_social_post(ref: str) -> SocialPost:
             post = result.scalars().first()
             if post:
                 return post
-            raise ResearchError("还没有可研究的 Twitter 更新。")
+            raise ResearchError("还没有可研究的社交更新。")
 
         post = None
         if ref.isdigit():
@@ -76,7 +76,12 @@ async def run_deep_research(
 ) -> ResearchRun:
     post = await resolve_social_post(post_ref)
     result = await _run_new_agent(deep_prompt(post, focus), on_progress=on_progress)
-    session_id = await _create_session(chat_id, post.id, focus or _default_topic(post))
+    session_id = await _create_session(
+        chat_id,
+        post.id,
+        focus or _default_topic(post),
+        source_type=_source_type_for_post(post),
+    )
     await _save_answer(session_id, result.answer, result.agent_session_id, result.metadata)
     return ResearchRun(session_id=session_id, post=post, answer=result.answer)
 
@@ -177,7 +182,12 @@ async def ask_about_post(
     session = await _find_active_session_for_post(chat_id, post)
     if session is None:
         result = await _run_new_agent(ask_prompt(post, question), on_progress=on_progress)
-        session_id = await _create_session(chat_id, post.id, _default_topic(post))
+        session_id = await _create_session(
+            chat_id,
+            post.id,
+            _default_topic(post),
+            source_type=_source_type_for_post(post),
+        )
     else:
         result = await _run_agent_for_session(
             session, post, ask_prompt(post, question), on_progress=on_progress
@@ -227,6 +237,7 @@ async def _create_topic_for_post(
         chat_id,
         post.id,
         focus or _default_topic(post),
+        source_type=_source_type_for_post(post),
         close_previous=close_previous,
     )
     session_factory = get_session_factory()
@@ -294,7 +305,7 @@ async def handle_topic_message(
     if topic is None:
         return None
 
-    if topic.source_type == "twitter" and topic.source_id:
+    if _is_social_topic(topic) and topic.source_id:
         post = await resolve_social_post(str(topic.source_id))
         prompt = topic_prompt(post, message)
     else:
@@ -327,7 +338,7 @@ async def summarize_topic(chat_id: str, on_progress: ProgressCallback | None = N
     history_text = "\n".join(f"{message.role}: {message.content}" for message in history)
 
     post = None
-    if topic.source_type == "twitter" and topic.source_id:
+    if _is_social_topic(topic) and topic.source_id:
         post = await resolve_social_post(str(topic.source_id))
         if not history:
             return f"当前线程基于 @{post.username} 的更新，还没有进一步对话。"
@@ -602,6 +613,16 @@ def _default_topic(post: SocialPost) -> str:
     if content:
         return content[:120]
     return f"@{post.username} update {post.tweet_id}"
+
+
+def _source_type_for_post(post: SocialPost) -> str:
+    if str(post.tweet_id or "").startswith("reddit:"):
+        return "reddit"
+    return "twitter"
+
+
+def _is_social_topic(topic: ResearchSession) -> bool:
+    return topic.source_type in {"twitter", "reddit", "social"}
 
 
 def _agent_topic(message: str) -> str:

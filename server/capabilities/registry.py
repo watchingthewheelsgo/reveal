@@ -156,13 +156,21 @@ EXTERNAL_SERVICES: tuple[ExternalServiceSpec, ...] = (
         description="无 X token 时的公开 Twitter/X fallback；也用于单条推文详情补全。",
     ),
     ExternalServiceSpec(
+        id="social.reddit",
+        title="Reddit OAuth API",
+        kind="external_api",
+        description="使用 Reddit OAuth client credentials 读取公开 subreddit 帖子。",
+        config_keys=("REDDIT_ENABLED", "REDDIT_CLIENT_ID", "REDDIT_USER_AGENT"),
+    ),
+    ExternalServiceSpec(
         id="scheduler.apscheduler",
         title="APScheduler",
         kind="scheduler",
-        description="Twitter 监控、告警、每日简报和用户定时任务。",
+        description="Twitter/Reddit 监控、告警、每日简报和用户定时任务。",
         config_keys=(
             "SCHEDULER_TIMEZONE",
             "TWITTER_MONITOR_INTERVAL",
+            "REDDIT_MONITOR_INTERVAL",
             "DAILY_BRIEFING_TIME",
             "TWITTER_DIGEST_TIME",
         ),
@@ -216,10 +224,10 @@ CAPABILITIES: tuple[CapabilitySpec, ...] = (
         title="每日选股",
         kind="workflow",
         group="股票",
-        description="扫描市场并推荐标的。",
+        description="历史选股/追踪模块；当前不再自动每日推送。",
         natural_examples=("今日选股", "推荐股票"),
         external_services=("market.finnhub", "market.yfinance", "database.app"),
-        usage="自动每日执行；也可用自然语言让 Agent 生成选股建议。",
+        usage="建议改用自然语言研究/评分股票，而不是依赖自动每日选股。",
         side_effects="会写入/更新每日选股和追踪记录。",
     ),
     CapabilitySpec(
@@ -436,6 +444,32 @@ CAPABILITIES: tuple[CapabilitySpec, ...] = (
             "mcp.reveal",
         ),
         usage="自动日报；也可自然语言询问某账号昨日总结。",
+    ),
+    CapabilitySpec(
+        id="reddit.watch",
+        title="Reddit Subreddit 监控",
+        kind="workflow",
+        group="Reddit",
+        description=(
+            "添加、移除、检查 subreddit；后台按小时拉取新帖，只推送 Agent 判定为 "
+            "market/stock 强相关且值得提醒的帖子。"
+        ),
+        slash_commands=("reddit",),
+        natural_examples=(
+            "监控 r/stocks",
+            "把 r/wallstreetbets 加入 Reddit 监控",
+            "查看 subreddit 列表",
+        ),
+        agent_tools=(
+            "mcp__reveal__reddit_watch_list",
+            "mcp__reveal__reddit_watch_add",
+            "mcp__reveal__reddit_watch_remove",
+            "mcp__reveal__reddit_latest",
+            "mcp__reveal__reddit_search",
+        ),
+        external_services=("database.app", "social.reddit", "llm.deepseek_chat", "mcp.reveal"),
+        usage="/reddit list|add SUBREDDIT|del SUBREDDIT|check",
+        side_effects="add/remove 会更新 subreddit 监控状态；后台检查只推送强市场相关内容。",
     ),
     CapabilitySpec(
         id="journal.log",

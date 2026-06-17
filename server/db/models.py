@@ -197,6 +197,18 @@ class TwitterState(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
 
 
+class RedditState(Base):
+    __tablename__ = "reddit_state"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    subreddit: Mapped[str] = mapped_column(String(80), unique=True)
+    last_post_epoch: Mapped[int] = mapped_column(Integer, default=0)
+    newest_post_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    last_check_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    is_active: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+
 class SocialPost(Base):
     __tablename__ = "social_posts"
 

@@ -286,7 +286,7 @@ async def _route_bound_reply(ctx: BotContext, adapter, text: str) -> bool:
             "bound agent session message",
         )
         return True
-    if binding.source_type != "twitter":
+    if binding.source_type not in {"twitter", "reddit", "social"}:
         return False
 
     try:
@@ -527,6 +527,25 @@ async def _run_twitter_check_job(
         await adapter.send_message(reply_chat_id, "❌ Twitter 检查失败，请稍后重试。")
 
 
+async def _run_reddit_check_job(
+    subreddits: list[str],
+    reply_chat_id: str,
+    adapter,
+    no_updates_text: str | None = None,
+) -> None:
+    try:
+        from server.social.processor import TweetProcessor
+        from server.social.reddit import run_reddit_monitor
+
+        processor = TweetProcessor()
+        total = await run_reddit_monitor(subreddits, adapter, processor)
+        if total == 0 and no_updates_text:
+            await adapter.send_message(reply_chat_id, no_updates_text)
+    except Exception as e:
+        logger.exception(f"Reddit monitor check failed: {e}")
+        await adapter.send_message(reply_chat_id, f"❌ Reddit 检查失败：{type(e).__name__}: {e}")
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Twitter Commands
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -596,6 +615,96 @@ async def cmd_twatch(ctx: BotContext, adapter):
             "/research latest [研究重点] — 建立研究话题\n"
             "也可以直接回复推送卡片继续追问。",
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Reddit Commands
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+async def cmd_reddit_watch(ctx: BotContext, adapter):
+    """Reddit watch commands: /reddit [list|add subreddit|del subreddit|check]"""
+    sub = ctx.args[0].lower() if ctx.args else "list"
+
+    if sub in {"list", "ls"}:
+        from server.capabilities.reddit import (
+            format_reddit_watch_list,
+            get_reddit_watch_list_payload,
+        )
+
+        await adapter.send_message(
+            ctx.chat_id, format_reddit_watch_list(await get_reddit_watch_list_payload())
+        )
+        return
+
+    if sub == "add" and len(ctx.args) > 1:
+        subreddit = ctx.args[1]
+        from server.capabilities.reddit import set_reddit_watch_subreddit_payload
+
+        try:
+            payload = await set_reddit_watch_subreddit_payload(subreddit, True)
+        except Exception as exc:
+            await adapter.send_message(
+                ctx.chat_id, f"❌ 添加 subreddit 失败：{type(exc).__name__}: {exc}"
+            )
+            return
+        subreddit_name = payload["subreddit"]
+        await adapter.send_message(
+            ctx.chat_id,
+            f"✅ 已添加 r/{subreddit_name}\n"
+            "正在获取最近帖子；后续每小时检查，只推送 market/stock 强相关内容。",
+        )
+        _spawn_background_task(
+            _run_reddit_check_job(
+                [subreddit_name],
+                ctx.chat_id,
+                adapter,
+                "✅ 首次检查完成，没有发现需要推送的强市场相关帖子。",
+            ),
+            "reddit watch add",
+        )
+        return
+
+    if sub in {"del", "delete", "remove", "rm"} and len(ctx.args) > 1:
+        subreddit = ctx.args[1]
+        from server.capabilities.reddit import set_reddit_watch_subreddit_payload
+
+        try:
+            payload = await set_reddit_watch_subreddit_payload(subreddit, False)
+        except Exception as exc:
+            await adapter.send_message(
+                ctx.chat_id, f"❌ 移除 subreddit 失败：{type(exc).__name__}: {exc}"
+            )
+            return
+        await adapter.send_message(ctx.chat_id, f"✅ 已移除 r/{payload['subreddit']}")
+        return
+
+    if sub == "check":
+        await adapter.send_message(ctx.chat_id, "🔍 正在检查 Reddit subreddit...")
+        from config.settings import get_settings
+        from server.social.reddit import list_active_reddit_subreddits
+
+        subreddits = await list_active_reddit_subreddits(get_settings().reddit_subreddits)
+        _spawn_background_task(
+            _run_reddit_check_job(
+                subreddits,
+                ctx.chat_id,
+                adapter,
+                "✅ 检查完成，没有发现需要推送的强市场相关 Reddit 帖子。",
+            ),
+            "reddit manual check",
+        )
+        return
+
+    await adapter.send_message(
+        ctx.chat_id,
+        "用法:\n"
+        "/reddit list — 查看 subreddit 列表\n"
+        "/reddit add stocks — 添加 subreddit\n"
+        "/reddit del stocks — 删除 subreddit\n"
+        "/reddit check — 立即检查\n\n"
+        "后台每小时检查，只推送 Agent 判定为 market/stock 强相关的帖子。",
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -828,6 +937,7 @@ def register_all_commands(router, adapter):
             "research": lambda ctx: cmd_research(ctx, adapter),
             "topic": lambda ctx: cmd_topic(ctx, adapter),
             "x": lambda ctx: cmd_twatch(ctx, adapter),
+            "reddit": lambda ctx: cmd_reddit_watch(ctx, adapter),
             "task": lambda ctx: cmd_task(ctx, adapter),
             "alert": lambda ctx: cmd_alert(ctx, adapter),
             "movers": lambda ctx: cmd_movers(ctx, adapter),

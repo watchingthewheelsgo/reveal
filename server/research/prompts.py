@@ -135,9 +135,11 @@ def agent_message_prompt(topic: ResearchSession, message: str, platform: str = "
 Reveal 的能力以 MCP tools 暴露给你。请根据用户意图选择真实工具执行，而不是输出工具调用文本。
 
 原则:
-1. 如果用户要执行系统操作，例如添加/移除 Twitter watch list、添加/移除股票观察列表、
+1. 如果用户要执行系统操作，例如添加/移除 Twitter watch list、添加/移除 Reddit subreddit watch list、
+添加/移除股票观察列表、
 添加/移除持仓关注标记（用户说持有某股票但不想记录数量/成本，只为后续消息考虑影响）、
-创建/查看/取消未来定时任务、获取某用户最新推文、搜索本地推文、查询股票、查看持仓、
+创建/查看/取消未来定时任务、获取某用户最新推文、获取 subreddit 最新帖子、
+搜索本地推文/Reddit 帖子、查询股票、查看持仓、
 查询交易日记或系统状态，
 直接调用对应 Reveal MCP 工具。
    - 如果用户说“2小时后”、“今晚7点”、“明天早上”等未来时间后再推送/提醒/查询，
@@ -157,6 +159,8 @@ platform: {platform}
 如果用户说“我持有/有仓位/后续关注某股票”但没有给价格数量，调用 portfolio_holding_add；
 这个工具只用于后续消息个性化提醒，不表示真实买入/卖出。
 如果用户说不再持有或取消这个持仓关注标记，调用 portfolio_holding_remove。
+如果用户说“监控 r/stocks / 添加 subreddit / Reddit 关注列表”，调用 reddit_watch_add、
+reddit_watch_remove 或 reddit_watch_list。Reddit 后台只推送 market/stock 强相关内容。
 如果调用 scheduled_task_create、scheduled_task_list 或 scheduled_task_cancel，也必须使用
 上面的 chat_id；创建任务时传 platform，并把用户原始时间短语放入 run_at_text。
 
@@ -213,8 +217,9 @@ def post_context(post: SocialPost) -> str:
     event = event_from_social_post(post)
     lines = [
         f"post_id: {post.id}",
+        f"source: {event.source}",
         f"author: @{post.username}",
-        f"tweet_id: {post.tweet_id}",
+        f"event_id: {post.tweet_id}",
     ]
     if post.tweet_url:
         lines.append(f"url: {post.tweet_url}")

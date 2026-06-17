@@ -34,6 +34,9 @@ class CapabilityRegistryTest(unittest.TestCase):
         self.assertIn("mcp__reveal__twitter_watch_list", tools)
         self.assertIn("mcp__reveal__twitter_latest", tools)
         self.assertIn("mcp__reveal__twitter_search", tools)
+        self.assertIn("mcp__reveal__reddit_watch_list", tools)
+        self.assertIn("mcp__reveal__reddit_watch_add", tools)
+        self.assertIn("mcp__reveal__reddit_search", tools)
         self.assertIn("mcp__reveal__scheduled_task_create", tools)
         self.assertIn("mcp__reveal__scheduled_task_list", tools)
         self.assertIn("mcp__reveal__scheduled_task_cancel", tools)
@@ -50,6 +53,7 @@ class CapabilityRegistryTest(unittest.TestCase):
             "/movers",
             "/research",
             "/x",
+            "/reddit",
             "/topic",
             "/task",
             "/alert",
@@ -92,6 +96,7 @@ class CapabilityRegistryTest(unittest.TestCase):
         self.assertIn("market.movers", capability_ids)
         self.assertIn("research.ticker", capability_ids)
         self.assertIn("research.market_skills", capability_ids)
+        self.assertIn("reddit.watch", capability_ids)
         self.assertIn("task.schedule", capability_ids)
 
     def test_agent_catalog_exposes_capabilities_and_service_backing(self):
@@ -99,6 +104,7 @@ class CapabilityRegistryTest(unittest.TestCase):
 
         self.assertIn("Reveal system capabilities", catalog)
         self.assertIn("mcp__reveal__twitter_watch_list", catalog)
+        self.assertIn("mcp__reveal__reddit_watch_add", catalog)
         self.assertIn("mcp__reveal__stock_watch_add", catalog)
         self.assertIn("mcp__reveal__portfolio_holding_add", catalog)
         self.assertIn("mcp__reveal__market_movers_check", catalog)
@@ -106,6 +112,7 @@ class CapabilityRegistryTest(unittest.TestCase):
         self.assertIn("mcp__reveal__scheduled_task_create", catalog)
         self.assertIn("mcp__reveal__system_status", catalog)
         self.assertIn("social.x_graphql", catalog)
+        self.assertIn("social.reddit", catalog)
         self.assertIn("WebSearch", catalog)
 
     def test_external_services_are_registered(self):
@@ -116,6 +123,7 @@ class CapabilityRegistryTest(unittest.TestCase):
         self.assertIn("market.finnhub", services)
         self.assertIn("market.longbridge", services)
         self.assertIn("social.vxtwitter", services)
+        self.assertIn("social.reddit", services)
 
 
 class CapabilityPlannerTest(unittest.TestCase):

@@ -736,7 +736,11 @@ async def push_tweet_topic_card(
     ordered_posts = sorted(posts, key=lambda post: post.posted_at)
     card = await _build_tweet_signal_card(ordered_posts, cross_ref=cross_ref or {})
     sent_messages = await _push_card_to_admin(adapter, card)
-    await _bind_sent_messages(sent_messages, ordered_posts[-1].id)
+    await _bind_sent_messages(
+        sent_messages,
+        ordered_posts[-1].id,
+        _social_post_source_type(ordered_posts[-1]),
+    )
 
 
 async def mark_tweet_posts_pushed(posts: list[SocialPost]) -> None:
@@ -775,7 +779,7 @@ async def push_tweet_card(
     """Push one tweet as a rich card and bind the sent message to the post."""
     card = await _build_tweet_card(post, adapter, cross_ref=cross_ref, is_backfill=is_backfill)
     sent_messages = await _push_card_to_admin(adapter, card)
-    await _bind_sent_messages(sent_messages, post.id)
+    await _bind_sent_messages(sent_messages, post.id, _social_post_source_type(post))
 
 
 async def run_twitter_monitor(
@@ -1790,13 +1794,23 @@ def _admin_chat_ids(adapter: BotAdapter) -> list[str]:
     return list(dict.fromkeys(chat_ids))
 
 
-async def _bind_sent_messages(sent_messages: list[tuple[str, str]], post_id: int | None) -> None:
+async def _bind_sent_messages(
+    sent_messages: list[tuple[str, str]],
+    post_id: int | None,
+    source_type: str = "twitter",
+) -> None:
     if not sent_messages or post_id is None:
         return
     from server.bot.bindings import bind_message_to_source
 
     for chat_id, message_id in sent_messages:
-        await bind_message_to_source(chat_id, message_id, "twitter", post_id)
+        await bind_message_to_source(chat_id, message_id, source_type, post_id)
+
+
+def _social_post_source_type(post: SocialPost) -> str:
+    if str(post.tweet_id or "").startswith("reddit:"):
+        return "reddit"
+    return "twitter"
 
 
 def _post_type_label(post) -> str:

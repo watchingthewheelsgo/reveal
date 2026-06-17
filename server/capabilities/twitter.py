@@ -156,9 +156,13 @@ async def search_cached_twitter_posts(
 
 def social_post_payload(post: SocialPost) -> dict[str, Any]:
     """Serialize a cached SocialPost for Agent/MCP consumption."""
+    source = "reddit" if str(post.tweet_id or "").startswith("reddit:") else "x"
     return {
         "id": post.id,
+        "source": source,
         "username": post.username,
+        "source_id": post.tweet_id,
+        "url": post.tweet_url,
         "tweet_id": post.tweet_id,
         "tweet_url": post.tweet_url,
         "content": post.content,

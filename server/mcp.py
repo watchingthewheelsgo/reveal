@@ -281,6 +281,64 @@ async def twitter_search(query: str, limit: int = 8, username: str | None = None
 
 
 @mcp.tool()
+async def reddit_watch_list() -> str:
+    """查看当前 Reddit subreddit watch list 和每个 subreddit 的缓存/check 状态。"""
+    from server.capabilities.reddit import get_reddit_watch_list_payload
+
+    await _ensure_database()
+    return json.dumps(await get_reddit_watch_list_payload(), ensure_ascii=False)
+
+
+@mcp.tool()
+async def reddit_watch_add(subreddit: str, backfill_limit: int = 10) -> str:
+    """把一个 subreddit 加入 watch list，并返回最近最多 backfill_limit 条帖子。"""
+    from server.capabilities.reddit import set_reddit_watch_subreddit_payload
+
+    await _ensure_database()
+    return json.dumps(
+        await set_reddit_watch_subreddit_payload(
+            subreddit,
+            is_active=True,
+            backfill_limit=backfill_limit,
+        ),
+        ensure_ascii=False,
+    )
+
+
+@mcp.tool()
+async def reddit_watch_remove(subreddit: str) -> str:
+    """把一个 subreddit 移出 watch list。"""
+    from server.capabilities.reddit import set_reddit_watch_subreddit_payload
+
+    await _ensure_database()
+    return json.dumps(
+        await set_reddit_watch_subreddit_payload(subreddit, is_active=False),
+        ensure_ascii=False,
+    )
+
+
+@mcp.tool()
+async def reddit_latest(subreddit: str, limit: int = 5) -> str:
+    """获取并缓存某个 subreddit 最新帖子，返回标题、正文、score、链接和分析字段。"""
+    from server.capabilities.reddit import get_reddit_latest_payload
+
+    await _ensure_database()
+    return json.dumps(await get_reddit_latest_payload(subreddit, limit=limit), ensure_ascii=False)
+
+
+@mcp.tool()
+async def reddit_search(query: str, limit: int = 8, subreddit: str | None = None) -> str:
+    """搜索 Reveal 数据库中已缓存的 Reddit 帖子，可按 subreddit 过滤。"""
+    from server.capabilities.reddit import search_cached_reddit_posts_payload
+
+    await _ensure_database()
+    return json.dumps(
+        await search_cached_reddit_posts_payload(query, limit=limit, subreddit=subreddit),
+        ensure_ascii=False,
+    )
+
+
+@mcp.tool()
 async def trading_journal(period: str = "today") -> str:
     """查看交易日记。period: today/week/month/year/all。"""
     from server.capabilities.journal import get_trading_journal_payload

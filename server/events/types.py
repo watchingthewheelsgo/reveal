@@ -67,6 +67,23 @@ class XPostEvent(Event):
     is_repost: bool = False
 
 
+class RedditPostEvent(Event):
+    subreddit: str
+    reddit_id: str
+    permalink: str
+    author: str | None = None
+    score: int | None = None
+    upvote_ratio: float | None = None
+    num_comments: int | None = None
+    flair: str | None = None
+    topics: list[str] = Field(default_factory=list)
+    sentiment: str | None = None
+    urgency: str | None = None
+    is_market_relevant: bool | None = None
+    is_noteworthy: bool = False
+    attention_reason: str | None = None
+
+
 class SECFilingEvent(Event):
     cik: str
     accession: str

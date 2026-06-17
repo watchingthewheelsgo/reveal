@@ -172,6 +172,29 @@ async def lifespan(app: FastAPI):
         run_immediately=True,
     )
 
+    # Reddit/subreddit monitor
+    if settings.is_reddit_configured():
+
+        async def reddit_monitor_job():
+            from config.settings import get_settings
+            from server.social.processor import TweetProcessor
+            from server.social.reddit import list_active_reddit_subreddits, run_reddit_monitor
+
+            tg = telegram_bot if telegram_bot else feishu_bot
+            subreddits = await list_active_reddit_subreddits(get_settings().reddit_subreddits)
+            if not subreddits:
+                logger.info("Reddit monitor skipped: no active subreddits")
+                return
+            processor = TweetProcessor()
+            await run_reddit_monitor(subreddits, tg, processor, notify_no_updates=False)
+
+        scheduler.register_interval(
+            "reddit_monitor",
+            reddit_monitor_job,
+            settings.reddit_monitor_interval,
+            run_immediately=True,
+        )
+
     # Intraday alerts (every 30 min during market hours)
     if settings.alert_enabled:
 

@@ -11,6 +11,7 @@ class AgentToolAccessTest(unittest.TestCase):
         self.assertIn("WebFetch", tools)
         self.assertIn("mcp__reveal__stock_quote", tools)
         self.assertIn("mcp__reveal__twitter_watch_add", tools)
+        self.assertIn("mcp__reveal__reddit_watch_add", tools)
         self.assertIn("mcp__reveal__scheduled_task_create", tools)
         self.assertIn("mcp__reveal__portfolio_holding_add", tools)
 

@@ -24,6 +24,7 @@ dependencies = [
     "claude-agent-sdk>=0.2.87",
     "tzdata>=2026.2",
     "asyncpg>=0.31.0",
+    "praw>=8.0.1",
 ]
 
 [project.scripts]

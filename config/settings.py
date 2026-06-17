@@ -94,6 +94,10 @@ class Settings(BaseSettings):
     twitter_digest_enabled: bool = Field(default=True, alias="TWITTER_DIGEST_ENABLED")
     twitter_digest_time: str = Field(default="17:00", alias="TWITTER_DIGEST_TIME")
     twitter_digest_timezone: str = Field(default="Asia/Shanghai", alias="TWITTER_DIGEST_TIMEZONE")
+    reddit_enabled: bool = Field(default=False, alias="REDDIT_ENABLED")
+    reddit_monitor_interval: int = Field(default=1800, alias="REDDIT_MONITOR_INTERVAL")
+    reddit_fetch_min_interval: int = Field(default=900, alias="REDDIT_FETCH_MIN_INTERVAL")
+    reddit_post_fetch_limit: int = Field(default=25, alias="REDDIT_POST_FETCH_LIMIT")
 
     # Logging
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
@@ -187,6 +191,22 @@ class Settings(BaseSettings):
     twitter_auth_tokens: Annotated[list[str], NoDecode] = Field(
         default_factory=list, alias="TWITTER_AUTH_TOKENS"
     )
+    reddit_client_id: str = Field(default="", alias="REDDIT_CLIENT_ID")
+    reddit_client_secret: str = Field(default="", alias="REDDIT_CLIENT_SECRET")
+    reddit_user_agent: str = Field(
+        default="Reveal/0.1 theheisensky@gmail.com", alias="REDDIT_USER_AGENT"
+    )
+    reddit_subreddits: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, alias="REDDIT_SUBREDDITS"
+    )
+
+    def is_reddit_configured(self) -> bool:
+        return bool(
+            self.reddit_enabled
+            and self.reddit_client_id
+            and self.reddit_client_secret
+            and self.reddit_user_agent
+        )
 
     # Claude Agent SDK runtime backed by DeepSeek's Anthropic-compatible API.
     agent_runtime: str = Field(default="claude_sdk", alias="AGENT_RUNTIME")
@@ -240,6 +260,11 @@ class Settings(BaseSettings):
     def parse_twitter_auth_tokens(cls, value) -> list[str]:
         return cls._parse_string_list(value, "TWITTER_AUTH_TOKENS")
 
+    @field_validator("reddit_subreddits", mode="before")
+    @classmethod
+    def parse_reddit_subreddits(cls, value) -> list[str]:
+        return cls._parse_string_list(value, "REDDIT_SUBREDDITS")
+
     @field_validator(
         "sec_alert_forms",
         "sec_alert_critical_forms",
@@ -278,10 +303,19 @@ class Settings(BaseSettings):
             normalized = str(item).strip()
             if field_name == "TWITTER_ACCOUNTS":
                 normalized = normalized.lstrip("@")
+            elif field_name == "REDDIT_SUBREDDITS":
+                normalized = cls._normalize_subreddit_name(normalized)
             if normalized and normalized not in seen:
                 items.append(normalized)
                 seen.add(normalized)
         return items
+
+    @staticmethod
+    def _normalize_subreddit_name(value: str) -> str:
+        normalized = value.strip().strip("/")
+        if normalized.lower().startswith("r/"):
+            normalized = normalized[2:]
+        return normalized.strip()
 
     @field_validator("daily_briefing_time", "twitter_digest_time")
     @classmethod
@@ -301,6 +335,9 @@ class Settings(BaseSettings):
     @field_validator(
         "twitter_monitor_interval",
         "twitter_fetch_min_interval",
+        "reddit_monitor_interval",
+        "reddit_fetch_min_interval",
+        "reddit_post_fetch_limit",
         "alert_interval_minutes",
         "regulatory_alert_interval_minutes",
         "regulatory_alert_lookback_hours",

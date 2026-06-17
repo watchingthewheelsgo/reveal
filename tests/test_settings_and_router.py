@@ -41,6 +41,33 @@ class SettingsTest(unittest.TestCase):
 
         self.assertEqual(settings.twitter_auth_tokens, ["token-a", "token-b"])
 
+    def test_reddit_subreddits_accept_prefixed_values(self):
+        with patch.dict(
+            os.environ,
+            {"REDDIT_SUBREDDITS": " r/stocks,wallstreetbets, /r/Economics/ "},
+            clear=False,
+        ):
+            settings = self.build_settings()
+
+        self.assertEqual(settings.reddit_subreddits, ["stocks", "wallstreetbets", "Economics"])
+
+    def test_reddit_settings_configure_monitor(self):
+        with patch.dict(
+            os.environ,
+            {
+                "REDDIT_ENABLED": "true",
+                "REDDIT_CLIENT_ID": "client",
+                "REDDIT_CLIENT_SECRET": "secret",
+                "REDDIT_USER_AGENT": "Reveal/0.1 test@example.com",
+                "REDDIT_MONITOR_INTERVAL": "3600",
+            },
+            clear=False,
+        ):
+            settings = self.build_settings()
+
+        self.assertTrue(settings.is_reddit_configured())
+        self.assertEqual(settings.reddit_monitor_interval, 3600)
+
     def test_regulatory_list_settings_accept_comma_separated_values(self):
         with patch.dict(
             os.environ,
@@ -240,6 +267,7 @@ class CommandRouterTest(unittest.TestCase):
                 "research",
                 "topic",
                 "x",
+                "reddit",
                 "task",
                 "alert",
                 "movers",

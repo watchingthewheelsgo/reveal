@@ -14,6 +14,9 @@ class SdkMcpAdapterTest(unittest.TestCase):
         self.assertIn("twitter_watch_list", tools)
         self.assertIn("twitter_watch_add", tools)
         self.assertIn("twitter_search", tools)
+        self.assertIn("reddit_watch_list", tools)
+        self.assertIn("reddit_watch_add", tools)
+        self.assertIn("reddit_search", tools)
         self.assertIn("stock_quote", tools)
         self.assertIn("portfolio_holding_add", tools)
         self.assertIn("portfolio_holding_remove", tools)
@@ -29,6 +32,7 @@ class SdkMcpAdapterTest(unittest.TestCase):
         tools = {item.name: item for item in _build_tools()}
         stock_quote_schema = cast(dict[str, Any], tools["stock_quote"].input_schema)
         watch_add_schema = cast(dict[str, Any], tools["twitter_watch_add"].input_schema)
+        reddit_watch_add_schema = cast(dict[str, Any], tools["reddit_watch_add"].input_schema)
         twitter_search_schema = cast(dict[str, Any], tools["twitter_search"].input_schema)
         stock_watch_add_schema = cast(dict[str, Any], tools["stock_watch_add"].input_schema)
         holding_add_schema = cast(dict[str, Any], tools["portfolio_holding_add"].input_schema)
@@ -41,6 +45,8 @@ class SdkMcpAdapterTest(unittest.TestCase):
             10,
         )
         self.assertEqual(twitter_search_schema["required"], ["query"])
+        self.assertEqual(reddit_watch_add_schema["required"], ["subreddit"])
+        self.assertEqual(reddit_watch_add_schema["properties"]["backfill_limit"]["default"], 10)
         self.assertNotIn("username", twitter_search_schema.get("required", []))
         self.assertEqual(stock_watch_add_schema["required"], ["ticker", "chat_id"])
         self.assertEqual(stock_watch_add_schema["properties"]["threshold_pct"]["default"], 5.0)

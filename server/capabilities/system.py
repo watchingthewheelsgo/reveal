@@ -83,6 +83,14 @@ def get_system_status_payload() -> dict[str, Any]:
             "digest_time": settings.twitter_digest_time,
             "digest_timezone": settings.twitter_digest_timezone,
         },
+        "reddit": {
+            "enabled": settings.reddit_enabled,
+            "configured": settings.is_reddit_configured(),
+            "configured_subreddits": len(settings.reddit_subreddits),
+            "monitor_interval_seconds": settings.reddit_monitor_interval,
+            "fetch_min_interval_seconds": settings.reddit_fetch_min_interval,
+            "post_fetch_limit": settings.reddit_post_fetch_limit,
+        },
         "database": {
             "initialized": db_engine.engine is not None,
             "driver": database_driver,
@@ -115,6 +123,7 @@ def format_system_status(payload: dict[str, Any]) -> str:
     market = payload["market_data"]
     database = payload["database"]
     twitter = payload["twitter"]
+    reddit = payload["reddit"]
     scheduler = payload["scheduler"]
     alerts = payload["alerts"]
     return "\n".join(
@@ -137,6 +146,9 @@ def format_system_status(payload: dict[str, Any]) -> str:
             f"{twitter['graphql_tokens']} GraphQL tokens, "
             f"interval {twitter['monitor_interval_seconds']}s, "
             f"fetch cooldown {twitter['fetch_min_interval_seconds']}s",
+            f"Reddit: {_flag(reddit['configured'])} "
+            f"{reddit['configured_subreddits']} env subreddits, "
+            f"interval {reddit['monitor_interval_seconds']}s",
             f"时区: {scheduler['timezone']}",
             f"每日简报: {scheduler['daily_briefing_time']} {scheduler['timezone']}",
             f"日报: {_flag(twitter['digest_enabled'])} "
