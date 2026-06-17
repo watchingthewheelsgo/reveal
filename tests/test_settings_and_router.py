@@ -95,7 +95,7 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(settings.longbridge_movers_interval_seconds, 300)
 
     def test_invalid_schedule_time_fails_fast(self):
-        with patch.dict(os.environ, {"DAILY_PICK_TIME": "8am"}, clear=False):
+        with patch.dict(os.environ, {"DAILY_BRIEFING_TIME": "8am"}, clear=False):
             with self.assertRaises(ValidationError):
                 self.build_settings()
 

@@ -95,24 +95,6 @@ async def lifespan(app: FastAPI):
     }
     configure_scheduled_task_runtime(scheduler, bot_adapters)
 
-    # Daily stock pick
-    async def daily_pick_job():
-        from server.stock.scanner import format_pick_message, run_daily_pick
-
-        logger.info("Running daily pick job...")
-        pick = await run_daily_pick()
-        if pick is None:
-            logger.warning("Daily pick returned no results")
-            return
-        text = format_pick_message(pick)
-        if telegram_bot:
-            await telegram_bot.push_to_admin(text)
-        if feishu_bot:
-            await feishu_bot.push_to_admin(text)
-
-    pick_hour, pick_minute = map(int, settings.daily_pick_time.split(":"))
-    scheduler.register_cron("daily_pick", daily_pick_job, pick_hour, pick_minute)
-
     # Daily tracking update (after market close ~4:30 PM ET)
     async def tracking_update_job():
         from server.stock.tracker import apply_feedback, update_tracking

@@ -91,7 +91,6 @@ def get_system_status_payload() -> dict[str, Any]:
         },
         "scheduler": {
             "timezone": settings.scheduler_timezone,
-            "daily_pick_time": settings.daily_pick_time,
             "daily_briefing_time": settings.daily_briefing_time,
         },
         "alerts": {
@@ -139,7 +138,7 @@ def format_system_status(payload: dict[str, Any]) -> str:
             f"interval {twitter['monitor_interval_seconds']}s, "
             f"fetch cooldown {twitter['fetch_min_interval_seconds']}s",
             f"时区: {scheduler['timezone']}",
-            f"选股时间: {scheduler['daily_pick_time']} (ET)",
+            f"每日简报: {scheduler['daily_briefing_time']} {scheduler['timezone']}",
             f"日报: {_flag(twitter['digest_enabled'])} "
             f"{twitter['digest_time']} {twitter['digest_timezone']}",
             f"告警: {_flag(alerts['enabled'])} every {alerts['interval_minutes']}m",

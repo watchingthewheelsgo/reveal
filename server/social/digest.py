@@ -3,34 +3,27 @@
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from loguru import logger
 from sqlalchemy import desc, select
 
 from config.settings import get_settings
 from server.db.engine import get_session_factory
 from server.db.models import SocialPost, TwitterState
 from server.db.time import to_naive_utc
-from server.llm.client import get_llm_client
+from server.social.relevance import group_similar_social_posts, is_relevant_social_post
 
-MAX_DIGEST_ITEMS_PER_USER = 8
+MAX_DIGEST_STORIES = 5
+MAX_DIGEST_POSTS_PER_STORY = 3
 
 
 async def generate_twitter_digest(days_ago: int = 1) -> list[str]:
-    """Generate one digest message per watched account for the target day."""
+    """Generate a compact event-centered digest for watched accounts."""
     target_date = _target_date(days_ago)
     active_users = await _active_twitter_users()
     posts = await _posts_for_day(target_date, usernames=active_users or None)
-    if not posts:
+    relevant_posts = _digest_relevant_posts(posts)
+    if not relevant_posts:
         return []
-
-    by_user: dict[str, list[SocialPost]] = {}
-    for post in posts:
-        by_user.setdefault(post.username, []).append(post)
-
-    messages: list[str] = []
-    for username in sorted(by_user):
-        messages.append(await _format_user_digest(username, target_date, by_user[username]))
-    return messages
+    return [_format_event_digest(target_date, relevant_posts)]
 
 
 async def generate_user_digest(username: str, target_date: date | None = None) -> str | None:
@@ -40,7 +33,10 @@ async def generate_user_digest(username: str, target_date: date | None = None) -
     posts = await _posts_for_day(target_date, usernames=[username])
     if not posts:
         return None
-    return await _format_user_digest(username, target_date, posts)
+    relevant_posts = _digest_relevant_posts(posts)
+    if not relevant_posts:
+        return f"*Twitter 日报 · @{username} · {target_date.isoformat()}*\n暂无重点市场相关更新。"
+    return _format_event_digest(target_date, relevant_posts, username=username)
 
 
 async def _active_twitter_users() -> list[str]:
@@ -71,83 +67,118 @@ async def _posts_for_day(
         return list(result.scalars().all())
 
 
-async def _format_user_digest(
-    username: str,
+def _digest_relevant_posts(posts: list[SocialPost]) -> list[SocialPost]:
+    return [
+        post
+        for post in posts
+        if post.is_pushed
+        or post.is_noteworthy
+        or post.urgency in {"high", "medium"}
+        or is_relevant_social_post(post)
+    ]
+
+
+def _format_event_digest(
     target_date: date,
     posts: list[SocialPost],
+    username: str | None = None,
 ) -> str:
     posts = sorted(posts, key=lambda post: post.posted_at, reverse=True)
-    summary = await _llm_summary(username, target_date, posts)
-    noteworthy = [post for post in posts if post.is_noteworthy or post.urgency == "high"]
+    grouped = group_similar_social_posts(posts)
+    grouped = sorted(grouped, key=_story_sort_key, reverse=True)
+    title = (
+        f"*Twitter 日报 · @{username} · {target_date.isoformat()}*"
+        if username
+        else f"*Twitter 事件日报 · {target_date.isoformat()}*"
+    )
 
     lines = [
-        f"*Twitter 日报 · @{username} · {target_date.isoformat()}*",
-        f"共 {len(posts)} 条更新，重点 {len(noteworthy)} 条。",
+        title,
+        f"共 {len(posts)} 条重点更新，归并为 {len(grouped)} 个事件。",
     ]
-    if summary:
-        lines.extend(["", summary])
-
     lines.append("")
-    lines.append("*重点更新*" if noteworthy else "*主要更新*")
-    for index, post in enumerate((noteworthy or posts)[:MAX_DIGEST_ITEMS_PER_USER], start=1):
-        lines.extend(_post_digest_lines(index, post))
+    lines.append("*重点事件*")
+    for index, group in enumerate(grouped[:MAX_DIGEST_STORIES], start=1):
+        lines.extend(_story_digest_lines(index, group))
 
-    if len(posts) > MAX_DIGEST_ITEMS_PER_USER:
-        lines.append(
-            f"还有 {len(posts) - MAX_DIGEST_ITEMS_PER_USER} 条已缓存，可在 Reveal 看板查看。"
-        )
+    if len(grouped) > MAX_DIGEST_STORIES:
+        lines.append(f"还有 {len(grouped) - MAX_DIGEST_STORIES} 个事件已缓存，可在看板查看。")
     return "\n".join(lines).strip()
 
 
-async def _llm_summary(username: str, target_date: date, posts: list[SocialPost]) -> str:
-    llm = get_llm_client()
-    if not llm:
-        return ""
-
-    context = "\n\n".join(
-        f"- {post.posted_at.strftime('%H:%M')} {post.summary or post.content}"
-        for post in posts[:20]
-    )
-    if not context.strip():
-        return ""
-
-    try:
-        return await llm.chat(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "你是金融信息助手。把某个 Twitter 账号一天内的更新总结成中文日报，"
-                        "重点提炼事实、相关 ticker、值得跟进的线索。不要编造。"
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": f"账号: @{username}\n日期: {target_date.isoformat()}\n\n{context}",
-                },
-            ],
-            temperature=0.2,
-            max_tokens=900,
-        )
-    except Exception:
-        logger.exception("Twitter digest LLM summary failed for @{}", username)
-        return ""
+def _story_sort_key(group: list[SocialPost]) -> tuple[int, datetime]:
+    priority = 0
+    for post in group:
+        if post.is_noteworthy or post.urgency == "high":
+            priority = max(priority, 3)
+        elif post.urgency == "medium":
+            priority = max(priority, 2)
+        elif post.is_pushed:
+            priority = max(priority, 1)
+    return priority, max(post.posted_at for post in group)
 
 
-def _post_digest_lines(index: int, post: SocialPost) -> list[str]:
-    markers = []
-    if post.is_noteworthy or post.urgency == "high":
-        markers.append("重点")
-    if post.mentioned_tickers:
-        markers.append(", ".join(str(t) for t in post.mentioned_tickers[:5]))
-    marker_text = f" ({' · '.join(markers)})" if markers else ""
-    preview = _compact(post.summary or post.content or "（无正文）", 220)
-    lines = [f"{index}. #{post.id}{marker_text} {preview}"]
-    if post.attention_reason:
-        lines.append(f"   原因: {_compact(post.attention_reason, 140)}")
-    if post.tweet_url:
-        lines.append(f"   {post.tweet_url}")
+def _story_digest_lines(index: int, group: list[SocialPost]) -> list[str]:
+    ordered = sorted(group, key=lambda post: post.posted_at, reverse=True)
+    tickers = _story_tickers(ordered)
+    ticker_text = f" · {', '.join(tickers)}" if tickers else ""
+    lines = [f"{index}. {_story_title(ordered)}{ticker_text}"]
+    lines.append(f"   事实: {_compact(_story_fact(ordered), 180)}")
+    lines.append("   观点:")
+    for post in ordered[:MAX_DIGEST_POSTS_PER_STORY]:
+        lines.append(f"   - @{post.username}: {_compact(_post_viewpoint(post), 120)}")
+    if len(ordered) > MAX_DIGEST_POSTS_PER_STORY:
+        lines.append(f"   - 另有 {len(ordered) - MAX_DIGEST_POSTS_PER_STORY} 条相关更新。")
+    if reference := _story_reference(ordered):
+        lines.append(f"   参考: {reference}")
     return lines
+
+
+def _story_title(posts: list[SocialPost]) -> str:
+    topics = []
+    for post in posts:
+        for topic in post.topics or []:
+            value = str(topic).strip()
+            if value and value not in topics:
+                topics.append(value)
+            if len(topics) >= 3:
+                break
+        if len(topics) >= 3:
+            break
+    if topics:
+        return " · ".join(topics)
+    first = posts[0]
+    return _compact(first.summary or first.attention_reason or first.content or "未命名事件", 48)
+
+
+def _story_fact(posts: list[SocialPost]) -> str:
+    for post in posts:
+        if post.summary:
+            return post.summary
+    return posts[0].content or "暂无事实摘要"
+
+
+def _post_viewpoint(post: SocialPost) -> str:
+    return post.attention_reason or post.summary or post.content or "暂无观点摘要"
+
+
+def _story_tickers(posts: list[SocialPost]) -> list[str]:
+    tickers: list[str] = []
+    for post in posts:
+        for ticker in post.mentioned_tickers or []:
+            value = str(ticker).upper().strip()
+            if value and value not in tickers:
+                tickers.append(value)
+            if len(tickers) >= 5:
+                return tickers
+    return tickers
+
+
+def _story_reference(posts: list[SocialPost]) -> str:
+    for post in posts:
+        if post.tweet_url:
+            return post.tweet_url
+    return ""
 
 
 def _target_date(days_ago: int) -> date:

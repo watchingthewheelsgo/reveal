@@ -159,11 +159,11 @@ EXTERNAL_SERVICES: tuple[ExternalServiceSpec, ...] = (
         id="scheduler.apscheduler",
         title="APScheduler",
         kind="scheduler",
-        description="定时选股、Twitter 监控、告警和日报任务。",
+        description="Twitter 监控、告警、每日简报和用户定时任务。",
         config_keys=(
             "SCHEDULER_TIMEZONE",
             "TWITTER_MONITOR_INTERVAL",
-            "DAILY_PICK_TIME",
+            "DAILY_BRIEFING_TIME",
             "TWITTER_DIGEST_TIME",
         ),
     ),

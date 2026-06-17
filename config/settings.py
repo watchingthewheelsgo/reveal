@@ -90,7 +90,6 @@ class Settings(BaseSettings):
     scheduler_timezone: str = Field(default="America/New_York", alias="SCHEDULER_TIMEZONE")
     twitter_monitor_interval: int = Field(default=3600, alias="TWITTER_MONITOR_INTERVAL")
     twitter_fetch_min_interval: int = Field(default=900, alias="TWITTER_FETCH_MIN_INTERVAL")
-    daily_pick_time: str = Field(default="08:00", alias="DAILY_PICK_TIME")
     daily_briefing_time: str = Field(default="08:30", alias="DAILY_BRIEFING_TIME")
     twitter_digest_enabled: bool = Field(default=True, alias="TWITTER_DIGEST_ENABLED")
     twitter_digest_time: str = Field(default="17:00", alias="TWITTER_DIGEST_TIME")
@@ -284,7 +283,7 @@ class Settings(BaseSettings):
                 seen.add(normalized)
         return items
 
-    @field_validator("daily_pick_time", "daily_briefing_time", "twitter_digest_time")
+    @field_validator("daily_briefing_time", "twitter_digest_time")
     @classmethod
     def validate_hhmm_time(cls, value: str) -> str:
         parts = value.split(":")
