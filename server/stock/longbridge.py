@@ -20,34 +20,54 @@ class LongbridgeAuthError(RuntimeError):
     """Raised when Longbridge OAuth credentials are missing or invalid."""
 
 
-async def fetch_quote_anomalies(
+async def fetch_top_movers(
     market: str = "US",
     count: int = 50,
-    symbol: str | None = None,
 ) -> dict[str, Any]:
-    """Fetch quote anomalies / unusual market movements from Longbridge."""
-    params: dict[str, Any] = {"market": market.upper(), "count": count}
-    if symbol:
-        params["symbol"] = normalize_longbridge_symbol(symbol, market)
-    return await longbridge_get("/v1/quote/changes", params=params)
+    """Fetch top movers with correlated news from Longbridge."""
+    body: dict[str, Any] = {
+        "date": "",
+        "limit": count,
+        "markets": [market.upper()],
+        "next_params": {},
+        "sort": 2,
+    }
+    return await longbridge_post("/v1/quote/market/stock-events", json_body=body)
 
 
 async def longbridge_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    return await _longbridge_request("GET", path, params=params)
+
+
+async def longbridge_post(path: str, json_body: dict[str, Any] | None = None) -> dict[str, Any]:
+    return await _longbridge_request("POST", path, json_body=json_body)
+
+
+async def _longbridge_request(
+    method: str,
+    path: str,
+    params: dict[str, Any] | None = None,
+    json_body: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     settings = get_settings()
     token = await get_access_token()
     url = f"{settings.longbridge_api_base.rstrip('/')}/{path.lstrip('/')}"
     async with httpx.AsyncClient(timeout=20) as client:
-        response = await client.get(
+        response = await client.request(
+            method,
             url,
             params=params,
+            json=json_body,
             headers={"Authorization": f"Bearer {token}"},
         )
     if response.status_code == 401:
         token = await refresh_access_token(force=True)
         async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.get(
+            response = await client.request(
+                method,
                 url,
                 params=params,
+                json=json_body,
                 headers={"Authorization": f"Bearer {token}"},
             )
     response.raise_for_status()
